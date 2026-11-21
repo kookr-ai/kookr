@@ -12,6 +12,7 @@ import {
   loadClaudeAccounts,
   resolveClaudeAccountsFile,
   saveClaudeAccounts,
+  stripInheritedClaudeAccountEnv,
   summarizeClaudeAccounts,
   withAccount,
   withDefaultAccount,
@@ -52,7 +53,18 @@ describe('claude account registry', () => {
       CLAUDE_CODE_OAUTH_TOKEN: TOKEN_A,
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_AUTH_TOKEN: '',
+      KOOKR_CLAUDE_ACCOUNT: 'work',
     });
+  });
+
+  test('a process that inherited an account launch env drops it, an operator token stays', () => {
+    const inherited = {
+      PATH: '/bin',
+      ...claudeAccountLaunchEnv(withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN_A), 'work'),
+    };
+    expect(stripInheritedClaudeAccountEnv(inherited)).toEqual({ PATH: '/bin' });
+    const operator = { PATH: '/bin', CLAUDE_CODE_OAUTH_TOKEN: TOKEN_B, ANTHROPIC_API_KEY: 'sk-ant-api03-real' };
+    expect(stripInheritedClaudeAccountEnv(operator)).toEqual(operator);
   });
 
   test('a pinned account wins over the default; the default wins over host', () => {

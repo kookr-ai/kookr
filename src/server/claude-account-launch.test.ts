@@ -24,7 +24,7 @@ describe('resolveClaudeAccountLaunch', () => {
 
     expect(resolveClaudeAccountLaunch(store, task.id, () => registry)).toEqual({
       account: 'work',
-      env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN_A, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '' },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN_A, ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', KOOKR_CLAUDE_ACCOUNT: 'work' },
     });
     expect(store.getTask(task.id)?.metadata?.claudeAccount).toBe('work');
 

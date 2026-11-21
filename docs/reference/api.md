@@ -737,9 +737,15 @@ Error responses:
   `400 {"error", "code": "invalid_claude_account"}`.
 - `409 {"error", "code"}` when the switch is refused: `not_claude_task`,
   `ralph_loop_active`, `not_resumable` (a running task with no recorded
-  conversation), `task_cleanup_in_progress`, or `relaunch_failed` (the agent was
-  stopped but the relaunch failed and cancelled the task; the error carries the
-  launch error).
+  conversation, or whose transcript is gone, so a relaunch would start over
+  from the prompt), `task_cleanup_in_progress`, `task_changed` (the task
+  changed state during the switch, or after its agent was stopped ended
+  neither running nor queued), or `relaunch_failed` (the agent was stopped but
+  the relaunch failed and cancelled the task; the error carries the launch
+  error).
+
+The resume request of a `queued` task is held in server memory, as for
+`/reopen`: a task still `pending` when the server restarts launches fresh.
 
 Every call that reaches the command writes a `task.claudeAccountSwitch` row to
 `audit.jsonl` with `taskId`, `account`, `outcome`, the actor, and `from`,

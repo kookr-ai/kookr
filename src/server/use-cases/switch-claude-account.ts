@@ -36,7 +36,7 @@ import {
 } from '../../core/claude-accounts.js';
 import type { LifecycleDeps } from '../agent-lifecycle.js';
 import { cleanupSessionResources } from '../agent-lifecycle.js';
-import { hasResumableSession } from '../resume-context.js';
+import { describeReopenResume } from '../resume-context.js';
 
 export interface SwitchClaudeAccountDeps {
   taskStore: TaskStore;
@@ -116,14 +116,26 @@ async function switchInner(
       error: `Task ${taskId} is an active Ralph loop; every iteration starts fresh, so there is no conversation to move`,
     };
   }
-  if (!hasResumableSession(task)) {
-    // Relaunching without a conversation id would start over from the prompt
-    // and throw away the agent's progress. The operator can still stop and
-    // reopen the task deliberately.
+  // Relaunching without a conversation to resume would start over from the
+  // prompt and throw away the agent's progress: refuse instead. Same check
+  // as Reopen's report (an id is recorded and its transcript still exists).
+  // The operator can still stop and reopen the task deliberately.
+  const resume = await describeReopenResume(task, { activeRalphLoop: false });
+  if (resume.mode !== 'resume') {
     return {
       outcome: 'invalid',
       code: 'not_resumable',
-      error: `Task ${taskId} has no recorded Claude conversation yet, so it cannot continue on another account; try again once it has started`,
+      error: `Task ${taskId} cannot continue its conversation on another account (${resume.reason}); try again once it has started, or stop and reopen it`,
+    };
+  }
+  // That await may have yielded: the task can have finished or been switched
+  // meanwhile. From here to pendTask nothing awaits.
+  const current = taskStore.getTask(taskId);
+  if (!current || current.status !== 'inProgress') {
+    return {
+      outcome: 'invalid',
+      code: 'task_changed',
+      error: `Task ${taskId} changed state during the switch (now ${current?.status ?? 'deleted'}); check it and retry`,
     };
   }
 
@@ -132,7 +144,7 @@ async function switchInner(
   try {
     taskStore.reopenTask(taskId); // inProgress -> open
   } catch (err) {
-    taskStore.setClaudeAccount(taskId, task.metadata?.claudeAccount);
+    taskStore.setClaudeAccount(taskId, current.metadata?.claudeAccount);
     if (err instanceof TaskCleanupInProgressError) {
       return { outcome: 'invalid', code: 'task_cleanup_in_progress', error: err.message };
     }
@@ -145,7 +157,7 @@ async function switchInner(
   // Step 2 — stop the old agent process(es).
   const lifecycleDeps = deps.getLifecycleDeps();
   try {
-    for (const session of task.sessions) {
+    for (const session of current.sessions) {
       if (session.lastStatus === 'completed' || session.lastStatus === 'aborted') continue;
       await cleanupSessionResources(session.tmuxSession, lifecycleDeps);
       taskStore.updateSession(taskId, session.tmuxSession, { lastStatus: 'aborted' });
@@ -165,7 +177,13 @@ async function switchInner(
       error: `Task ${taskId} was stopped for the switch but its relaunch on "${account}" failed: ${after.terminalReceipt.detail ?? 'unknown launch error'}`,
     };
   }
-  return { outcome: after.status === 'pending' ? 'queued' : 'relaunched', task: after, from, to: account };
+  if (after.status === 'pending') return { outcome: 'queued', task: after, from, to: account };
+  if (after.status === 'inProgress') return { outcome: 'relaunched', task: after, from, to: account };
+  return {
+    outcome: 'invalid',
+    code: 'task_changed',
+    error: `Task ${taskId} was stopped for the switch but is now ${after.status}, not relaunched`,
+  };
 }
 
 async function writeAudit(

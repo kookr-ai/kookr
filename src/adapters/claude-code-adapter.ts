@@ -665,9 +665,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     });
     // Claude Code emits SessionStart as soon as the CLI boots, usually before
     // the prompt is acknowledged and this session record exists. The hook
-    // handler then had no session to write the conversation id to, and the
-    // hook-file replay skips the already-ingested event, so most tasks never
-    // recorded `claudeSessionId` — and with it lost Reopen's resume and
+    // handler then had no session to write the conversation id to, and in
+    // practice the hook-file replay does not deliver it again (it was already
+    // ingested over HTTP), so most tasks never recorded `claudeSessionId` —
+    // and with it lost Reopen's resume and
     // account switching. The in-memory identity did see the SessionStart, so
     // copy its parent conversation onto the record now (same idea as the
     // opencode adapter's early-start buffer).

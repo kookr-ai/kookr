@@ -190,6 +190,28 @@ describe('switchClaudeAccount', () => {
     expect(result).toMatchObject({ outcome: 'invalid', code: 'relaunch_failed' });
   });
 
+  test('refuses a running task whose transcript is gone instead of restarting it from the prompt', async () => {
+    const taskStore = new TaskStore();
+    const taskId = runningTask(taskStore);
+    taskStore.updateSession(taskId, 'kookr-old', { transcriptPath: '/nonexistent/conv-1.jsonl' });
+    const { deps, stop } = makeDeps(taskStore);
+
+    expect(await switchClaudeAccount(deps, taskId, 'work')).toMatchObject({ outcome: 'invalid', code: 'not_resumable' });
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  test('does not report success when the task ended up neither running nor queued', async () => {
+    const taskStore = new TaskStore();
+    const taskId = runningTask(taskStore);
+    const { deps } = makeDeps(taskStore, {
+      tryPromotePending: async () => {
+        taskStore.cancelTask(taskId);
+      },
+    });
+
+    expect(await switchClaudeAccount(deps, taskId, 'work')).toMatchObject({ outcome: 'invalid', code: 'task_changed' });
+  });
+
   test('returns not_found for an unknown task', async () => {
     const { deps } = makeDeps(new TaskStore());
     expect((await switchClaudeAccount(deps, 'missing', 'work')).outcome).toBe('not_found');

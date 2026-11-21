@@ -9,8 +9,8 @@ a usage limit on one of them should not stop the work.
 
 Claude Code reads an OAuth token from the `CLAUDE_CODE_OAUTH_TOKEN` environment
 variable and prefers it over the login stored in `~/.claude/.credentials.json`.
-`claude setup-token` prints such a token for the account you are signed in to
-in the browser; it is valid for a year.
+`claude setup-token` prints such a long-lived token for the account you are
+signed in to in the browser.
 
 Kookr keeps named tokens in a registry and gives a task's agent the token of
 the account the task is on. Everything else stays shared: settings, plugins,
@@ -68,14 +68,16 @@ kookr account switch <taskId> personal
   issue claims and parent; it is never cancelled. The agent is told the process
   was restarted and to re-check its state, and an agent that was waiting for an
   answer is told to ask again. If no slot is free the task waits in the queue
-  and the command says so.
+  and the command says so. The resume request of a queued task is held in
+  server memory, as for Reopen: if the server restarts before the task
+  relaunches, it starts fresh from its prompt.
 - **Task not running** (pending, finished, reaped): only the pin changes. The
   next launch, for example `kookr reopen`, uses the new account.
 
 A switch is refused for a task that is not Claude Code, for an active Ralph
 loop (every iteration starts fresh, so there is no conversation to move), and
-for a running task that has not recorded a conversation yet (relaunching it
-would start over from the prompt). Each switch writes a
+for a running task that has not recorded a conversation yet or whose
+transcript is gone (relaunching it would start over from the prompt). Each switch writes a
 `task.claudeAccountSwitch` row to `audit.jsonl`.
 
 The server side is `POST /api/tasks/:id/claude-account`; see the
@@ -89,6 +91,13 @@ refused or rotated to another agent because the host account is exhausted.
 Kookr does not read the usage of other accounts; Claude Code reports a usage
 limit on the account a task runs on in the usual way, and the task shows as
 provider-paused. Switching it to another account is the way out.
+
+When new tasks default to another account, the soft-quota orchestration pause
+no longer reads the host's usage either: `GET /api/orchestration/status`
+reports the quota sample as unsupported. One place still compares against the
+host account: the timers that reclaim a provider-paused task use the host's
+reset times. For a task on another account they can hold or release it at the
+wrong moment, but never past the usual hard limit (2 hours by default).
 
 ## Limits and safety
 
@@ -107,3 +116,14 @@ provider-paused. Switching it to another account is the way out.
   that uses them. They are not written to `tasks.json`, logs or API responses.
 - Only Claude Code tasks have accounts. Codex, Grok Build and opencode are
   unaffected.
+
+## What has been tested
+
+Verified on Claude Code 2.1.330: the environment token overrides the stored
+login, and a bogus one fails with a 401 rather than falling back to it; an
+empty `ANTHROPIC_API_KEY` counts as unset. In a live run, a task launched on an
+account whose token was invalid got past the host quota gate, failed with a
+401, and was switched to `host`. It relaunched in place with
+`claude --resume`, kept its conversation (it still knew a word given only in
+its first prompt) and finished. Resuming a conversation that already has
+assistant turns under a second real subscription has not been tested.

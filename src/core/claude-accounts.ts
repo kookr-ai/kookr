@@ -41,6 +41,12 @@ export const HOST_CLAUDE_ACCOUNT = 'host';
 /** Overrides the registry location; mostly for tests and multi-user hosts. */
 export const CLAUDE_ACCOUNTS_FILE_ENV = 'KOOKR_CLAUDE_ACCOUNTS_FILE';
 
+/**
+ * Set beside the token in every account launch env, so a process can tell an
+ * injected account token from one the operator configured themselves.
+ */
+export const CLAUDE_ACCOUNT_MARKER_ENV = 'KOOKR_CLAUDE_ACCOUNT';
+
 const REGISTRY_VERSION = 1;
 
 /** Lower-case name, digits, `-` and `_`, 1 to 40 characters, starting with a letter or digit. */
@@ -284,7 +290,30 @@ export function claudeAccountLaunchEnv(
     CLAUDE_CODE_OAUTH_TOKEN: record.token,
     ANTHROPIC_API_KEY: '',
     ANTHROPIC_AUTH_TOKEN: '',
+    [CLAUDE_ACCOUNT_MARKER_ENV]: name,
   };
+}
+
+/**
+ * Remove the account selection a process inherited from a Kookr agent on a
+ * named account.
+ *
+ * The Kookr server is often restarted from inside an agent's shell, and then
+ * inherits that agent's environment. Without this, a server restarted by an
+ * agent on account "work" would hand the work token to every later `host`
+ * launch, which injects nothing and so would not override it. Only variables
+ * that came with the marker are removed: an operator who authenticates the
+ * host with their own `CLAUDE_CODE_OAUTH_TOKEN` keeps it.
+ */
+export function stripInheritedClaudeAccountEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (env[CLAUDE_ACCOUNT_MARKER_ENV] === undefined) return env;
+  const next: NodeJS.ProcessEnv = { ...env };
+  delete next[CLAUDE_ACCOUNT_MARKER_ENV];
+  delete next.CLAUDE_CODE_OAUTH_TOKEN;
+  // The account launch blanked these; the empty values are not the operator's.
+  if (next.ANTHROPIC_API_KEY === '') delete next.ANTHROPIC_API_KEY;
+  if (next.ANTHROPIC_AUTH_TOKEN === '') delete next.ANTHROPIC_AUTH_TOKEN;
+  return next;
 }
 
 /** Token-free listing, `host` first, then registered accounts by name. */

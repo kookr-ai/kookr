@@ -29,6 +29,7 @@ import {
   loadClaudeAccounts,
   resolveClaudeAccountsFile,
   saveClaudeAccounts,
+  stripInheritedClaudeAccountEnv,
   summarizeClaudeAccounts,
   withAccount,
   withDefaultAccount,
@@ -287,7 +288,9 @@ export async function runAccountCli(argv: string[], io: AccountCliIo = {}): Prom
         const name = args.positionals[0]!;
         const registry = loadClaudeAccounts(file);
         assertKnownAccount(registry, name);
-        const childEnv: NodeJS.ProcessEnv = { ...env, ...claudeAccountLaunchEnv(registry, name) };
+        // From an agent shell on another account the inherited token would
+        // otherwise answer for `host`.
+        const childEnv: NodeJS.ProcessEnv = { ...stripInheritedClaudeAccountEnv(env), ...claudeAccountLaunchEnv(registry, name) };
         delete childEnv.CLAUDE_CODE_CHILD_SESSION;
         const bin = env.KOOKR_AGENT_BIN?.trim() || 'claude';
         const res = (io.runClaude ?? defaultRunClaude)(
