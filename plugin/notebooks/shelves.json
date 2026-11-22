@@ -24,6 +24,7 @@
     "architecture-smell-scanner": "scanning a codebase for architecture smells: god modules, scattered features, dense coupling",
     "state-machine-verifier": "comparing documented state machines against the implementation for undocumented states or transitions",
     "clear-writing-reviewer": "reviewing technical prose or code documentation for cold-reader clarity",
+    "readme-critic": "reviewing a project README through one lens: first screen, launch fit, install path, claim accuracy, positioning, rendering, structure, or discovery metadata",
     "macos-compat-reviewer": "reviewing a diff for macOS / cross-platform breakage: GNU-only flags, bash-4 syntax, /proc assumptions",
     "kookr-task-supervisor": "supervising a running Kookr worker task end-to-end, driving it to completion",
     "product-owner": "assessing whether a repo is shippable to a first-time user and drafting onboarding issues",
