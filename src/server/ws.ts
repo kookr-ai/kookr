@@ -153,6 +153,8 @@ export interface MessageRouterDeps {
   reapWarningCoordinator?: ReapWarningCoordinator;
   /** FAA ack-path reap coordinator for the `keepTaskAlive` veto (issue #2170). */
   faaAckReapWarningCoordinator?: ReapWarningCoordinator;
+  /** hungSuspect TTL reclaim coordinator for the `keepTaskAlive` veto (issue #4241). */
+  hungSuspectTtlReapWarningCoordinator?: ReapWarningCoordinator;
 }
 
 export class MessageRouter {
@@ -240,6 +242,7 @@ export class MessageRouter {
       tryPromotePending: () => this.tryPromotePending(),
       reapWarningCoordinator: this.deps.reapWarningCoordinator,
       faaAckReapWarningCoordinator: this.deps.faaAckReapWarningCoordinator,
+      hungSuspectTtlReapWarningCoordinator: this.deps.hungSuspectTtlReapWarningCoordinator,
     });
     this.workspaceHandler = new WorkspaceHandler({
       send: this.deps.send,

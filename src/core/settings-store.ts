@@ -353,6 +353,15 @@ export interface KookrSettings {
    */
   hungSuspectTtlMinutes: number;
   /**
+   * Warned phase before the hungSuspect TTL reclaim (issue #4241), in seconds.
+   * A selected task is warned first; its parent task is told, with the
+   * deadline and the `kookr keep-alive` command, and the task is closed only
+   * once this grace (plus any keep-alive) has passed. Default 300s; `0` turns
+   * the warned phase off (immediate reclaim, the pre-#4241 behaviour); any
+   * other value is clamped by {@link clampReapGraceSeconds} to [10, 600].
+   */
+  hungSuspectTtlReclaimGraceSeconds: number;
+  /**
    * Hard cap, in hours of all-channel silence, on the long-running-job hold
    * (issue #4237). A silent task whose session owns a live worker job older
    * than 10 minutes, or one holding the GPU, is not reclaimed by the
@@ -516,6 +525,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   finishedAwaitingAckAckReapMinutes: DEFAULT_FAA_ACK_REAP_DEADLINE_MS / 60_000,
   finishedAwaitingAckAckReapGraceSeconds: DEFAULT_FAA_ACK_REAP_GRACE_SECONDS,
   hungSuspectTtlMinutes: 25,
+  hungSuspectTtlReclaimGraceSeconds: 300,
   longRunningJobReclaimCapHours: 12,
   firstHookDeadlineSeconds: 180,
   spawnBurstLimit: 30,
@@ -842,6 +852,16 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  let hungSuspectTtlReclaimGraceSeconds = DEFAULT_SETTINGS.hungSuspectTtlReclaimGraceSeconds;
+  if (
+    typeof raw.hungSuspectTtlReclaimGraceSeconds === 'number'
+    && Number.isFinite(raw.hungSuspectTtlReclaimGraceSeconds)
+  ) {
+    hungSuspectTtlReclaimGraceSeconds = raw.hungSuspectTtlReclaimGraceSeconds <= 0
+      ? 0
+      : clampReapGraceSeconds(raw.hungSuspectTtlReclaimGraceSeconds);
+  }
+
   let longRunningJobReclaimCapHours = DEFAULT_SETTINGS.longRunningJobReclaimCapHours;
   if (
     typeof raw.longRunningJobReclaimCapHours === 'number'
@@ -1142,6 +1162,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       finishedAwaitingAckAckReapMinutes,
       finishedAwaitingAckAckReapGraceSeconds,
       hungSuspectTtlMinutes,
+      hungSuspectTtlReclaimGraceSeconds,
       longRunningJobReclaimCapHours,
       firstHookDeadlineSeconds,
       spawnBurstLimit,

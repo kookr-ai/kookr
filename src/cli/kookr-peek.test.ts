@@ -549,3 +549,17 @@ describe('matchTaskRef (shared by kookr peek and kookr reply)', () => {
     expect(matchTaskRef(agents, 'zzzzzzzz')).toEqual({ kind: 'none' });
   });
 });
+
+describe('formatPeekReapWarning (issue #4241)', () => {
+  it('shows the pending close and who kept the task alive', async () => {
+    const { formatPeekReapWarning } = await import('./kookr-peek.js');
+    expect(formatPeekReapWarning(undefined)).toBeUndefined();
+    expect(formatPeekReapWarning({ kind: 'hung_suspect_ttl', remainingMs: 4 * 60_000 })).toBe('closing in 4m (hung_suspect_ttl)');
+    const until = new Date(2026, 7, 3, 14, 30).getTime();
+    expect(formatPeekReapWarning({
+      kind: 'hung_suspect_ttl',
+      remainingMs: 30 * 60_000,
+      keptAliveBy: { actorName: 'the lead', reason: 'waiting on CI', untilMs: until },
+    })).toBe('closing in 30m (hung_suspect_ttl) · kept alive by the lead until 14:30: waiting on CI');
+  });
+});

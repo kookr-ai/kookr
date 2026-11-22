@@ -1084,6 +1084,19 @@ describe('reap-warning snapshot projection (RFC rfc-reap-grace-warning.md)', () 
     });
   });
 
+  it('projects reapWarning onto GET /api/snapshot agents too, so kookr peek sees it (issue #4241)', () => {
+    const { taskStore, task } = warnedTaskStore();
+    const coordinator = new ReapWarningCoordinator();
+    const now = Date.now();
+    coordinator.advance({ taskId: task.id, agentId: 'agent-1', silentForMs: 26 * 60_000, now, graceMs: 300_000, present: false });
+    coordinator.agentVeto(task.id, {
+      now, extensionMs: 30 * 60_000, ceilingAt: now + 3_600_000, actor: 'task:lead', actorName: 'lead', reason: 'waiting on CI',
+    });
+    setReapWarningProvider(coordinator);
+    const [agent] = getSnapshotAgentsRaw({ monitor: monitorFor(taskStore) });
+    expect(agent.reapWarning?.keptAliveBy).toEqual({ actorName: 'lead', reason: 'waiting on CI', untilMs: now + 30 * 60_000 });
+  });
+
   it('omits reapWarning when the task has no warning', () => {
     const { taskStore } = warnedTaskStore();
     setReapWarningProvider(new ReapWarningCoordinator()); // registered but empty

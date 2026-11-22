@@ -262,6 +262,11 @@ PY
    `finishedAwaitingAckTtlReclaim.reclaimedTotal` with high
    `capacity.byClass.finishedAwaitingAck` → read skip dominance (often
    `skippedOpenPrFailsafe` when PR refs are unfetched; issue #2084).
+   A selected task is first warned for `hungSuspectTtlReclaimGraceSeconds`
+   (default 300s; `0` closes it at once, as before #4241), and its parent task
+   is told. A task its parent kept alive with `kookr keep-alive` stays open
+   until the extended deadline; `GET /api/diagnostics/reap-warnings`
+   (`hungSuspectTtlReclaim.active`) lists who kept it alive and why.
 2. If residual stays high for a full TTL window: complete/cancel clearly dead
    tasks; investigate `skippedOpenPrFailsafe` / `skippedNoLiveness` /
    `skippedProviderPaused` / `lastOutcomes` before manual intervention (after

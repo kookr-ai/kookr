@@ -51,6 +51,13 @@ export const MAX_REAP_VETOES = 3;
  * task still reaps (Goal 3).
  */
 export const MAX_PRESENCE_HOLD_MS = 15 * 60_000;
+/**
+ * Longest single extension an agent keep-alive may ask for (issue #4241). An
+ * agent veto shares the {@link MAX_REAP_VETOES} per-cycle count with the
+ * dashboard veto, and the caller also passes an absolute ceiling (the 12-hour
+ * long-running-job cap of #4237), so a chain of keep-alives always ends.
+ */
+export const MAX_AGENT_KEEP_ALIVE_MS = 60 * 60_000;
 
 /** Live warning record for one task. */
 export interface ReapWarning {
@@ -67,6 +74,25 @@ export interface ReapWarning {
   keptAliveCount: number;
   /** True when the current deadline is being held by dashboard presence. */
   heldByPresence: boolean;
+  /**
+   * When the task's silence began (ms since epoch): `now - silentForMs` at the
+   * last advance. Anchors the absolute keep-alive ceiling (issue #4241).
+   */
+  silentSinceAt: number;
+  /** The latest agent keep-alive applied to this cycle (issue #4241), if any. */
+  keptAliveBy?: ReapKeepAliveRecord;
+}
+
+/** Who kept a warned task alive, why, and until when (issue #4241). */
+export interface ReapKeepAliveRecord {
+  /** `operator`, or `task:<id>` for the task's parent. */
+  actor: string;
+  /** Display name of the caller (parent task name, or `operator`). */
+  actorName: string;
+  reason: string;
+  /** The new deadline the keep-alive set (ms since epoch). */
+  until: number;
+  at: number;
 }
 
 export type ReapAdvance =
@@ -86,6 +112,14 @@ export type ReapVetoResult =
   | { accepted: true; warning: ReapWarning }
   | { accepted: false; reason: 'no_warning' | 'cap_reached' };
 
+export type ReapAgentVetoResult =
+  | { accepted: true; warning: ReapWarning }
+  | {
+      accepted: false;
+      reason: 'no_warning' | 'cap_reached' | 'ceiling_reached' | 'already_later';
+      warning?: ReapWarning;
+    };
+
 /** Client-facing projection of a warning, carried on `AgentState.reapWarning`. */
 export interface ReapWarningView {
   remainingMs: number;
@@ -93,6 +127,8 @@ export interface ReapWarningView {
   keptAliveCount: number;
   vetoCapReached: boolean;
   heldByPresence: boolean;
+  /** The latest agent keep-alive for this cycle (issue #4241). */
+  keptAliveBy?: { actorName: string; reason: string; untilMs: number };
 }
 
 /** Operator-facing introspection row (diagnostics route). */
@@ -104,6 +140,7 @@ export interface ReapWarningStateRow {
   warnedAt: number;
   keptAliveCount: number;
   heldByPresence: boolean;
+  keptAliveBy?: ReapKeepAliveRecord;
 }
 
 /** Cumulative counters for observability (diagnostics/metrics surface). */
@@ -158,6 +195,7 @@ export class ReapWarningCoordinator {
         silentForMs: input.silentForMs,
         keptAliveCount: 0,
         heldByPresence: false,
+        silentSinceAt: input.now - input.silentForMs,
       };
       this.applyPresenceTo(warning, input.present, input.now, input.graceMs);
       this.warnings.set(input.taskId, warning);
@@ -167,6 +205,7 @@ export class ReapWarningCoordinator {
 
     // Keep display fields fresh; warnedAt / deadlineAt / count stay stable.
     existing.silentForMs = input.silentForMs;
+    existing.silentSinceAt = input.now - input.silentForMs;
     existing.agentId = input.agentId;
     this.applyPresenceTo(existing, input.present, input.now, input.graceMs);
 
@@ -230,8 +269,63 @@ export class ReapWarningCoordinator {
       return { accepted: false, reason: 'cap_reached' };
     }
     w.keptAliveCount += 1;
-    w.deadlineAt = now + extensionMs;
+    // Never shrink a longer deadline an agent keep-alive already set (#4241).
+    w.deadlineAt = Math.max(w.deadlineAt, now + extensionMs);
     w.heldByPresence = false;
+    this.metrics.vetoedTotal += 1;
+    return { accepted: true, warning: w };
+  }
+
+  /**
+   * Apply a keep-alive asked for by an agent or by the operator over the API
+   * (issue #4241). Unlike {@link veto}, the caller picks the extension, clamped
+   * to {@link MAX_AGENT_KEEP_ALIVE_MS}, and the new deadline is clamped to
+   * `ceilingAt` (absolute, ms since epoch). The extension counts against the
+   * same {@link MAX_REAP_VETOES} per-cycle cap as the dashboard veto. When the
+   * current deadline is already later than `now + extension`, nothing changes
+   * and no extension is counted (`already_later`). When only the ceiling stops
+   * the deadline from moving, it is refused with `ceiling_reached`, so the
+   * caller learns the cap is spent instead of being told it succeeded.
+   */
+  agentVeto(
+    taskId: string,
+    input: {
+      now: number;
+      extensionMs: number;
+      ceilingAt: number;
+      actor: string;
+      actorName: string;
+      reason: string;
+    },
+  ): ReapAgentVetoResult {
+    const w = this.warnings.get(taskId);
+    if (!w) {
+      this.metrics.vetoRejectedTotal += 1;
+      return { accepted: false, reason: 'no_warning' };
+    }
+    if (w.keptAliveCount >= MAX_REAP_VETOES) {
+      this.metrics.vetoRejectedTotal += 1;
+      return { accepted: false, reason: 'cap_reached', warning: w };
+    }
+    const extensionMs = Math.max(0, Math.min(MAX_AGENT_KEEP_ALIVE_MS, input.extensionMs));
+    if (input.now + extensionMs <= w.deadlineAt && w.deadlineAt <= input.ceilingAt) {
+      return { accepted: false, reason: 'already_later', warning: w };
+    }
+    const target = Math.min(input.now + extensionMs, input.ceilingAt);
+    if (target <= w.deadlineAt || target <= input.now) {
+      this.metrics.vetoRejectedTotal += 1;
+      return { accepted: false, reason: 'ceiling_reached', warning: w };
+    }
+    w.keptAliveCount += 1;
+    w.deadlineAt = target;
+    w.heldByPresence = false;
+    w.keptAliveBy = {
+      actor: input.actor,
+      actorName: input.actorName,
+      reason: input.reason,
+      until: target,
+      at: input.now,
+    };
     this.metrics.vetoedTotal += 1;
     return { accepted: true, warning: w };
   }
@@ -291,6 +385,15 @@ export class ReapWarningCoordinator {
       keptAliveCount: w.keptAliveCount,
       vetoCapReached: w.keptAliveCount >= MAX_REAP_VETOES,
       heldByPresence: w.heldByPresence,
+      ...(w.keptAliveBy
+        ? {
+            keptAliveBy: {
+              actorName: w.keptAliveBy.actorName,
+              reason: w.keptAliveBy.reason,
+              untilMs: w.keptAliveBy.until,
+            },
+          }
+        : {}),
     };
   }
 
@@ -304,6 +407,7 @@ export class ReapWarningCoordinator {
       warnedAt: w.warnedAt,
       keptAliveCount: w.keptAliveCount,
       heldByPresence: w.heldByPresence,
+      ...(w.keptAliveBy ? { keptAliveBy: { ...w.keptAliveBy } } : {}),
     }));
   }
 }

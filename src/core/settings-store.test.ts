@@ -413,6 +413,17 @@ describe('validateSettings', () => {
     expect(validateSettings({ finishedAwaitingAckAckReapGraceSeconds: 5_000 }).finishedAwaitingAckAckReapGraceSeconds).toBe(600);
   });
 
+  it('defaults hungSuspectTtlReclaimGraceSeconds to 300, keeps 0 as off, clamps the rest to 10-600 (issue #4241)', () => {
+    expect(DEFAULT_SETTINGS.hungSuspectTtlReclaimGraceSeconds).toBe(300);
+    expect(validateSettings({}).hungSuspectTtlReclaimGraceSeconds).toBe(300);
+    expect(validateSettings({ hungSuspectTtlReclaimGraceSeconds: 0 }).hungSuspectTtlReclaimGraceSeconds).toBe(0);
+    expect(validateSettings({ hungSuspectTtlReclaimGraceSeconds: -5 }).hungSuspectTtlReclaimGraceSeconds).toBe(0);
+    expect(validateSettings({ hungSuspectTtlReclaimGraceSeconds: 3 }).hungSuspectTtlReclaimGraceSeconds).toBe(10);
+    expect(validateSettings({ hungSuspectTtlReclaimGraceSeconds: 120 }).hungSuspectTtlReclaimGraceSeconds).toBe(120);
+    expect(validateSettings({ hungSuspectTtlReclaimGraceSeconds: 9_999 }).hungSuspectTtlReclaimGraceSeconds).toBe(600);
+    expect(validateSettings({ hungSuspectTtlReclaimGraceSeconds: 'x' }).hungSuspectTtlReclaimGraceSeconds).toBe(300);
+  });
+
   it('defaults hungSuspectTtlMinutes to 25 and clamps to the 10-60 range, hard-capped at 60 (issue #1935)', () => {
     expect(validateSettings({}).hungSuspectTtlMinutes).toBe(25);
     expect(DEFAULT_SETTINGS.hungSuspectTtlMinutes).toBe(25);
@@ -948,6 +959,7 @@ describe('loadSettings / saveSettings', () => {
       finishedAwaitingAckAckReapMinutes: 3,
       finishedAwaitingAckAckReapGraceSeconds: 45,
       hungSuspectTtlMinutes: 30,
+      hungSuspectTtlReclaimGraceSeconds: 90,
       longRunningJobReclaimCapHours: 6,
       firstHookDeadlineSeconds: 240,
       spawnBurstLimit: 60,

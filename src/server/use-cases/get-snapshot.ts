@@ -391,10 +391,16 @@ export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
   const raw = getProjectedSnapshotAgents(deps);
   // Preserve identity when no provider is wired — callers (and tests) that
   // assert reference equality on the bare monitor snapshot stay green.
-  if (!deps.activityMetaProvider) return raw;
+  const reapSource = reapWarningProjectionSource;
+  if (!deps.activityMetaProvider && !reapSource) return raw;
+  const nowMs = Date.now();
   return raw.map((agent) => {
-    const activityMeta = deps.activityMetaProvider!.getActivityMeta(agent.agentId);
-    return activityMeta ? { ...agent, activityMeta } : agent;
+    const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
+    // Issue #4241: `GET /api/snapshot` (read by `kookr peek`) carries the same
+    // pending-close warning and keep-alive as the WebSocket snapshot.
+    const reapWarning = agent.taskId && reapSource ? reapSource.view(agent.taskId, nowMs) : undefined;
+    if (!activityMeta && !reapWarning) return agent;
+    return { ...agent, ...(activityMeta ? { activityMeta } : {}), ...(reapWarning ? { reapWarning } : {}) };
   });
 }
 

@@ -75,7 +75,11 @@ function ReapWarningBanner({
           ) : (
             <>
               <strong>“{label}” looks hung</strong>
-              {hours >= 1 ? ` — no activity for ${hours}h.` : ' — no recent activity.'}
+              {hours >= 1
+                ? ` — no activity for ${hours}h.`
+                : warning.kind === 'hung_suspect_ttl'
+                  ? ` — no activity for ${waitingMin}m.`
+                  : ' — no recent activity.'}
             </>
           )}
         </div>
@@ -93,6 +97,11 @@ function ReapWarningBanner({
               {warning.keptAliveCount > 0 ? ` (kept alive ${warning.keptAliveCount}×)` : ''}</>
           )}
         </div>
+        {warning.keptAliveBy ? (
+          <div className="reap-warning-detail reap-warning-kept-alive">
+            Kept alive by {warning.keptAliveBy.actorName} until {formatClock(warning.keptAliveBy.untilMs)}: {warning.keptAliveBy.reason}
+          </div>
+        ) : null}
       </div>
       <button
         type="button"
@@ -107,6 +116,11 @@ function ReapWarningBanner({
       </button>
     </div>
   );
+}
+
+function formatClock(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function formatCountdown(ms: number): string {

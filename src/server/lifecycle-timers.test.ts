@@ -3390,6 +3390,27 @@ describe('reap-warning grace phase (RFC rfc-reap-grace-warning.md)', () => {
     expect(coordinator.getWarning(task.id)).toBeDefined();
   });
 
+  test('leaves a task alone while the hungSuspect TTL reclaim holds a live warning or keep-alive (issue #4241)', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-warn-ttl';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const ttlCoordinator = new ReapWarningCoordinator();
+    ttlCoordinator.advance({
+      taskId: task.id, agentId, silentForMs: REAP_THRESHOLD_MS, now: NOW, graceMs: 60 * 60_000, present: false,
+    });
+    const deps = timerDeps(coordinator, { watchdog, hungSuspectTtlReapWarningCoordinator: ttlCoordinator });
+
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW + 1));
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(coordinator.getWarning(task.id)).toBeUndefined();
+
+    // Once the TTL deadline has passed, the 3h reaper's own grace phase runs again.
+    await maybeReapHungTask(agentId, 'pane', deps, taskStore, lifecycleDeps(taskStore), () => new Date(NOW + 60 * 60_000 + 1));
+    expect(coordinator.getWarning(task.id)).toBeDefined();
+  });
+
   test('reaps once the grace deadline passes', async () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-warn-2';

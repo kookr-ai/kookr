@@ -220,6 +220,12 @@ export async function applySettingsSideEffects({
       + `(was ${prevSettings.hungSuspectTtlMinutes}min)`,
     );
   }
+  if (prevSettings.hungSuspectTtlReclaimGraceSeconds !== newSettings.hungSuspectTtlReclaimGraceSeconds) {
+    console.log(
+      `[settings] hungSuspectTtlReclaimGraceSeconds → ${newSettings.hungSuspectTtlReclaimGraceSeconds}s `
+      + `(was ${prevSettings.hungSuspectTtlReclaimGraceSeconds}s)`,
+    );
+  }
   if (prevSettings.spawnBurstLimit !== newSettings.spawnBurstLimit) {
     console.log(
       `[settings] spawnBurstLimit → ${newSettings.spawnBurstLimit} `
