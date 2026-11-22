@@ -19,7 +19,7 @@ Read the readme-excellence skill before anything else: load it with the Skill to
 session), use the newest installed copy:
 
 ```bash
-f=$(find ~/.claude/plugins -path '*skills/readme-excellence/SKILL.md' 2>/dev/null | xargs -r ls -t | head -1)
+f=$(find ~/.claude/plugins -path '*skills/readme-excellence/SKILL.md' -exec ls -t {} + 2>/dev/null | head -1)
 echo "${f:-NOT FOUND}"
 ```
 

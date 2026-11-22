@@ -25,7 +25,7 @@ researched: check them yourself before claiming anything about them.
 | `<video>` tag | Rendered | Unknown | No source | Same as above. Never make video the only carrier of a fact |
 | Relative links and images (`./assets/x.png`, `docs/guide.md`) | Resolve against the file and branch [documented, [GitHub docs][gh-readme]] | npm appears to rewrite them to the repository URL | Practitioner ([npm/www#272][www272]). Images break when the `repository` field is missing or wrong, the repo is private, or the package's `files` list leaves the images out ([fenix-cli#40][fenix]) | Use absolute URLs for images (raw.githubusercontent.com or a CDN) and for links to files outside the package |
 | In-page anchors (`[x](#section)`, `<a id="…">`) | Headings get ids, and in-page links jump to them [documented, [GitHub docs][gh-readme]] | Unknown | **No source found**; not observed | Check one in-page link on the live npm page after the next publish. Never make an in-page link the only route to an install step or a caveat |
-| Which version's README is shown | The file on the default branch | The README of the **last published version**, so a fix reaches npm only after the next release | **Observed once** (2026-11, one package: `npm view <pkg> readme` returned the published copy, which differed from the README at HEAD although both carried the same version number in `package.json`). No official statement found | Read the registry copy with `printf %s "$(npm view <pkg> readme)" > npm-copy.md` (this drops the newline the CLI appends) and run the cut script on it. A copy of exactly 65,536 characters was almost certainly cut; read its "fence OPEN" line. In the report, say which fixes reach npm only after a release |
+| Which version's README is shown | The file on the default branch | The README of the **last published version**, so a fix reaches npm only after the next release | **Observed once** (2026-11, one package: `npm view <pkg> readme` returned the published copy, which differed from the README at HEAD although both carried the same version number in `package.json`). No official statement found | Read the registry copy with `printf %s "$(npm view <pkg> readme)" > npm-copy.md` (this strips every trailing newline, so a copy cut just after a newline reads one character short of 65,536) and run the cut script on it. A copy of exactly 65,536 characters was almost certainly cut; read its "fence OPEN" line. In the report, say which fixes reach npm only after a release |
 | GitHub alerts (`> [!NOTE]`, `> [!IMPORTANT]`) | Rendered as coloured callouts | Unknown; may show the literal `[!NOTE]` text | **No source at all**; not observed | Write the warning as a plain bold sentence that reads correctly either way |
 | `<details>` / `<summary>` | Rendered as a collapsible block | Unknown | No source | Never hide the only copy of an install step or a caveat inside it |
 | `<picture>` with light and dark sources | Supported [documented, [GitHub blog][gh-picture]] | One community post implies npm honours the sources (inferred, not stated): npm sets no color-scheme, so dark images show on a dark OS ([discussion][picture-npm]) | Practitioner, single source | Make the fallback `<img>` readable on both light and dark backgrounds |
@@ -48,8 +48,12 @@ researched: check them yourself before claiming anything about them.
 ```bash
 wc -m README.md                       # npm budget, in characters (UTF-8 locale only; see below)
 grep -nE '```mermaid|<video|user-attachments|\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]|<details' README.md
-grep -nE '\]\((\./|\.\./|[a-z][a-z0-9_-]*/)[^)]*\)|src="(\./|\.\./|[a-z][a-z0-9_-]*/)' README.md   # relative links and images
+grep -noE '\]\([^)]*\)|src="[^"]*"' README.md | grep -vE '\((#|[a-zA-Z][a-zA-Z0-9+.-]*:)|src="(#|[a-zA-Z][a-zA-Z0-9+.-]*:)'   # relative links and images
 ```
+
+The last check prints every Markdown link target and `src="…"` value that has no URL scheme and is
+not an in-page `#anchor`. It does not see `href="…"` attributes or reference-style definitions
+(`[label]: path`); grep for those by hand.
 
 `wc -m` counts characters only under a UTF-8 locale. Under `LC_ALL=C` it returns the byte count
 (checked 2026-11-22 with GNU coreutils: a 64,541-character README read as 65,086). `wc -c` always
