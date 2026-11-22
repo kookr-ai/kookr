@@ -16,7 +16,11 @@ import { ReapWarningCoordinator, MAX_REAP_VETOES } from '../core/reap-warning-co
 import { formatClockTime, formatReclaimWarningLine } from '../core/long-running-jobs.js';
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
-import { reclaimAgedHungSuspectTasks, type ReclaimHungSuspectTasksDeps } from './hung-suspect-ttl-sweep.js';
+import {
+  reclaimAgedHungSuspectTasks,
+  HungSuspectTtlReclaimMetrics,
+  type ReclaimHungSuspectTasksDeps,
+} from './hung-suspect-ttl-sweep.js';
 import { registerKeepAliveRoutes } from './routes/keep-alive-routes.js';
 
 vi.mock('../adapters/git-worktree.js', () => ({
@@ -48,9 +52,9 @@ function makeStore(tasks: Task[]) {
   } as any;
 }
 
-function lifecycleDeps(taskStore: any): LifecycleDeps {
+function lifecycleDeps(taskStore: any, stop: () => Promise<void> = async () => undefined): LifecycleDeps {
   return {
-    adapter: { stop: vi.fn().mockResolvedValue(undefined) },
+    adapter: { stop: vi.fn(stop) },
     monitor: { unregisterAgent: vi.fn() },
     taskStore,
     interactionLog: { append: vi.fn().mockResolvedValue(undefined) } as any,
@@ -105,7 +109,7 @@ describe('hungSuspect TTL reclaim: warn the parent, let it keep the worker alive
     await rm(dir, { recursive: true, force: true });
   });
 
-  const sweep = (at: number) => {
+  const sweep = (at: number, over: Partial<ReclaimHungSuspectTasksDeps> = {}) => {
     const deps: ReclaimHungSuspectTasksDeps = {
       taskStore,
       lifecycleDeps: lifecycleDeps(taskStore),
@@ -119,6 +123,7 @@ describe('hungSuspect TTL reclaim: warn the parent, let it keep the worker alive
       sendLineToSession,
       reapWarningCoordinator: coordinator,
       getGraceMs: () => GRACE_MS,
+      ...over,
     };
     return reclaimAgedHungSuspectTasks(deps, { now: new Date(at), ttlMs: TTL_MS, longRunningJobCapMs: 1 });
   };
@@ -180,6 +185,103 @@ describe('hungSuspect TTL reclaim: warn the parent, let it keep the worker alive
     const reclaimed = (await auditTypes()).find((r) => r.type === 'task.hungSuspectTtlReclaimed');
     expect(reclaimed).toMatchObject({ keptAliveCount: 1, keptAliveBy: { actor: 'task:lead-1', reason: 'waiting on the eval' } });
     expect((await auditTypes()).some((r) => r.type === 'task.hungSuspectTtlReapKeptAlive' && r.actor === 'task:lead-1')).toBe(true);
+  });
+
+  it('writes the keep-alive into the disposition-ledger entry', async () => {
+    const dispositionLedgerPath = join(dir, 'disposition.jsonl');
+    await sweep(START, { dispositionLedgerPath });
+    clock = START + 60_000;
+    expect((await keepAlive({ forMs: 10 * 60_000, reason: 'waiting on review', callerTaskId: 'lead-1' })).status).toBe(200);
+    await sweep(clock + 10 * 60_000, { dispositionLedgerPath });
+    const entry = JSON.parse((await readFile(dispositionLedgerPath, 'utf8')).trim().split('\n').at(-1)!);
+    expect(entry).toMatchObject({ taskId: WORKER_ID, disposition: 'needs-human' });
+    expect(entry.detail).toContain('Kept alive by the lead until');
+    expect(entry.detail).toContain('waiting on review');
+  });
+
+  it('after a failed close, the re-warn types no parent line and writes no warned row', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const failing = lifecycleDeps(taskStore, async () => { throw new Error('tmux gone'); });
+      await sweep(START, { lifecycleDeps: failing });
+      const failed = await sweep(START + GRACE_MS, { lifecycleDeps: failing });
+      expect(failed.reclaimedTaskIds).toEqual([]);
+      expect(sendLineToSession).toHaveBeenCalledTimes(1);
+
+      const rewarn = await sweep(START + GRACE_MS + 60_000, { lifecycleDeps: failing });
+      expect(rewarn.warnedTaskIds).toEqual([]);
+      expect(sendLineToSession).toHaveBeenCalledTimes(1);
+      expect((await auditTypes()).filter((r) => r.type === 'task.hungSuspectTtlReapWarned')).toHaveLength(1);
+      // The countdown still runs, so the close is retried after the grace.
+      expect(coordinator.getWarning(WORKER_ID)).toBeDefined();
+      const retried = await sweep(START + 2 * GRACE_MS + 60_000);
+      expect(retried.reclaimedTaskIds).toEqual([WORKER_ID]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('tells no parent that is not running, but still warns', async () => {
+    lead.status = 'completed';
+    const result = await sweep(START);
+    expect(result.warnedTaskIds).toEqual([WORKER_ID]);
+    expect(sendLineToSession).not.toHaveBeenCalled();
+    expect((await auditTypes())[0]).toMatchObject({ parentTaskId: 'lead-1', parentNotified: false });
+  });
+
+  it('counts only real close attempts, not warned or waiting tasks', async () => {
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    await sweep(START, { metrics });
+    await sweep(START + 60_000, { metrics });
+    expect(metrics.getSnapshot().reclaimAttempted).toBe(0);
+    await sweep(START + GRACE_MS, { metrics });
+    expect(metrics.getSnapshot().reclaimAttempted).toBe(1);
+  });
+
+  it('a keep-alive shorter than the time already left changes nothing and says so', async () => {
+    await sweep(START);
+    expect((await keepAlive({ forMs: 60 * 60_000, reason: 'long eval', callerTaskId: 'lead-1' })).status).toBe(200);
+    clock = START + 10 * 60_000;
+    const res = await keepAlive({ forMs: 30 * 60_000, reason: 'still waiting', callerTaskId: 'lead-1' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      unchanged: true,
+      deadlineAt: new Date(START + 60 * 60_000).toISOString(),
+      keptAliveCount: 1,
+    });
+    expect(coordinator.getWarning(WORKER_ID)?.keptAliveBy?.reason).toBe('long eval');
+  });
+
+  it('answers 409 for a finished task and for an ambiguous prefix', async () => {
+    await sweep(START);
+    worker.status = 'completed';
+    expect(await (await keepAlive({ forMs: 60_000, reason: 'x', callerTaskId: 'lead-1' })).json())
+      .toMatchObject({ code: 'task_not_active' });
+    tasksForAmbiguity();
+    const res = await keepAlive({ forMs: 60_000, reason: 'x' }, 'a1b2c3d4');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'ambiguous' });
+  });
+
+  function tasksForAmbiguity(): void {
+    const twin = aTask({ id: 'a1b2c3d4-ffff-4000-8000-000000000002', status: 'inProgress' });
+    taskStore.viewTasks.mockReturnValue([lead, worker, unrelated, twin]);
+  }
+
+  it('pushes a snapshot after an accepted keep-alive', async () => {
+    const broadcastSnapshot = vi.fn();
+    const withBroadcast = new Hono();
+    registerKeepAliveRoutes(withBroadcast, {
+      taskStore, hungSuspectTtlReapWarningCoordinator: coordinator, broadcastSnapshot, now: () => START,
+    });
+    await sweep(START);
+    const res = await withBroadcast.request(`/api/tasks/${WORKER_ID}/keep-alive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forMs: 30 * 60_000, reason: 'x' }),
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('warning → no keep-alive → reclaim once the grace passes', async () => {
@@ -250,7 +352,8 @@ describe('hungSuspect TTL reclaim: warn the parent, let it keep the worker alive
       reapWarningCoordinator: coordinator,
       getGraceMs: () => GRACE_MS,
     };
-    await reclaimAgedHungSuspectTasks(deps, { now: new Date(START + 60_000), ttlMs: TTL_MS });
+    const result = await reclaimAgedHungSuspectTasks(deps, { now: new Date(START + 60_000), ttlMs: TTL_MS });
+    expect(result.clearedWarningTaskIds).toEqual([WORKER_ID]);
     expect(coordinator.getWarning(WORKER_ID)).toBeUndefined();
     expect((await auditTypes()).at(-1)).toMatchObject({ type: 'task.hungSuspectTtlReapWarningCleared', reason: 'recovered' });
   });

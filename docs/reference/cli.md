@@ -1722,7 +1722,8 @@ taken on trust: the rule stops an agent from extending a task by mistake.
 extensions, dashboard "Keep it alive" clicks included. No deadline goes past 12
 hours of silence (`longRunningJobReclaimCapHours`, the cap #4237 set for the
 long-running-job hold). Past either cap the call is refused with a message
-naming the deadline, and the close goes ahead then.
+naming the deadline, and the close goes ahead then. Asking for less time than
+is already left changes nothing and says so.
 
 **Where it shows.** The keep-alive (who, until when, why) appears in the
 dashboard banner, in `kookr peek`, in the `task.hungSuspectTtlReapKeptAlive`

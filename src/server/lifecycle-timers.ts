@@ -2545,6 +2545,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
         || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0
         || (hungSuspectTtlResult?.reclaimedTaskIds.length ?? 0) > 0
+        // Issue #4241: a new or dropped TTL warning changes the banner.
+        || (hungSuspectTtlResult?.warnedTaskIds?.length ?? 0) > 0
+        || (hungSuspectTtlResult?.clearedWarningTaskIds?.length ?? 0) > 0
         || (providerPausedTtlResult?.reclaimedTaskIds.length ?? 0) > 0
         || orphanLoopsFailed > 0
         || promotedPending > 0

@@ -22,6 +22,8 @@ export interface KeepAliveRouteDeps {
   reapWarningCoordinator?: ReapWarningCoordinator;
   /** Absolute cap on a task's silence, shared with the long-running-job hold (#4237). */
   getLongRunningJobReclaimCapMs?: () => number;
+  /** Push a fresh snapshot so the banner shows the new deadline at once. */
+  broadcastSnapshot?: () => void;
   now?: () => number;
 }
 
@@ -101,6 +103,17 @@ export function registerKeepAliveRoutes(app: Hono, deps: KeepAliveRouteDeps): vo
       actorName: auth.actorName,
       reason: parsed.reason,
     });
+    if (!result.accepted && result.reason === 'already_later' && result.warning) {
+      // The current deadline is already later than asked: nothing to change.
+      return c.json({
+        taskId: target.id,
+        reaper,
+        unchanged: true,
+        deadlineAt: new Date(result.warning.deadlineAt).toISOString(),
+        keptAliveCount: result.warning.keptAliveCount,
+        remainingKeepAlives: Math.max(0, MAX_REAP_VETOES - result.warning.keptAliveCount),
+      });
+    }
     if (!result.accepted) {
       const deadline = result.warning ? new Date(result.warning.deadlineAt).toISOString() : undefined;
       const message = result.reason === 'cap_reached'
@@ -125,6 +138,7 @@ export function registerKeepAliveRoutes(app: Hono, deps: KeepAliveRouteDeps): vo
       deadlineAt: until,
       keptAliveCount: result.warning.keptAliveCount,
     });
+    deps.broadcastSnapshot?.();
     return c.json({
       taskId: target.id,
       reaper,

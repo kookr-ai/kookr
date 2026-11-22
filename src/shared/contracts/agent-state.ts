@@ -195,8 +195,8 @@ export interface ReapWarningState {
    *  - `'hung_suspect_ttl'` — the hungSuspect TTL reclaim (#4241): the task
    *    has been silent past `hungSuspectTtlMinutes` and will be closed. Its
    *    parent task is told and may extend it with `kookr keep-alive`.
-   * The 3-hour reaper and the TTL reclaim can both warn a silent task; the
-   * snapshot carries whichever deadline is sooner.
+   * While the TTL reclaim holds a warning, the 3-hour reaper leaves the task
+   * alone; if both ever hold one, the snapshot carries the TTL warning.
    */
   kind?: 'hung_task' | 'finished_awaiting_ack' | 'hung_suspect_ttl';
   /** Milliseconds until the reap deadline, at snapshot-build time. */

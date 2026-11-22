@@ -196,6 +196,14 @@ export async function runKeepAliveCli(argv: string[], io: KeepAliveCliIo = {}): 
   if (status >= 200 && status < 300) {
     const deadline = typeof parsed.deadlineAt === 'string' ? parsed.deadlineAt : 'unknown';
     const left = typeof parsed.remainingKeepAlives === 'number' ? parsed.remainingKeepAlives : undefined;
+    if (parsed.unchanged === true) {
+      return report(EXIT_OK, {
+        ok: true,
+        code: 'UNCHANGED',
+        message: `Task ${String(parsed.taskId ?? args.taskRef)} is already kept alive until ${deadline}; nothing changed.`,
+        details: parsed,
+      });
+    }
     return report(EXIT_OK, {
       ok: true,
       code: 'OK',

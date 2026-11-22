@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { registerDiagnosticsRoutes } from './routes/diagnostics-routes.js';
 import { registerKeepAliveRoutes } from './routes/keep-alive-routes.js';
+import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { registerObservedActivityRoutes } from './routes/observed-activity-routes.js';
 import { registerDelegationRoutes } from './delegation/routes.js';
 import { registerMetricsRoutes } from './routes/metrics-routes.js';
@@ -185,7 +186,15 @@ export function createRoutes(deps: RouteDeps): Hono {
   const taskLifecycleCommands = createTaskRouteLifecycleCommands(taskRouteDeps);
   registerTaskRoutes(app, { ...taskRouteDeps, lifecycleCommands: taskLifecycleCommands });
   // Issue #4241: a parent task or the operator extends a warned task's deadline.
-  registerKeepAliveRoutes(app, sharedDeps);
+  registerKeepAliveRoutes(app, {
+    ...sharedDeps,
+    broadcastSnapshot: () => sharedDeps.broadcastToAll(createSnapshotMessage({
+      monitor: sharedDeps.monitor,
+      serverCwd: sharedDeps.serverCwd,
+      activityMetaProvider: sharedDeps.hookIngestion,
+      relationTaskStore: sharedDeps.taskStore,
+    })),
+  });
   if (sharedDeps.interruptedTasks) {
     sharedDeps.interruptedTasks.bindReopen((taskId) =>
       taskLifecycleCommands.reopenTask(taskId, { actor: { source: 'api', actorId: 'kookr:interrupted-tasks' } }));

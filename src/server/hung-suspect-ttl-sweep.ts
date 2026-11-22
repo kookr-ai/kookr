@@ -357,6 +357,8 @@ export interface ReclaimHungSuspectTasksResult {
   reclaimedTaskIds: string[];
   /** Tasks newly warned on this pass (issue #4241). */
   warnedTaskIds?: string[];
+  /** Tasks whose warning this pass dropped (issue #4241). */
+  clearedWarningTaskIds?: string[];
   /** Selection snapshot from this pass (for tests / residual alerter). */
   selection?: {
     candidatesConsidered: number;
@@ -520,7 +522,6 @@ export async function reclaimAgedHungSuspectTasks(
   });
 
   deps.metrics?.recordSelection(selection);
-  deps.metrics?.recordAttempted(selection.expired.length);
 
   const reclaimedTaskIds: string[] = [];
   const warnedTaskIds: string[] = [];
@@ -539,10 +540,11 @@ export async function reclaimAgedHungSuspectTasks(
   const coordinator = deps.reapWarningCoordinator;
   const graceMs = Math.max(0, deps.getGraceMs?.() ?? DEFAULT_HUNG_SUSPECT_TTL_GRACE_SECONDS * 1000);
   const warnedPhase = coordinator !== undefined && graceMs > 0;
-  if (coordinator) {
-    await clearUnselectedWarnings(coordinator, selection.expired, deps, warnedPhase);
-  }
+  const clearedWarningTaskIds = coordinator
+    ? await clearUnselectedWarnings(coordinator, selection.expired, deps, warnedPhase)
+    : [];
   const failedReapAt = coordinator ? failedReapAtFor(coordinator) : undefined;
+  let attempted = 0;
 
   for (const { task, silentForMs } of selection.expired) {
     let warning: ReapWarning | undefined;
@@ -571,6 +573,7 @@ export async function reclaimAgedHungSuspectTasks(
     // Attribute delivery BEFORE terminating so a task that already merged its
     // PR is recorded as delivered_then_hung rather than masking delivery.
     const storeMerged = readStoreDeliveredPr(task, deps.resolveMergedPr, '[hung-suspect-ttl]');
+    attempted += 1;
 
     try {
       await terminateTask(task.id, lifecycleDeps, {
@@ -595,6 +598,10 @@ export async function reclaimAgedHungSuspectTasks(
     failedReapAt?.delete(task.id);
     terminated.push({ task, silentForMs, storeMerged, ...(warning ? { warning } : {}) });
   }
+
+  // Count only the tasks this pass tried to terminate: a warned or waiting
+  // task is not a reclaim attempt (issue #4241).
+  deps.metrics?.recordAttempted(attempted);
 
   // The in-memory attribution can miss a PR the task really merged (issue
   // #3578, task 02107c4f), so ask GitHub by branch. Every terminate above has
@@ -690,6 +697,7 @@ export async function reclaimAgedHungSuspectTasks(
   return {
     reclaimedTaskIds,
     warnedTaskIds,
+    clearedWarningTaskIds,
     selection: {
       candidatesConsidered: selection.candidatesConsidered,
       skips: selection.skips,
@@ -751,13 +759,16 @@ async function clearUnselectedWarnings(
   expired: ReadonlyArray<{ task: Task }>,
   deps: ReclaimHungSuspectTasksDeps,
   warnedPhase: boolean,
-): Promise<void> {
+): Promise<string[]> {
   const selected = new Set(expired.map(({ task }) => task.id));
+  const cleared: string[] = [];
   for (const taskId of coordinator.warnedTaskIds()) {
     if (warnedPhase && selected.has(taskId)) continue;
     const task = deps.taskStore.getTask(taskId);
     const reason = !warnedPhase ? 'disabled' : !task || task.status !== 'inProgress' ? 'gone' : 'recovered';
     if (!coordinator.clear(taskId, reason)) continue;
+    cleared.push(taskId);
+    failedReapAtFor(coordinator).delete(taskId);
     await appendAuditRow(deps.auditLogPath, {
       type: 'task.hungSuspectTtlReapWarningCleared',
       timestamp: nowISO(),
@@ -766,6 +777,7 @@ async function clearUnselectedWarnings(
       reason,
     });
   }
+  return cleared;
 }
 
 /**

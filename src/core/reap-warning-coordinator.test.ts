@@ -260,6 +260,16 @@ describe('ReapWarningCoordinator.agentVeto (issue #4241)', () => {
     expect(r).toMatchObject({ accepted: false, reason: 'cap_reached' });
   });
 
+  it('changes nothing and counts nothing when the deadline is already later', () => {
+    const c = new ReapWarningCoordinator();
+    c.advance(base({ now: NOW }));
+    c.agentVeto('t1', veto({ extensionMs: 60 * 60_000 }));
+    const r = c.agentVeto('t1', veto({ now: NOW + 10 * 60_000, extensionMs: 30 * 60_000 }));
+    expect(r).toMatchObject({ accepted: false, reason: 'already_later' });
+    expect(c.getWarning('t1')?.keptAliveCount).toBe(1);
+    expect(c.getWarning('t1')?.deadlineAt).toBe(NOW + 60 * 60_000);
+  });
+
   it('refuses when there is no warning', () => {
     const c = new ReapWarningCoordinator();
     expect(c.agentVeto('t1', veto())).toEqual({ accepted: false, reason: 'no_warning' });

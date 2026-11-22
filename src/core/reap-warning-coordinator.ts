@@ -114,7 +114,11 @@ export type ReapVetoResult =
 
 export type ReapAgentVetoResult =
   | { accepted: true; warning: ReapWarning }
-  | { accepted: false; reason: 'no_warning' | 'cap_reached' | 'ceiling_reached'; warning?: ReapWarning };
+  | {
+      accepted: false;
+      reason: 'no_warning' | 'cap_reached' | 'ceiling_reached' | 'already_later';
+      warning?: ReapWarning;
+    };
 
 /** Client-facing projection of a warning, carried on `AgentState.reapWarning`. */
 export interface ReapWarningView {
@@ -277,10 +281,11 @@ export class ReapWarningCoordinator {
    * (issue #4241). Unlike {@link veto}, the caller picks the extension, clamped
    * to {@link MAX_AGENT_KEEP_ALIVE_MS}, and the new deadline is clamped to
    * `ceilingAt` (absolute, ms since epoch). The extension counts against the
-   * same {@link MAX_REAP_VETOES} per-cycle cap as the dashboard veto. Refused
-   * with `ceiling_reached` when the clamped deadline would not move past the
-   * current one, so the caller learns the cap is spent instead of being told
-   * it succeeded.
+   * same {@link MAX_REAP_VETOES} per-cycle cap as the dashboard veto. When the
+   * current deadline is already later than `now + extension`, nothing changes
+   * and no extension is counted (`already_later`). When only the ceiling stops
+   * the deadline from moving, it is refused with `ceiling_reached`, so the
+   * caller learns the cap is spent instead of being told it succeeded.
    */
   agentVeto(
     taskId: string,
@@ -303,6 +308,9 @@ export class ReapWarningCoordinator {
       return { accepted: false, reason: 'cap_reached', warning: w };
     }
     const extensionMs = Math.max(0, Math.min(MAX_AGENT_KEEP_ALIVE_MS, input.extensionMs));
+    if (input.now + extensionMs <= w.deadlineAt && w.deadlineAt <= input.ceilingAt) {
+      return { accepted: false, reason: 'already_later', warning: w };
+    }
     const target = Math.min(input.now + extensionMs, input.ceilingAt);
     if (target <= w.deadlineAt || target <= input.now) {
       this.metrics.vetoRejectedTotal += 1;
