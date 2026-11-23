@@ -38,6 +38,13 @@ import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from '../core/resource-watchdog-eva
 import type { ResourceWatchdogHealthSnapshot } from '../core/resource-watchdog-types.js';
 import { checkPipelineStarvationState } from './doctor-pipeline-starvation-state.js';
 import { findPlaybookTierShadows, type PlaybookTierShadow } from '../core/playbook-discovery.js';
+import {
+  describeScheduleRun,
+  describeTierCopies,
+  readEnabledSchedules,
+  scheduleRunsForShadow,
+  type TierCheckSchedules,
+} from './kookr-playbook.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -413,6 +420,14 @@ interface RunDoctorDeps {
    * hermetic runs.
    */
   findPlaybookTierShadows?: (cwd: string) => Promise<PlaybookTierShadow[]>;
+  /**
+   * Optional override for reading the enabled schedules the tier-copy check
+   * matches against (issue #4228). Defaults to `schedules.json` in the
+   * server's port-derived data dir ({@link resolveKookrDataDir}, not the
+   * doctor-only `KOOKR_DIR`, which the server ignores).
+   * Tests inject a fixture so the host's real schedules never leak in.
+   */
+  readTierCheckSchedules?: (env: NodeJS.ProcessEnv) => Promise<TierCheckSchedules>;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -617,6 +632,8 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   const playbookTierCheck = await checkPlaybookTierCopies(
     cwd,
     deps.findPlaybookTierShadows ?? findPlaybookTierShadows,
+    () => (deps.readTierCheckSchedules
+      ?? ((readEnv: NodeJS.ProcessEnv) => readEnabledSchedules(resolveKookrDataDir(readEnv))))(env),
   );
   if (playbookTierCheck) checks.push(playbookTierCheck);
 
@@ -3175,15 +3192,20 @@ function launchDependencyCheckFromFinding(id: string, label: string, finding: La
 /**
  * Advisory check (issue #4142): WARN when a playbook file name exists in more
  * than one tier (project `<cwd>/.kookr/playbooks`, user `~/.kookr/playbooks`,
- * plugin) and the copies differ. Only the highest tier's copy runs; the others
- * are ignored without notice, so an edit to the ignored copy changes nothing.
- * Identical copies are reported in the OK summary only. The project tier is
- * read from the doctor's cwd. A discovery error skips the check (returns null):
- * this check must never fail doctor.
+ * plugin) and the copies differ. A launch from the doctor's cwd runs the
+ * highest tier's copy. An enabled schedule runs the one tier it pins
+ * (`playbook.scope`), or the project tier of its own cwd when unpinned, so the
+ * check lists each such schedule and the copy it runs, and calls a copy
+ * "ignored" only when no enabled schedule runs it (issue #4228). An edit to an
+ * ignored copy changes nothing. Identical copies are reported in the OK
+ * summary only. A discovery error skips the check (returns null), and an
+ * unreadable schedule file only drops the "ignored" verdicts: this check must
+ * never fail doctor.
  */
 async function checkPlaybookTierCopies(
   cwd: string,
   findShadows: (cwd: string) => Promise<PlaybookTierShadow[]>,
+  readSchedules: () => Promise<TierCheckSchedules>,
 ): Promise<DoctorCheck | null> {
   let shadows: PlaybookTierShadow[];
   try {
@@ -3206,11 +3228,24 @@ async function checkPlaybookTierCopies(
       false,
     );
   }
-  const names = differing.map((shadow) => {
-    const [winner, ...ignored] = shadow.copies;
-    return `${shadow.id} (${winner!.scope} runs; ${ignored.map((copy) => copy.scope).join(', ')} ignored)`;
-  });
-  const files = differing.map((shadow) => shadow.copies.map((copy) => `${copy.scope}: ${copy.filePath}`).join(' vs '));
+  let schedules: TierCheckSchedules;
+  try {
+    schedules = await readSchedules();
+  } catch (err) {
+    schedules = { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  const names: string[] = [];
+  const files: string[] = [];
+  for (const shadow of differing) {
+    const runs = schedules.ok ? scheduleRunsForShadow(shadow, schedules.schedules) : undefined;
+    names.push(`${shadow.id} (${describeTierCopies(shadow, runs)})`);
+    const copies = shadow.copies.map((copy) => `${copy.scope}: ${copy.filePath}`).join(' vs ');
+    const scheduled = (runs ?? []).map(describeScheduleRun);
+    files.push(scheduled.length > 0 ? `${copies} (${scheduled.join('; ')})` : copies);
+  }
+  const schedulesNote = schedules.ok
+    ? ''
+    : ` Schedules not read (${schedules.error}), so no copy is called ignored: a schedule may run it.`;
   return {
     id,
     label,
@@ -3218,10 +3253,12 @@ async function checkPlaybookTierCopies(
     status: 'warn',
     required: false,
     summary: `${differing.length} playbook(s) have a different copy in another tier: ${names.join(', ')}`,
-    detail: `${files.join('; ')}. Project tier read from ${join(cwd, '.kookr', 'playbooks')}.`,
+    detail: `${files.join('; ')}. Project tier read from ${join(cwd, '.kookr', 'playbooks')}.${schedulesNote}`,
     recommendedAction:
       'Keep one copy of each playbook: delete the copy you no longer maintain, or make the copies identical. '
-      + 'Only the first tier runs (project > user > plugin); `kookr playbook list` shows every tier.',
+      + 'A launch from this directory runs the first tier (project > user > plugin); a schedule runs the tier '
+      + 'it pins (`kookr schedule list --json` shows playbook.scope), or the project tier of its own cwd when '
+      + 'unpinned. Edit the copy that runs; `kookr playbook list` shows every tier.',
   };
 }
 

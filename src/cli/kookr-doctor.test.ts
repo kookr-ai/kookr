@@ -108,6 +108,8 @@ const hermeticOps = {
   // No playbook copies in other tiers, so the host's ~/.kookr/playbooks and the
   // installed plugin never leak into hermetic runs (issue #4142).
   findPlaybookTierShadows: async () => [],
+  // No schedules, so the host's real schedules.json never leaks in (issue #4228).
+  readTierCheckSchedules: async () => ({ ok: true as const, schedules: [] }),
 };
 
 function hostStaleSnap(
@@ -3849,5 +3851,186 @@ describe('kookr doctor playbooks.tier-copies (issue #4142)', () => {
     });
     expect(report.checks.some((c) => c.id === 'playbooks.tier-copies')).toBe(false);
     expect(report.status).toBe('ok');
+  });
+});
+
+// Issue #4228: a schedule runs the one tier it pins (`playbook.scope`), or the
+// project tier of its own cwd when it has no pin — never the default order. The
+// check must name the copy each enabled schedule runs and call a copy ignored
+// only when no enabled schedule runs it.
+describe('kookr doctor playbooks.tier-copies names the copy each schedule runs (issue #4228)', () => {
+  const PROJECT_COPY = '---\nname: Queue Feeder\n---\nProject body.\n';
+  const USER_COPY = '---\nname: Queue Feeder\n---\nUser body.\n';
+  const ID = 'queue-feeder.md';
+
+  interface Fixture {
+    root: string;
+    cwd: string;
+    elsewhere: string;
+    userDir: string;
+    restore: () => void;
+  }
+
+  /** A project copy in `cwd` and a different user copy; no plugin tier. */
+  function withProjectAndUserCopies(): Fixture {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-doctor-4228-'));
+    const cwd = join(root, 'checkout');
+    const elsewhere = join(root, 'other-checkout');
+    const userDir = join(root, 'user');
+    const emptyPlugin = join(root, 'no-plugin');
+    mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+    mkdirSync(elsewhere);
+    mkdirSync(userDir);
+    mkdirSync(emptyPlugin);
+    writeFileSync(join(cwd, '.kookr', 'playbooks', ID), PROJECT_COPY);
+    writeFileSync(join(userDir, ID), USER_COPY);
+    const saved = { user: process.env.KOOKR_USER_PLAYBOOKS_DIR, plugin: process.env.KOOKR_PLUGIN_DIR };
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+    // An empty dir has no plugin manifest, so the plugin tier is neutralized.
+    process.env.KOOKR_PLUGIN_DIR = emptyPlugin;
+    return {
+      root,
+      cwd,
+      elsewhere,
+      userDir,
+      restore: () => {
+        if (saved.user === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+        else process.env.KOOKR_USER_PLAYBOOKS_DIR = saved.user;
+        if (saved.plugin === undefined) delete process.env.KOOKR_PLUGIN_DIR;
+        else process.env.KOOKR_PLUGIN_DIR = saved.plugin;
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  type ScheduleFixture = {
+    id: string;
+    name: string;
+    enabled?: boolean;
+    archived?: boolean;
+    cwd: string;
+    playbook: { path: string; scope?: string; sourceCwd?: string };
+  };
+
+  /** Runs doctor with the schedules read through the real `schedules.json` reader. */
+  async function tierCheck(fx: Fixture, schedules: ScheduleFixture[]) {
+    const home = join(fx.root, 'home');
+    mkdirSync(join(home, '.kookr'), { recursive: true });
+    writeFileSync(
+      join(home, '.kookr', 'schedules.json'),
+      JSON.stringify(schedules.map((schedule) => ({ cron: '0 * * * *', parameters: {}, ...schedule }))),
+    );
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: home },
+      commandRunner: commandRunner(happyFixtures()),
+      access: async () => {},
+      now: () => new Date('2026-11-23T00:00:00.000Z'),
+      ...hermeticOps,
+      cwd: fx.cwd,
+      // Real discovery and the real schedule reader on the fixture dirs.
+      findPlaybookTierShadows: undefined,
+      readTierCheckSchedules: undefined,
+    });
+    return report.checks.find((c) => c.id === 'playbooks.tier-copies');
+  }
+
+  it('a schedule pinned to user while a project copy exists runs the user copy, which is not called ignored', async () => {
+    const fx = withProjectAndUserCopies();
+    try {
+      const check = await tierCheck(fx, [
+        { id: 'feeder-1', name: 'Queue feeder', cwd: fx.elsewhere, playbook: { path: ID, scope: 'user' } },
+      ]);
+      expect(check).toMatchObject({ status: 'warn', required: false });
+      expect(check?.summary).toBe(
+        '1 playbook(s) have a different copy in another tier: '
+        + `${ID} (project runs only for launches from this directory; user runs for schedule "Queue feeder")`,
+      );
+      expect(check?.summary).not.toContain('ignored');
+      expect(check?.detail).toContain('schedule "Queue feeder" (feeder-1) runs the user copy: pinned to user');
+      expect(check?.detail).toContain(join(fx.userDir, ID));
+    } finally {
+      fx.restore();
+    }
+  });
+
+  it('a schedule with no pin runs the project copy of its own cwd, and the user copy is ignored', async () => {
+    const fx = withProjectAndUserCopies();
+    try {
+      const check = await tierCheck(fx, [
+        { id: 'nightly', name: 'Nightly', cwd: fx.cwd, playbook: { path: ID } },
+      ]);
+      expect(check?.summary).toBe(
+        '1 playbook(s) have a different copy in another tier: '
+        + `${ID} (project runs for launches from this directory and schedule "Nightly"; user ignored)`,
+      );
+      expect(check?.detail).toContain(
+        'schedule "Nightly" (nightly) runs the project copy: no pin, so the project tier of its cwd',
+      );
+    } finally {
+      fx.restore();
+    }
+  });
+
+  it('uses playbook.sourceCwd over cwd for an unpinned schedule', async () => {
+    const fx = withProjectAndUserCopies();
+    try {
+      const check = await tierCheck(fx, [
+        { id: 'src', name: 'Sourced', cwd: fx.elsewhere, playbook: { path: ID, sourceCwd: fx.cwd } },
+      ]);
+      expect(check?.summary).toContain('project runs for launches from this directory and schedule "Sourced"; user ignored');
+    } finally {
+      fx.restore();
+    }
+  });
+
+  it('does not credit this checkout\'s project copy to an unpinned schedule whose cwd is another checkout', async () => {
+    const fx = withProjectAndUserCopies();
+    try {
+      const check = await tierCheck(fx, [
+        { id: 'other', name: 'Other repo', cwd: fx.elsewhere, playbook: { path: ID } },
+      ]);
+      expect(check?.summary).toContain(`${ID} (project runs only for launches from this directory; user ignored)`);
+      expect(check?.detail).toContain(
+        `schedule "Other repo" (other) runs ${join(fx.elsewhere, '.kookr', 'playbooks', ID)} (not one of the copies compared here)`,
+      );
+    } finally {
+      fx.restore();
+    }
+  });
+
+  it('ignores disabled and archived schedules: the user copy stays ignored', async () => {
+    const fx = withProjectAndUserCopies();
+    try {
+      const check = await tierCheck(fx, [
+        { id: 'off', name: 'Off', enabled: false, cwd: fx.elsewhere, playbook: { path: ID, scope: 'user' } },
+        { id: 'gone', name: 'Gone', archived: true, cwd: fx.elsewhere, playbook: { path: ID, scope: 'user' } },
+      ]);
+      expect(check?.summary).toBe(`1 playbook(s) have a different copy in another tier: ${ID} (project runs; user ignored)`);
+      expect(check?.detail).not.toContain('schedule "');
+    } finally {
+      fx.restore();
+    }
+  });
+
+  it('calls no copy ignored when the schedules cannot be read', async () => {
+    const fx = withProjectAndUserCopies();
+    try {
+      const report = await buildDoctorJsonReport({
+        env: { ...opsOkEnv },
+        commandRunner: commandRunner(happyFixtures()),
+        access: async () => {},
+        ...hermeticOps,
+        cwd: fx.cwd,
+        findPlaybookTierShadows: undefined,
+        readTierCheckSchedules: async () => ({ ok: false as const, error: 'schedules.json: Unexpected token' }),
+      });
+      const check = report.checks.find((c) => c.id === 'playbooks.tier-copies');
+      expect(check?.summary).toContain(`${ID} (project runs only for launches from this directory; user not run from this directory)`);
+      expect(check?.summary).not.toContain('ignored');
+      expect(check?.detail).toContain('Schedules not read (schedules.json: Unexpected token)');
+      expect(report.ok).toBe(true);
+    } finally {
+      fx.restore();
+    }
   });
 });

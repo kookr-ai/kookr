@@ -242,8 +242,11 @@ describe('kookr playbook list (real discovery, no injection)', () => {
   let userDir: string;
   let projectDir: string;
   let pluginDir: string;
+  let homeDir: string;
   const savedUser = process.env.KOOKR_USER_PLAYBOOKS_DIR;
   const savedPlugin = process.env.KOOKR_PLUGIN_DIR;
+  const savedHome = process.env.HOME;
+  const savedPort = process.env.KOOKR_PORT;
 
   beforeEach(async () => {
     userDir = await mkdtemp(join(tmpdir(), 'kookr-pb-user-'));
@@ -254,6 +257,11 @@ describe('kookr playbook list (real discovery, no injection)', () => {
     pluginDir = await mkdtemp(join(tmpdir(), 'kookr-pb-plugin-'));
     process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
     process.env.KOOKR_PLUGIN_DIR = pluginDir;
+    // The default schedule read is `$HOME/.kookr/schedules.json` (issue #4228):
+    // point HOME at an empty temp dir so the host's real schedules never leak in.
+    homeDir = await mkdtemp(join(tmpdir(), 'kookr-pb-home-'));
+    process.env.HOME = homeDir;
+    delete process.env.KOOKR_PORT;
   });
 
   afterEach(async () => {
@@ -261,7 +269,12 @@ describe('kookr playbook list (real discovery, no injection)', () => {
     else process.env.KOOKR_USER_PLAYBOOKS_DIR = savedUser;
     if (savedPlugin === undefined) delete process.env.KOOKR_PLUGIN_DIR;
     else process.env.KOOKR_PLUGIN_DIR = savedPlugin;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedPort === undefined) delete process.env.KOOKR_PORT;
+    else process.env.KOOKR_PORT = savedPort;
     await Promise.all([
+      rm(homeDir, { recursive: true, force: true }),
       rm(userDir, { recursive: true, force: true }),
       rm(projectDir, { recursive: true, force: true }),
       rm(pluginDir, { recursive: true, force: true }),
@@ -313,7 +326,7 @@ describe('kookr playbook list (real discovery, no injection)', () => {
       const text = captureIo();
       expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
       expect(text.logs).toEqual([
-        'Goal Supervisor · user · Supervise · also in plugin (different content; only the user copy runs)',
+        'Goal Supervisor · user · Supervise · also in plugin (different content; user runs; plugin ignored)',
       ]);
 
       const json = captureIo();
@@ -339,6 +352,94 @@ describe('kookr playbook list (real discovery, no injection)', () => {
       expect(JSON.parse(json.logs[0]!).details.playbooks[0]).toMatchObject({
         tiers: ['user', 'plugin'], tierContentDiffers: false,
       });
+    });
+  });
+  // Issue #4228: a schedule runs the tier it pins, or the project tier of its
+  // own cwd when unpinned. The note must not call the copy it runs ignored.
+  describe('a playbook with a project copy and a different user copy, run by schedules', () => {
+    const ID = 'queue-feeder.md';
+    const PROJECT_COPY = '---\nname: Queue Feeder\ndescription: Feed\n---\nProject body.\n';
+    const USER_COPY = '---\nname: Queue Feeder\ndescription: Feed\n---\nUser body.\n';
+
+    beforeEach(async () => {
+      await mkdir(join(projectDir, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(projectDir, '.kookr', 'playbooks', ID), PROJECT_COPY);
+      await writeFile(join(userDir, ID), USER_COPY);
+    });
+
+    async function writeSchedules(schedules: unknown[]): Promise<void> {
+      await mkdir(join(homeDir, '.kookr'), { recursive: true });
+      await writeFile(join(homeDir, '.kookr', 'schedules.json'), JSON.stringify(schedules));
+    }
+
+    it('names the user copy as run by a schedule pinned to user', async () => {
+      await writeSchedules([
+        { id: 'feeder-1', name: 'Queue feeder', cron: '0 * * * *', cwd: homeDir, playbook: { path: ID, parameters: {}, scope: 'user' } },
+      ]);
+
+      const text = captureIo();
+      expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
+      expect(text.logs).toEqual([
+        'Queue Feeder · project · Feed · also in user (different content; '
+        + 'project runs only for launches from this directory; user runs for schedule "Queue feeder")',
+      ]);
+
+      const json = captureIo();
+      expect(await runPlaybookCli(['list', '--json'], { ...json, cwd: projectDir })).toBe(EXIT_OK);
+      expect(JSON.parse(json.logs[0]!).details.playbooks[0].scheduleRuns).toEqual([
+        {
+          scheduleId: 'feeder-1', name: 'Queue feeder', scope: 'user', pinned: true,
+          filePath: join(userDir, ID), copyScope: 'user',
+        },
+      ]);
+    });
+
+    it('names the project copy as run by an unpinned schedule in this checkout', async () => {
+      await writeSchedules([
+        { id: 'nightly', name: 'Nightly', cron: '0 3 * * *', cwd: projectDir, playbook: { path: ID, parameters: {} } },
+      ]);
+
+      const text = captureIo();
+      expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
+      expect(text.logs).toEqual([
+        'Queue Feeder · project · Feed · also in user (different content; '
+        + 'project runs for launches from this directory and schedule "Nightly"; user ignored)',
+      ]);
+
+      const json = captureIo();
+      expect(await runPlaybookCli(['list', '--json'], { ...json, cwd: projectDir })).toBe(EXIT_OK);
+      expect(JSON.parse(json.logs[0]!).details.playbooks[0].scheduleRuns).toEqual([
+        {
+          scheduleId: 'nightly', name: 'Nightly', scope: 'project', pinned: false,
+          filePath: join(projectDir, '.kookr', 'playbooks', ID), copyScope: 'project',
+        },
+      ]);
+    });
+
+    it('omits scheduleRuns and keeps "ignored" when no enabled schedule runs the id', async () => {
+      await writeSchedules([
+        { id: 'off', name: 'Off', enabled: false, cron: '0 * * * *', cwd: homeDir, playbook: { path: ID, parameters: {}, scope: 'user' } },
+      ]);
+
+      const text = captureIo();
+      expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
+      expect(text.logs).toEqual(['Queue Feeder · project · Feed · also in user (different content; project runs; user ignored)']);
+
+      const json = captureIo();
+      expect(await runPlaybookCli(['list', '--json'], { ...json, cwd: projectDir })).toBe(EXIT_OK);
+      expect(JSON.parse(json.logs[0]!).details.playbooks[0]).not.toHaveProperty('scheduleRuns');
+    });
+
+    it('lists the playbooks and calls nothing ignored when schedules.json is unreadable', async () => {
+      await mkdir(join(homeDir, '.kookr'), { recursive: true });
+      await writeFile(join(homeDir, '.kookr', 'schedules.json'), '{not json');
+
+      const text = captureIo();
+      expect(await runPlaybookCli(['list'], { ...text, cwd: projectDir })).toBe(EXIT_OK);
+      expect(text.logs).toEqual([
+        'Queue Feeder · project · Feed · also in user (different content; '
+        + 'project runs only for launches from this directory; user not run from this directory)',
+      ]);
     });
   });
 });
