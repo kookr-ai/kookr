@@ -319,6 +319,7 @@ describe('nb-retro Stop hook (SubagentStop is let through)', () => {
   test('only a running SUBAGENT defers the nudge: a running shell, or no/odd background_tasks, still nudges', () => {
     const env = { NB_DIR: dir };
     expect(runRetro(env, { session_id: 'sess-shell', background_tasks: [runningShell] }).code).toBe(2);
+    expect(runRetro(env, { session_id: 'sess-monitor', background_tasks: [{ id: 'm1', type: 'monitor', status: 'running' }] }).code).toBe(2);
     expect(runRetro(env, { session_id: 'sess-empty', background_tasks: [] }).code).toBe(2);
     expect(runRetro(env, { session_id: 'sess-odd', background_tasks: 'running' }).code).toBe(2);
     expect(runRetro(env, { session_id: 'sess-null-entry', background_tasks: [null] }).code).toBe(2);

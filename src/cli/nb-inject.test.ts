@@ -233,7 +233,6 @@ describe('nb-inject — a failing `nb list` is reported, not mistaken for an emp
   });
 });
 
-
 // ---- SubagentStart: the short notebook contract (issue #4231) ----------------------------
 describe('nb-inject --subagent (SubagentStart contract)', () => {
   const SH = join(process.cwd(), 'plugin/hooks/nb-inject.sh');
