@@ -32,15 +32,19 @@
  * sets to the task id, for every add and vote.
  */
 
-import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-/** Longer than a lesson (200): an idea holds a target, a problem, a change and a keeps clause. */
+/**
+ * Longer than a lesson (200): an idea holds a target, a problem, a change and a
+ * keeps clause. The folder carries it in `.nb.json` (see ensureIdeaConfig), so
+ * every `nb` that reaches the folder uses it, not only `kookr idea`.
+ */
 export const IDEA_MAX_CHARS = 400;
-/** Lines per shelf; a full shelf evicts its lowest score to admit a new idea. */
-export const IDEA_MAX_LINES = 50;
+/** The folder setting file agent-notebook 0.12.0+ reads (RFC 0530 of agent-notebook). */
+export const IDEA_CONFIG_FILE = '.nb.json';
 /** `show` prints this many ideas unless `--top` says otherwise. */
 export const DEFAULT_TOP = 30;
 /** The separator every idea must contain: `<problem> -> <change>`. */
@@ -111,8 +115,10 @@ Options:
   --json          show, list, doctor, stats: machine-readable output.
 
 The store lives in $KOOKR_IDEAS_DIR (default: ~/.kookr/ideas), one agent-notebook
-shelf per category and repository (<category>@<repo>), at most ${IDEA_MAX_LINES} ideas of
-${IDEA_MAX_CHARS} characters each. Lesson notebooks are not touched.
+shelf per category and repository (<category>@<repo>), 50 ideas per shelf (nb's
+default). The folder's ${IDEA_CONFIG_FILE} sets ideas of up to ${IDEA_MAX_CHARS} characters, for
+any nb run on it; kookr idea creates that file when it is missing. Lesson
+notebooks are not touched.
 `;
 
 export interface NbResult {
@@ -145,14 +151,101 @@ export function ideasDir(env: NodeJS.ProcessEnv, home: string = homedir()): stri
   return join(home, '.kookr', 'ideas');
 }
 
-/** The environment every `nb` call of this command runs with. */
+/**
+ * The environment every `nb` call of this command runs with: only NB_DIR is set.
+ * The line length comes from the folder's `.nb.json`, so `kookr idea` and a plain
+ * `NB_DIR=<ideas> nb ...` (the janitor, `nb doctor`, a script) read the same caps.
+ * The shelf length is not pinned either: a cap that differs between callers of one
+ * folder evicts lines on the next add, so it follows NB_MAX_LINES like any `nb`.
+ */
 export function ideaNbEnv(env: NodeJS.ProcessEnv, home?: string): NodeJS.ProcessEnv {
-  return {
-    ...env,
-    NB_DIR: ideasDir(env, home),
-    NB_MAX_CHARS: String(IDEA_MAX_CHARS),
-    NB_MAX_LINES: String(IDEA_MAX_LINES),
-  };
+  return { ...env, NB_DIR: ideasDir(env, home) };
+}
+
+// Inherited GIT_* vars would point git at another repository than `-C <dir>`
+// (for example when a test runs inside a git hook). bin/nb.js strips the same list.
+const NESTED_GIT_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_WORK_TREE',
+];
+
+/**
+ * Commit `.nb.json` when the ideas folder is a git repository and the file is not
+ * tracked yet. bin/nb.js commits only the files an nb call changed, and this file
+ * is written before nb runs, so it would otherwise stay untracked. Returns a
+ * warning when the file is git-ignored; any git failure is swallowed (the file is
+ * on disk, and the next run tries again).
+ */
+function commitIdeaConfig(dir: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (env.NB_GIT_AUTOCOMMIT === '0' || !existsSync(join(dir, '.git'))) return undefined;
+  const gitEnv: NodeJS.ProcessEnv = { ...env };
+  for (const name of NESTED_GIT_ENV_VARS) delete gitEnv[name];
+  const git = (args: string[]) =>
+    execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, env: gitEnv, encoding: 'utf8' });
+  try {
+    if (git(['ls-files', '--', IDEA_CONFIG_FILE]).trim() !== '') return undefined; // already tracked
+  } catch {
+    return undefined;
+  }
+  try {
+    git(['check-ignore', '-q', '--', IDEA_CONFIG_FILE]);
+    return `kookr idea: ${join(dir, IDEA_CONFIG_FILE)} is git-ignored, so the ideas line length is not versioned; remove it from .gitignore.`;
+  } catch (e) {
+    if ((e as { status?: number }).status !== 1) return undefined; // 1 = not ignored; anything else: git failed
+  }
+  try {
+    git(['add', '--', IDEA_CONFIG_FILE]);
+    git(['commit', '--quiet', '-m', `kookr idea: ${IDEA_CONFIG_FILE} (maxChars ${IDEA_MAX_CHARS})`, '--', IDEA_CONFIG_FILE]);
+  } catch {
+    /* fail-open: the next kookr idea run tries again */
+  }
+  return undefined;
+}
+
+/**
+ * Make sure the ideas folder carries its own line length: `<dir>/.nb.json` with
+ * `{ "maxChars": 400 }`. A missing file is created (exclusively, so two runs at
+ * once never overwrite each other). An existing file is never rewritten: if it
+ * does not set maxChars to IDEA_MAX_CHARS, the returned warning says so and nb
+ * uses whatever the file says. Returns the warnings to print (none when all is well).
+ */
+export function ensureIdeaConfig(dir: string, env: NodeJS.ProcessEnv = {}): string[] {
+  const file = join(dir, IDEA_CONFIG_FILE);
+  const warnings: string[] = [];
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ maxChars: IDEA_MAX_CHARS })}\n`, { flag: 'wx' });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') {
+      return [`kookr idea: could not create ${file} (${(e as Error).message}); ideas over 200 characters may be refused.`];
+    }
+    let maxChars: unknown;
+    try {
+      // agent-notebook accepts a UTF-8 byte-order mark, so this check does too.
+      const parsed: unknown = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+      maxChars = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as { maxChars?: unknown }).maxChars : undefined;
+    } catch {
+      maxChars = undefined;
+    }
+    if (maxChars !== IDEA_MAX_CHARS) {
+      const found = maxChars === undefined ? 'no valid maxChars' : `maxChars ${JSON.stringify(maxChars)}`;
+      warnings.push(
+        `kookr idea: ${file} has ${found}, not ${IDEA_MAX_CHARS}. It was left as it is; nb uses what it says. ` +
+          `To restore the ideas line length, write {"maxChars": ${IDEA_MAX_CHARS}} to it.`,
+      );
+    }
+  }
+  const gitWarning = commitIdeaConfig(dir, env);
+  if (gitWarning) warnings.push(gitWarning);
+  return warnings;
 }
 
 // Both src/cli/*.ts (vitest) and dist/cli/*.js (compiled) sit two levels below the
@@ -317,6 +410,9 @@ export async function runIdeaCli(argv: string[], io: IdeaCliIo = {}): Promise<nu
     err.error(`kookr idea: ${args.error}`);
     return 2;
   }
+
+  // Before any nb call: the folder must carry its own line length (.nb.json).
+  for (const warning of ensureIdeaConfig(dir, env)) err.error(warning);
 
   const passOutput = (res: NbResult): number => {
     if (res.stdout.trim()) out.log(res.stdout.replace(/\n$/, ''));

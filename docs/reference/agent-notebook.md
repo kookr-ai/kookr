@@ -25,7 +25,8 @@ npm package (a spin-out of this very tool), consumed as a dependency rather than
 a vendored fork. The kookr entrypoint `bin/nb.js` resolves that package and pins
 the notebooks directory to `~/.kookr/notebooks` (the package default is
 `~/.agent-notebook/notebooks`), so existing notebooks and the usage ring keep
-their location. To change `nb` behavior, land the change in `agent-notebook` and
+their location. Kookr pins agent-notebook **0.12.0** (root `package.json`, and
+`deploy/opencode-worker/package.json` for OpenCode workers). To change `nb` behavior, land the change in `agent-notebook` and
 bump the dependency — kookr no longer carries a divergent copy.
 
 ```
@@ -428,7 +429,7 @@ All optional; defaults match the RFC.
 | `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
 | `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session. `Infinity` never prunes; `0`, a negative or a non-numeric value means 7 |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |
-| `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to aim for about 150 characters — a style target under this ceiling. |
+| `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to aim for about 150 characters — a style target under this ceiling. A folder's own `.nb.json` (`{ "maxChars": N }`, agent-notebook 0.12.0+) wins over it for every `nb` command run on that folder; the idea store uses this for its 400-character lines ([idea-store](idea-store.md)). The lesson store has no `.nb.json`. |
 | `NB_USAGE_RING` | `5000` | max lines in the usage log ring |
 | `NB_LOOP_N` / `NB_LOOP_WINDOW_S` | `10` / `120` | loop anomaly: N calls within S seconds |
 | `NB_SILENT_H` | `48` | went-silent anomaly: hours since last use |

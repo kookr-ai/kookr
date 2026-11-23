@@ -35,9 +35,26 @@ janitor and the lesson counts never see it.
 | Shown at session start | yes (the index) | no |
 | Leaves the store by | eviction, or the operator's `nb rm` | eviction, or the curator after promotion |
 
-`kookr idea` runs Kookr's `bin/nb.js` with `NB_DIR`, `NB_MAX_CHARS=400` and
-`NB_MAX_LINES=50` set for that folder. If the folder is a git repository, every
-change is committed, as for the notebooks.
+The 400-character line length belongs to the folder, not to `kookr idea`: the
+folder holds `.nb.json` with `{ "maxChars": 400 }`, which agent-notebook 0.12.0
+and later read on every `nb` command run on that folder and prefer over
+`NB_MAX_CHARS`. So a plain `NB_DIR=~/.kookr/ideas nb doctor`, the janitor or a
+script uses the same length as `kookr idea`, and `nb config` on the folder shows
+`maxChars=400 (.nb.json)`. Shelves keep nb's default of 50 lines; nothing pins
+`NB_MAX_LINES` for ideas, because two callers of one folder with different line
+caps would evict ideas on the next add.
+
+`kookr idea` runs Kookr's `bin/nb.js` with only `NB_DIR` set to the folder.
+Before its first `nb` call it creates the folder and `.nb.json` if they are
+missing. It never overwrites an existing `.nb.json`: if the file sets another
+`maxChars`, or is not valid JSON, `kookr idea` prints a warning on stderr on
+every run and `nb` uses what the file says (or 200 when the file is unusable).
+To restore the ideas length, write `{"maxChars": 400}` to the file.
+
+If the folder is a git repository, every change is committed, as for the
+notebooks. `kookr idea` commits `.nb.json` itself while it is untracked (the
+`nb` wrapper commits only the files an `nb` call changed), and warns if a
+`.gitignore` ignores it.
 
 ## Categories
 

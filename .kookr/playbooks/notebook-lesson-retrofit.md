@@ -135,7 +135,8 @@ This task may run unattended. Do not ask questions; decide and report.
   rows whose finding is one of the keys on its line.
 - The idea store is agent-notebook in its own folder (`kookr idea path`
   prints it; default `~/.kookr/ideas`), one shelf per category and repository
-  (`<category>@<repo-slug>`), lines of up to 400 characters shaped
+  (`<category>@<repo-slug>`), lines of up to 400 characters (the folder's
+  `.nb.json` sets that length for any `nb` run on it) shaped
   `<file or command>: <problem> -> <change> (keeps: <behaviour>)`. The
   categories are a closed list of simplifications (`kookr idea --help`
   prints it). Read the store only through `kookr idea` (it points `nb` at

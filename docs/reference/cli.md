@@ -351,7 +351,8 @@ kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
 The idea store (issue #4250): simplification ideas that agents record, one
 agent-notebook shelf per category and repository (`<category>@<repo-slug>`) in
 its own folder (`~/.kookr/ideas`, or `KOOKR_IDEAS_DIR`), kept apart from the
-lesson notebooks. Lines hold up to 400 characters; a shelf holds up to 50.
+lesson notebooks. Lines hold up to 400 characters, set by the folder's
+`.nb.json` (`kookr idea` creates it); a shelf holds up to 50.
 
 ```bash
 kookr idea show [--grep TEXT] [--category C] [--top N] [--repo SLUG] [--json]
