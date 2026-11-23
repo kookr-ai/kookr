@@ -89,13 +89,14 @@ const SERVICE_COMMS = new Set(['tail', 'less', 'more', 'watch', 'git', 'gh']);
 /** Runtimes whose first non-flag argument names the real program (`node …/vite`, `python -m uvicorn`). */
 const INTERPRETER_RE = /^(?:node|nodejs|bunx|deno|npx|pnpx|uvx|pipx|python[0-9.]*|pypy[0-9.]*)$/;
 
-/** Language servers, matched on any path segment (`…/typescript-language-server/lib/cli.mjs`). */
-const LSP_SEGMENT_RE = /language-?server|langserver|^(?:tsserver|pyright|pylsp|gopls|rust-analyzer|clangd|jdtls)$/;
-
-/** MCP servers, by program name: `mcp-server-fetch`, `kb_mcp`, `mcp`. */
-const MCP_PROGRAM_RE = /(?:^|[-_])mcp(?:[-_]|$)/;
-/** MCP servers, by any path segment: `@modelcontextprotocol/…`, `…/mcp-server/index.js`. */
-const MCP_SEGMENT_RE = /^@modelcontextprotocol$|mcp[-_]?server|server[-_]mcp/;
+/**
+ * Language and MCP servers, matched on the program name or on the package
+ * directory right under a `node_modules` (`…/node_modules/typescript-language-server/lib/cli.mjs`,
+ * `npx @modelcontextprotocol/server-github`). Never on other directories:
+ * a worktree named `kookr-issue-N-mcp-server-retry` holds real jobs.
+ */
+const LSP_NAME_RE = /language-?server|langserver|^(?:tsserver|pyright|pylsp|gopls|rust-analyzer|clangd|jdtls)$/;
+const MCP_NAME_RE = /^mcp$|mcp[-_]?server|server[-_]mcp|^@modelcontextprotocol$/;
 
 /** Programs that are a server whatever their arguments. */
 const SERVER_PROGRAMS = new Set(['webpack-dev-server', 'nodemon', 'uvicorn', 'gunicorn', 'http.server', 'http-server', 'live-server']);
@@ -113,16 +114,27 @@ function programName(token: string): string {
   return token.replace(/^.*\//, '').replace(/\.(?:c?m?js|ts|py)$/, '');
 }
 
-/** `/x/typescript-language-server/lib/cli.mjs` → `['x', 'typescript-language-server', 'lib', 'cli']`. */
-function pathSegments(token: string): string[] {
-  return token.split('/').filter(Boolean).map(programName);
+/**
+ * The names a program token is known by: its own name, plus the package
+ * directory (and npm scope) when it is a path into `node_modules` or an npm
+ * package spec. `/r/node_modules/@scope/pkg/dist/cli.js` → `['cli', 'pkg', '@scope']`.
+ */
+function packageNames(token: string): string[] {
+  const names = [programName(token)];
+  const segments = token.split('/').filter(Boolean);
+  const nm = segments.lastIndexOf('node_modules');
+  const pkg = nm >= 0 ? segments.slice(nm + 1) : token.startsWith('@') ? segments : [];
+  if (pkg[0]?.startsWith('@')) names.push(pkg[0], pkg[1] ?? '');
+  else if (pkg[0]) names.push(pkg[0]);
+  return names;
 }
 
 /**
- * True for a process on the deny-list above. Judged from `comm` and from the
- * program token of the command line (past an interpreter and its flags) plus
- * its first positional argument; other arguments are never matched, so a job
- * reading `mcp.yaml` or `--log tail.txt` still counts. A shell or pacing
+ * True for a process on the deny-list above. Judged from `comm`, from a
+ * `--watch` flag, and from the program token of the command line (past an
+ * interpreter and its flags) plus its subcommand (after `run` for a package
+ * runner). Other arguments are never matched, so a job reading `mcp.yaml` or
+ * `--log tail.txt` still counts. A shell or pacing
  * helper ({@link NON_JOB_COMMS}) is never a service: its command line holds
  * a whole script, and its children are judged one by one.
  */
@@ -144,8 +156,7 @@ export function isNonJobService(proc: Pick<ProcessInfo, 'comm' | 'command'>): bo
   if (!raw) return false;
   const program = programName(raw);
   if (SERVICE_COMMS.has(program) || SERVER_PROGRAMS.has(program)) return true;
-  if (MCP_PROGRAM_RE.test(program)) return true;
-  if (pathSegments(raw).some((seg) => LSP_SEGMENT_RE.test(seg) || MCP_SEGMENT_RE.test(seg))) return true;
+  if (packageNames(raw).some((name) => LSP_NAME_RE.test(name) || MCP_NAME_RE.test(name))) return true;
   if (!DEV_SERVER_CLIS.has(program)) return false;
   const positional = tokens.slice(i + 1).filter((t) => !t.startsWith('-'));
   const sub = PACKAGE_RUNNERS.has(program) && positional[0] === 'run' ? positional[1] : positional[0];
