@@ -8,7 +8,7 @@
 // stalest, i.e. earliest in the file), and (2) docking one point from the
 // stalest surviving line and moving it to the end of the file (since 0.9.0). So
 // moving a weak lesson into a full shelf can throw away a better one. This module
-// copies those rules from agent-notebook 0.9.0 (it does not model nb's other refusals)
+// copies those rules from agent-notebook 0.9.0, unchanged through 0.12.0 (it does not model nb's other refusals)
 // (`dist/notebook.js` `enforceCap` and `move`); the test file replays random
 // stores through the REAL `nb` binary and asserts the model agrees, so a future
 // `nb` that changes the rules fails loudly instead of silently mis-planning.
