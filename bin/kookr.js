@@ -50,6 +50,7 @@ Usage:
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember|yield  Durable lesson-write spool + yield metric.
+  kookr idea show|add|vote|rm|list|path|doctor|stats  Improvement ideas, voted by the agents that hit them (#4250).
   kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
   kookr emission plan|override|dedupe|metrics|defer|version  Issue filing budget, bounded override + dedupe.
   kookr value-density classify|admit|composition|decline  Refactor-class emission/spawn governor + composition (#1846).
@@ -365,6 +366,12 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Idea store (issue #4250): agent-notebook in its own folder. Disk + local nb only.
+  if (command === 'idea') {
+    await runIdeaCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   // Effort split vs 80/20 for the daily report (issue #1718). gh-only; no ledger.
   if (command === 'effort-split') {
     await runEffortSplitCommand(rest, { env, out, err });
@@ -544,6 +551,21 @@ async function runLessonCommand(argv, { env = process.env, out = console, err = 
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runLessonCli(argv, { env, out, err });
+}
+
+async function runIdeaCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-idea.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-idea.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] idea module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runIdeaCli(argv, { env, out, err, nbBin: join(here, 'nb.js') });
 }
 
 async function runEffortSplitCommand(argv, { env = process.env, out = console, err = console } = {}) {

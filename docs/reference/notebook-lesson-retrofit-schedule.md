@@ -72,6 +72,7 @@ proposals for things that already exist.
 | `umbrellaRepo` | `kookr-ai/kookr` | Repository that holds the umbrella issue. |
 | `fileIssues` | `no` | `no` writes the report only. `umbrella` also updates the umbrella issue. `leaves` also files one issue per verified single-PR change. Start with `no`. |
 | `minVotes` | `5` | Score at which a single entry becomes a candidate. |
+| `ideaMinScore` | `3` | Score at which an idea from the [idea store](idea-store.md) becomes a candidate; two or more different tasks must also have added or voted for it. |
 | `reportsDir` | `` (blank) | Blank resolves to `~/.kookr/reports`. |
 
 ### Create it
@@ -94,6 +95,7 @@ curl -sS -X POST http://127.0.0.1:4800/api/schedules \
         "umbrellaRepo": "kookr-ai/kookr",
         "fileIssues": "no",
         "minVotes": "5",
+        "ideaMinScore": "3",
         "reportsDir": ""
       }
     }

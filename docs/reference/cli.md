@@ -346,6 +346,26 @@ kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
   `GET /api/diagnostics/lesson-yield?days=N` and the `lessonYield` block on
   `GET /api/health`. See [lesson-decision-gate](./lesson-decision-gate.md).
 
+## `kookr idea`
+
+The idea store (issue #4250): improvement ideas that agents record, with a vote
+each time another task hits the same thing. It is agent-notebook in its own
+folder (`~/.kookr/ideas`, or `KOOKR_IDEAS_DIR`), kept apart from the lesson
+notebooks. Lines hold up to 400 characters, and a shelf holds up to 50 lines.
+
+```bash
+kookr idea show [--top N] [--shelf NAME] [--json]
+kookr idea add  "<what is wrong or missing> -> <proposed change>" [--shelf NAME]
+kookr idea vote <id[,id...]> +1|-1 [--shelf NAME]
+kookr idea rm   <id> --reason <code> [--note TEXT] [--shelf NAME]
+kookr idea list | path | doctor | stats
+```
+
+- The shelf defaults to the current repository (`$KOOKR_REPO_SLUG`).
+- `add` refuses an idea without `->`. Adding an idea that is already recorded
+  votes +1 for it instead.
+- See [idea-store](./idea-store.md) for how ideas are promoted to issues.
+
 ## `kookr effort-split`
 
 Daily-report helper for the operator's 80/20 output split (issue #1718): measure

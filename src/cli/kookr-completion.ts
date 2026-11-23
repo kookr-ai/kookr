@@ -290,6 +290,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'idea',
+    subcommands: ['show', 'add', 'vote', 'rm', 'list', 'path', 'doctor', 'stats'],
+    flags: ['--shelf', '--top', '--reason', '--note', '--json'],
+  },
+  {
     name: 'effort-split',
     flags: [
       '--repo',
@@ -582,6 +587,8 @@ function renderBashCompletion(): string {
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
   const lessonYieldFlags = shellWords(LESSON_YIELD_FLAGS);
+  const ideaSubcommands = subcommandsFor('idea');
+  const ideaFlags = flagsFor('idea');
   const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
@@ -877,6 +884,13 @@ _kookr()
         esac
       fi
       ;;
+    idea)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${ideaSubcommands}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${ideaFlags}" -- "\${cur}") )
+      fi
+      ;;
     effort-split)
       COMPREPLY=( $(compgen -W "${effortSplitFlags}" -- "\${cur}") )
       ;;
@@ -1027,6 +1041,8 @@ function renderZshCompletion(): string {
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
   const lessonYieldFlags = shellWords(LESSON_YIELD_FLAGS);
+  const ideaSubcommands = subcommandsFor('idea');
+  const ideaFlags = flagsFor('idea');
   const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
@@ -1263,6 +1279,13 @@ _kookr()
           remember) compadd -- ${lessonRememberFlags} ;;
           yield) compadd -- ${lessonYieldFlags} ;;
         esac
+      fi
+      ;;
+    idea)
+      if (( CURRENT == 3 )); then
+        compadd -- ${ideaSubcommands}
+      else
+        compadd -- ${ideaFlags}
       fi
       ;;
     effort-split)

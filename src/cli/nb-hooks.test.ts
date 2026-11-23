@@ -200,9 +200,13 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     expect(last).toContain('kookr signal completion-ready');
     expect(last).toMatch(/already run/);
     expect(last).toMatch(/LAST call/);
-    // The rest of the retrospective text is the same as outside a task.
+    // Before it, the idea-store line (#4250); the rest is the same as outside a task.
+    const idea = lines[lines.length - 2];
+    expect(idea).toContain('kookr idea show');
+    expect(idea).toContain('kookr idea vote <id> +1');
+    expect(idea).toContain('kookr idea add "<what is wrong or missing> -> <proposed change>"');
     const bare = runRetro({ NB_DIR: dir }, { session_id: 'sess-notask' });
-    expect(lines.slice(0, -1).join('\n')).toBe(bare.err.trimEnd());
+    expect(lines.slice(0, -2).join('\n')).toBe(bare.err.trimEnd());
   });
 
   test('outside a Kookr task (KOOKR_TASK_ID unset or blank) the nudge does not mention the completion signal', () => {
@@ -213,6 +217,7 @@ describe('nb-retro Stop/SubagentStop hook', () => {
       const r = runRetro(env, { session_id: sid });
       expect(r.code).toBe(2);
       expect(r.err).not.toContain('completion-ready');
+      expect(r.err).not.toContain('kookr idea');
       expect(r.err.trimEnd().endsWith("this reminder won't repeat this session.")).toBe(true);
     }
   });
