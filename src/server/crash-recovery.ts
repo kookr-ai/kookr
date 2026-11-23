@@ -8,7 +8,7 @@ import {
   type AdapterLaunchOptions,
   type AgentAdapter,
 } from '../adapters/agent-adapter.js';
-import { buildResumeContext, describeReopenResume } from './resume-context.js';
+import { buildResumeContext, describeReopenResume, withReopenNote } from './resume-context.js';
 import type { InterruptedTaskEntry } from './interrupted-tasks/interrupted-tasks-service.js';
 import { replayRecordedLoadout } from './plugin-manager/loadout-store.js';
 import type { ReconciliationResult } from './reconciliation.js';
@@ -250,7 +250,9 @@ export async function recoverCrashedSessions(
     // Task.prompt already contains the worktree/delivery-policy guardrails
     // applied at initial admission. The raw intent prompt remains the stable
     // dedup identity, but must not replace the guarded prompt on relaunch.
-    const effectivePrompt = task.prompt;
+    // A note given on `kookr reopen` (issue #4227) still applies when the
+    // restart cannot resume and replays the prompt.
+    const effectivePrompt = withReopenNote(task.reopenNote, task.prompt);
     const originalCwd = intent.intent.cwd ?? session.cwd;
     const promptHash = promptDedupKey(task.agentType, identityPrompt, intent.intent);
     if (livePromptHashes.has(promptHash) || relaunchedPromptHashes.has(promptHash)) {

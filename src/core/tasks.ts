@@ -1231,6 +1231,16 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /** Replace the operator's reopen note (see `Task.reopenNote`). */
+  setReopenNote(id: string, note: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.reopenNote = note;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   reopenTask(id: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);

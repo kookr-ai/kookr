@@ -207,6 +207,85 @@ describe('POST /api/tasks/:id/reopen (issue #3671)', () => {
     }
   });
 
+  describe('note body (issue #4227)', () => {
+    const reopenWithBody = (app: Hono, id: string, body: string) =>
+      app.request(`/api/tasks/${id}/reopen`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+
+    test('stores the trimmed note as reopenNote and returns it on the task', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+
+      const res = await reopenWithBody(app, id, JSON.stringify({ note: '  Do not merge.  ' }));
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { task: { reopenNote?: string }; resume: { mode: string } };
+      expect(body.resume.mode).toBe('not_resumable');
+      expect(body.task.reopenNote).toBe('Do not merge.');
+      expect(taskStore.getTask(id)?.reopenNote).toBe('Do not merge.');
+      // Stored before promotion runs, so the relaunch it triggers sees it.
+      expect(promotePendingTasks).toHaveBeenCalledTimes(1);
+    });
+
+    test('a later note replaces the earlier one; a reopen without a note keeps it', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+
+      expect((await reopenWithBody(app, id, JSON.stringify({ note: 'first' }))).status).toBe(200);
+      taskStore.cancelTask(id); // pending -> cancelled, reopenable again
+      expect((await reopen(app, id)).status).toBe(200);
+      expect(taskStore.getTask(id)?.reopenNote).toBe('first');
+      taskStore.cancelTask(id);
+      expect((await reopenWithBody(app, id, JSON.stringify({ note: 'second' }))).status).toBe(200);
+      expect(taskStore.getTask(id)?.reopenNote).toBe('second');
+    });
+
+    test('an empty body or one without note means no note', async () => {
+      const taskStore = new TaskStore();
+      const a = terminatedTask(taskStore);
+      const b = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+
+      expect((await reopenWithBody(app, a, '')).status).toBe(200);
+      expect((await reopenWithBody(app, b, '{}')).status).toBe(200);
+      expect(taskStore.getTask(a)?.reopenNote).toBeUndefined();
+      expect(taskStore.getTask(b)?.reopenNote).toBeUndefined();
+    });
+
+    test.each([
+      ['malformed JSON', '{note:'],
+      ['a non-object body', '"Do not merge"'],
+      ['a non-string note', JSON.stringify({ note: 42 })],
+      ['a blank note', JSON.stringify({ note: '   ' })],
+      ['an over-long note', JSON.stringify({ note: 'x'.repeat(8001) })],
+    ])('refuses %s with 400 invalid_reopen_note and leaves the task terminal', async (_label, raw) => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+
+      const res = await reopenWithBody(app, id, raw);
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'invalid_reopen_note' });
+      expect(taskStore.getTask(id)?.status).toBe('terminated');
+      expect(promotePendingTasks).not.toHaveBeenCalled();
+    });
+
+    test('a refused reopen leaves the existing note unchanged', async () => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Still running', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+      taskStore.setReopenNote(task.id, 'earlier note');
+      const { app } = mkApp(taskStore);
+
+      const res = await reopenWithBody(app, task.id, JSON.stringify({ note: 'new note' }));
+
+      expect(res.status).toBe(409);
+      expect(taskStore.getTask(task.id)?.reopenNote).toBe('earlier note');
+    });
+  });
+
   test('is supervisor-gated like /complete when KOOKR_SUPERVISOR_TOKEN is set', async () => {
     process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
     const taskStore = new TaskStore();

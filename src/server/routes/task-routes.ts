@@ -1327,6 +1327,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // `/complete`, since it launches an agent on an existing task, and audited
   // the same way: every outcome is a `task.reopen` row attributed via
   // `X-Kookr-Actor`.
+  //
+  // Optional JSON body `{ "note": "<text>" }` (issue #4227): stored as the
+  // task's `reopenNote`, which the relaunch puts in front of the original prompt
+  // (fresh start) or of the first message of the resumed conversation. An empty
+  // body means no note, as for the CLI before `--note` and other callers.
   app.post('/api/tasks/:id/reopen', async (c) => {
     if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
       return supervisorUnauthorizedResponse(c);
@@ -1334,8 +1339,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const id = c.req.param('id');
     if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
 
+    const parsedNote = parseReopenNote(await c.req.text());
+    if (!parsedNote.ok) return c.json({ error: parsedNote.error, code: 'invalid_reopen_note' }, 400);
+
     try {
-      const result = await lifecycleCommands.reopenTask(id, { actor: actorFromRequest(c) });
+      const result = await lifecycleCommands.reopenTask(id, {
+        actor: actorFromRequest(c),
+        ...(parsedNote.note !== undefined ? { note: parsedNote.note } : {}),
+      });
       if (result.outcome === 'not_found') {
         return c.json({ error: 'Task not found' }, 404);
       }
@@ -2292,4 +2303,35 @@ function isLaunchDependencyValidationError(err: unknown): err is Error {
   return err instanceof Error
     && (err.message === 'dependencies must be an array when supplied'
       || err.message.startsWith('Unsupported launch dependency:'));
+}
+
+/** Longest `note` accepted by `POST /api/tasks/:id/reopen` (issue #4227). */
+export const REOPEN_NOTE_MAX_CHARS = 8000;
+
+/**
+ * Read the optional `{ "note": "<text>" }` body of `POST /api/tasks/:id/reopen`.
+ * An empty body, or one without `note`, means no note; anything else that is not
+ * a non-blank string of at most {@link REOPEN_NOTE_MAX_CHARS} characters is refused.
+ */
+export function parseReopenNote(raw: string): { ok: true; note?: string } | { ok: false; error: string } {
+  if (raw.trim() === '') return { ok: true };
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: 'body must be JSON: { "note": "<text>" }' };
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'body must be a JSON object: { "note": "<text>" }' };
+  }
+  const note = (body as { note?: unknown }).note;
+  if (note === undefined) return { ok: true };
+  if (typeof note !== 'string' || note.trim() === '') {
+    return { ok: false, error: 'note must be a non-empty string' };
+  }
+  const trimmed = note.trim();
+  if (trimmed.length > REOPEN_NOTE_MAX_CHARS) {
+    return { ok: false, error: `note is longer than ${REOPEN_NOTE_MAX_CHARS} characters` };
+  }
+  return { ok: true, note: trimmed };
 }

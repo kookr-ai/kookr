@@ -7,14 +7,20 @@
  * `kookr spawn` with a handwritten brief throws that conversation away. This is
  * a thin client over the same lifecycle command:
  *
- *   kookr reopen <taskId> [--json]
+ *   kookr reopen <taskId> [--note "<text>"] [--json]
  *
- * Endpoint: POST /api/tasks/:id/reopen → { ok, task, resume }
+ * Endpoint: POST /api/tasks/:id/reopen [{ note }] → { ok, task, resume }
  *
  * `resume` says what the relaunch does with the prior conversation: `resume`
  * (continues it), `fresh` (starts from the prompt by design, e.g. a Ralph loop),
  * or `not_resumable` (starts from the prompt because the conversation cannot be
  * continued, with the reason). The task is reopened in all three cases.
+ *
+ * `--note` (issue #4227) adds text the relaunch puts in front of the original
+ * prompt, or of the first message of a resumed conversation, so an instruction
+ * given after launch (e.g. "do not merge") survives a restart. Without it, a
+ * `not_resumable` outcome prints a warning: the task replays its original
+ * prompt unchanged.
  *
  * The route is supervisor-token gated like `/complete`: the CLI forwards
  * `KOOKR_SUPERVISOR_TOKEN` when set, else `KOOKR_API_TOKEN`, else nothing.
@@ -36,7 +42,7 @@ export const EXIT_AMBIGUOUS = 5;
 export const REOPEN_HELP_TEXT = `kookr reopen — reopen a terminal task, resuming its conversation when possible.
 
 Usage:
-  kookr reopen <taskId> [--json]
+  kookr reopen <taskId> [--note "<text>"] [--json]
 
 Reopens a completed, terminated, or cancelled task via POST /api/tasks/:id/reopen
 (the dashboard's Reopen button). The task is re-queued and relaunched as soon as
@@ -47,9 +53,16 @@ conversation:
                  a best effort: it starts fresh if the session data was pruned)
   fresh          starts from the original prompt by design (active Ralph loop)
   not_resumable  starts from the original prompt because the conversation
-                 cannot be continued; the reason is printed
+                 cannot be continued; the reason is printed, with a warning
+                 when no note is set (see --note)
 
 Options:
+  --note <text>   Text the relaunch sees first: put in front of the original
+                  prompt on a fresh start, or sent as the first message of the
+                  resumed conversation. Use it for anything said to the task
+                  after launch that the original prompt contradicts (e.g.
+                  "Do not merge; stop at an open PR."). The note stays on the
+                  task for later relaunches; a later --note replaces it.
   --json          Print one machine-readable JSON envelope to stdout
                   (with --help, the help text is in details.help).
   -h, --help      Show this help.
@@ -71,6 +84,7 @@ Exit codes:
 
 export interface ParsedReopenArgs {
   taskId?: string;
+  note?: string;
   json: boolean;
   help: boolean;
   error?: string;
@@ -86,6 +100,15 @@ export function parseReopenArgs(argv: string[]): ParsedReopenArgs {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--note' || tok.startsWith('--note=')) {
+      const value = tok === '--note' ? argv[++i] : tok.slice('--note='.length);
+      // `--note --json` is a missing value, not a note; a note that starts
+      // with "--" can still be passed as --note=<text>.
+      if (value === undefined || (tok === '--note' && value.startsWith('--'))) {
+        return { ...out, error: '--note requires a value' };
+      }
+      if (value.trim() === '') return { ...out, error: '--note must not be empty' };
+      out.note = value.trim();
     } else if (tok === '--') {
       positionals.push(...argv.slice(i + 1));
       break;
@@ -104,7 +127,8 @@ export function parseReopenArgs(argv: string[]): ParsedReopenArgs {
 
 export interface ReopenResponse {
   ok: true;
-  task: { id: string; status: string; name?: string };
+  /** `reopenNote` is the note the relaunch will carry (issue #4227). */
+  task: { id: string; status: string; name?: string; reopenNote?: string };
   resume: ReopenResumeReport;
 }
 
@@ -133,11 +157,36 @@ export function formatResumeLine(resume: ReopenResumeReport): string {
   }
 }
 
-export function formatReopenResult(body: ReopenResponse): string {
+/** Printed when a `not_resumable` relaunch carries no note (issue #4227). */
+export function notResumableNoNoteWarning(taskId: string): string {
+  return 'the task restarts from its original prompt unchanged: nothing said to it after launch ' +
+    '(for example "do not merge") reaches it. If that prompt is no longer right, send the correction ' +
+    `now with \`kookr reply ${taskId} "<text>"\`, and pass --note "<text>" when reopening.`;
+}
+
+/**
+ * Warnings for a reopen that succeeded (issue #4227): a `not_resumable` relaunch
+ * with no note replays the original prompt unchanged, and a server that did not
+ * store a note it was sent is too old to support `--note`.
+ */
+export function reopenWarnings(body: ReopenResponse, sentNote: string | undefined): string[] {
+  const warnings: string[] = [];
+  const stored = typeof body.task.reopenNote === 'string' && body.task.reopenNote !== '';
+  if (sentNote !== undefined && body.task.reopenNote !== sentNote) {
+    warnings.push('the server did not store the --note (it may predate --note support); the relaunch does not carry it.');
+  }
+  if (body.resume.mode === 'not_resumable' && !stored) warnings.push(notResumableNoNoteWarning(body.task.id));
+  return warnings;
+}
+
+export function formatReopenResult(body: ReopenResponse, warnings: string[] = []): string {
   const state = body.task.status === 'pending'
     ? 'queued as pending; it launches when a slot is free'
     : `now ${body.task.status}`;
-  return [`Reopened task ${body.task.id} (${state}).`, formatResumeLine(body.resume)].join('\n');
+  const lines = [`Reopened task ${body.task.id} (${state}).`, formatResumeLine(body.resume)];
+  if (body.task.reopenNote) lines.push(`Note: the relaunch carries the reopen note (${body.task.reopenNote.length} chars).`);
+  for (const warning of warnings) lines.push(`Warning: ${warning}`);
+  return lines.join('\n');
 }
 
 export interface ReopenCliIo {
@@ -204,8 +253,10 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
       headers: {
         [SUPERVISOR_ACTOR_HEADER]: 'cli',
         'User-Agent': `kookr-reopen/node-${process.versions.node}`,
+        ...(args.note !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...authHeaders(env),
       },
+      ...(args.note !== undefined ? { body: JSON.stringify({ note: args.note }) } : {}),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     status = res.status;
@@ -242,15 +293,22 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
     return fail(EXIT_SERVER_ERROR, 'SERVER_ERROR', 'unexpected /api/tasks/:id/reopen response (expected { ok, task, resume }).', { taskId, status });
   }
 
+  const warnings = reopenWarnings(body, args.note);
   if (args.json) {
     out.log(JSON.stringify({
       ok: true,
       code: 'OK',
       message: `Reopened task ${body.task.id}. ${formatResumeLine(body.resume)}`,
-      details: { taskId: body.task.id, status: body.task.status, resume: body.resume },
+      details: {
+        taskId: body.task.id,
+        status: body.task.status,
+        resume: body.resume,
+        ...(body.task.reopenNote ? { note: body.task.reopenNote } : {}),
+        warnings,
+      },
     }));
   } else {
-    out.log(formatReopenResult(body));
+    out.log(formatReopenResult(body, warnings));
   }
   return EXIT_OK;
 }

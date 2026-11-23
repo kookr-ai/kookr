@@ -11,7 +11,7 @@ import { nowISO } from '../core/interaction-log.js';
 import { launchIntentPins, validatePersistedLaunchIntent } from '../core/task-launch-intent.js';
 import type { GitHubScannerService } from '../core/github-scanner-service.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
-import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import { AdapterRegistry, DEFAULT_RESUME_CONTINUATION_MESSAGE } from '../adapters/agent-adapter.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { MAX_ACTIVE_TASKS } from './config.js';
 import { cleanupTaskWorktrees, isTaskWorktreeReservedForChain } from '../adapters/git-worktree.js';
@@ -30,7 +30,7 @@ import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
-import { buildTaskResumeContext } from './resume-context.js';
+import { buildTaskResumeContext, withReopenNote } from './resume-context.js';
 import type { ResumeContext } from '../adapters/agent-adapter.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
@@ -1213,9 +1213,13 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // those safety instructions at the adapter boundary.
       const effectivePrompt = pending.prompt;
       const originalCwd = intent.intent.cwd ?? pending.cwd;
-      const launchPrompt = pending.launchAdmission?.status === 'parked'
+      const notedPrompt = pending.launchAdmission?.status === 'parked'
         ? effectivePrompt
         : pending.launchNote ? `${pending.launchNote}\n\n${effectivePrompt}` : effectivePrompt;
+      // The operator's reopen note (issue #4227) goes first, parked or not:
+      // a relaunch from the original prompt would otherwise follow
+      // instructions the operator has since corrected (e.g. a merge grant).
+      const launchPrompt = withReopenNote(pending.reopenNote, notedPrompt);
       const pins = launchIntentPins(intent.intent);
       expectedProbeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
         ? allocateLaunchSessionId()
@@ -1371,6 +1375,18 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       if (taskStore.takeResumeOnNextLaunch(pending.id)) {
         const resolved = await buildTaskResumeContext(pending);
         resumeContext = resolved.resumeContext;
+        // A resumed conversation gets no prompt, so the reopen note rides on
+        // the first message typed into it. `launchPrompt` keeps the note too,
+        // for an adapter that falls back to a fresh launch.
+        if (resumeContext && pending.reopenNote) {
+          resumeContext = {
+            ...resumeContext,
+            continuationMessage: withReopenNote(
+              pending.reopenNote,
+              resumeContext.continuationMessage ?? DEFAULT_RESUME_CONTINUATION_MESSAGE,
+            ),
+          };
+        }
         // The operator asked for a resume and is not getting one. Say why, or
         // the reopened task looks identical to a blank restart.
         if (!resumeContext && resolved.fallbackReason) {

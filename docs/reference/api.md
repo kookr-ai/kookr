@@ -785,6 +785,16 @@ the task's prior conversation:
   transcript no longer exists, or the agent type (Codex CLI, Grok Build) does
   not support resume.
 
+Optional body `{"note": "<text>"}` (issue #4227): the note is trimmed and
+stored as the task's `reopenNote` once the reopen is accepted (a refused
+reopen leaves the task's note unchanged). A fresh relaunch puts it in front of
+the original prompt; a resumed conversation gets it at the start of its first
+message. It stays on the task for later relaunches, and a later note replaces
+it. An empty body means no note. A body that is not a JSON object, or a `note`
+that is not a non-blank string of at most 8000 characters, returns
+`400 {"error": "...", "code": "invalid_reopen_note"}` before the task is
+touched. The response's `task.reopenNote` shows the note the relaunch carries.
+
 In all three cases the task is reopened. The resume request is held in
 server memory only, so a task still `pending` when the server restarts
 launches fresh.
