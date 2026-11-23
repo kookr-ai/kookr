@@ -26,7 +26,7 @@ When preparing a PR for any open-source project. These patterns are distilled fr
 | 8 | State behavioral neutrality when applicable | Leaving reviewer to guess if behavior changed | "This does not change runtime behavior" when true |
 | 9 | Defer scope expansion to follow-up PRs | Adding reviewer-suggested work to current PR | "Moved to follow-up PR #N to keep this PR focused" |
 | 10 | Be transparent about testing limitations | Claiming full coverage when you didn't run all suites | Document what you couldn't test and why |
-| 11 | Check `git diff main...HEAD` after every rebase | Accidentally including unrelated rebase changes | Drop unrelated test fixtures, format changes, etc. before requesting review |
+| 11 | Check `git fetch upstream && git diff upstream/<default>...HEAD` after every rebase (fetched upstream default branch, never local `main`) | Accidentally including unrelated rebase changes | Drop unrelated test fixtures, format changes, etc. before requesting review |
 | 12 | Run automated review tools before requesting human review | Letting reviewers find issues bots would catch | Use @codex review, CI linting, etc. iteratively before requesting humans |
 | 13 | Adopt reviewer suggestion blocks verbatim | Rephrasing reviewer-provided comment wording | Use the exact text they gave; don't "improve" it |
 | 14 | Disclose AI assistance in co-author lines | Hiding that Codex/AI helped write the code | "Co-authored-by: Codex <noreply@openai.com>" or similar |
@@ -209,7 +209,7 @@ Reviewers assess risk of behavioral change, not diff size. Pure deletion (-517 l
 When reviewers review external contributor PRs, their primary concern is scope — not code quality, architecture, or test coverage. Every inline question on the most-reviewed external PR (#15513) was a variant of "is this related to this PR?"
 
 **How to maintain scope discipline:**
-- Run `git diff main...HEAD` after every rebase to catch unrelated changes
+- Run `git fetch upstream`, then `git diff upstream/<default>...HEAD` (`<default>` is upstream's default branch) after every rebase to catch unrelated changes. Never diff against your local `main`: it goes stale, its merge base is old, and commits that reached upstream since then show up as your branch's changes
 - Drop rebase-introduced fixture/format changes into a separate PR
 - If the final diff no longer matches the title, stop and repair the branch before asking for review
 - For bot suggestions you're declining: "We want to keep this PR scoped to [X] rather than add [Y] here. Will track as follow-up if [condition]."
@@ -675,7 +675,7 @@ However, when a human maintainer contradicts the bot's guidance, always follow t
 ## Anti-Patterns
 
 ### 1. Scope Creep from Rebase
-Including unrelated changes introduced during rebase (fixture updates, format changes). Always `git diff main...HEAD` and drop anything not relevant to your PR.
+Including unrelated changes introduced during rebase (fixture updates, format changes). Always `git fetch upstream && git diff upstream/<default>...HEAD` (the fetched upstream default branch, not local `main`) and drop anything not relevant to your PR.
 
 ### 2. Hiding Testing Gaps
 Claiming full test coverage when you haven't run all affected suites. Better to document limitations honestly.

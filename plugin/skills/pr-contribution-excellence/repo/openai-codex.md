@@ -276,7 +276,7 @@ When a reviewer asks for a clarifying comment in a previous PR, create a dedicat
 1. **Use the 7-section fcoury template**: TL;DR → Problem → Mental Model → Non-goals → Tradeoffs → Architecture → Tests
 2. **For security fixes, use the 4-section template**: Summary → Root cause → Changes → Validation
 3. **Run `@codex review` iteratively**: Push changes, trigger bot review, address feedback, repeat until clean
-4. **Check `git diff main...HEAD` after every rebase**: Unrelated changes are the #1 scope concern
+4. **Check `git fetch upstream && git diff upstream/main...HEAD` after every rebase** (the fetched upstream base, never your local `main`): Unrelated changes are the #1 scope concern
 5. **Match existing patterns**: Port from established crate, follow existing conventions
 6. **Comprehensive tests with deterministic inputs**: Use `.invalid` TLD, IP literals, avoid ambient DNS
 7. **Address bot comments proactively**: Engage substantively with every P1/P2 suggestion
