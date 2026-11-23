@@ -6,9 +6,11 @@ import type { MergedPrAttribution } from '../core/completion/index.js';
 import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { buildReapDisposition } from '../core/hung-task-reaper.js';
+import { formatReclaimKillLine, type KilledProcess } from '../core/long-running-jobs.js';
 import { nowISO } from '../core/interaction-log.js';
 import { hungTaskReportBasename } from './hung-task-report-paths.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
+import { liveSessionIdOf } from './session-job-snapshot.js';
 import {
   reaperEvidence,
   describeReaperEvidenceFailure,
@@ -35,6 +37,12 @@ export interface HungTaskReapEvidence {
   warnedAt?: number;
   /** How many times the user extended the warning before it reaped. */
   keptAliveCount?: number;
+  /**
+   * Worker jobs under the session, snapshotted just before the reap (issue
+   * #4243). The process-tree kill takes them with the agent, so the reap
+   * records them and tells the parent, as the hungSuspect TTL reclaim does.
+   */
+  killedProcesses?: readonly KilledProcess[];
 }
 
 export interface HungTaskReaperDeps {
@@ -77,6 +85,12 @@ export interface HungTaskReaperDeps {
    * re-throws (the generic watchdog catch stays the fallback), just uncounted.
    */
   metrics?: HungTaskReaperMetrics;
+  /**
+   * Type one line into a live session through the choice-dialog guard. Used
+   * to tell a reaped worker's parent which jobs the reap killed (issue
+   * #4243). Omitted ⇒ no parent notification.
+   */
+  sendLineToSession?: (sessionId: string, line: string) => Promise<void>;
   now?: () => Date;
 }
 
@@ -312,6 +326,10 @@ export async function reapHungTask(
   const merged = deps.resolveMergedPr?.(task) ?? null;
   const disposition = buildReapDisposition(merged, now.toISOString());
   const outcome = disposition.outcome ?? 'terminated';
+  const killedProcesses = evidence.killedProcesses ?? [];
+  if (killedProcesses.length > 0) {
+    disposition.killedProcesses = killedProcesses.map((p) => ({ ...p }));
+  }
 
   // Terminate and release capacity BEFORE any evidence-report I/O (issue
   // #2852). The report is a diagnostic artifact, not lifecycle state; writing
@@ -397,6 +415,7 @@ export async function reapHungTask(
     },
     ...(evidence.warnedAt !== undefined ? { warnedAt: evidence.warnedAt } : {}),
     ...(evidence.keptAliveCount !== undefined ? { keptAliveCount: evidence.keptAliveCount } : {}),
+    ...(killedProcesses.length > 0 ? { killedProcesses: killedProcesses.map((p) => ({ ...p })) } : {}),
     ...(reportPath ? { reportPath } : {}),
     // Surface a report-persistence failure on the durable trail (issue #2852)
     // without touching the happy-path shape: `error`/`timeout` only.
@@ -426,6 +445,10 @@ export async function reapHungTask(
     severity: 'warning',
   });
 
+  if (killedProcesses.length > 0) {
+    await notifyParentOfKilledJobs(task, evidence.silentForMs, killedProcesses, deps);
+  }
+
   return { reportPath, outcome, reportPersistence: report.status, dispositionPersistence, auditPersistence };
 }
 
@@ -447,7 +470,7 @@ async function writeReapDispositionEntry(
   if (!deps.dispositionLedgerPath) return;
   const ledgerPath = deps.dispositionLedgerPath;
   const silentMinutes = Math.round(evidence.silentForMs / 60_000);
-  const entry: DispositionEntry =
+  const base: DispositionEntry =
     outcome === 'delivered_then_hung'
       ? {
         schemaVersion: 'disposition-ledger.v1',
@@ -469,7 +492,39 @@ async function writeReapDispositionEntry(
         source: 'hung-task-reaper',
         at: now.toISOString(),
       };
+  const killed = taskDisposition.killedProcesses;
+  const entry: DispositionEntry = killed && killed.length > 0
+    ? { ...base, killedProcesses: killed.map((p) => ({ ...p })) }
+    : base;
   await appendDispositionEntry(ledgerPath, entry);
+}
+
+/**
+ * Tell the reaped worker's parent which jobs the reap killed (issue #4243),
+ * with one typed line. Only a live parent (inProgress, with a live session)
+ * is told; any failure is logged and swallowed, because the slot is already
+ * free. Mirrors the hungSuspect TTL reclaim's notice (issue #4237).
+ */
+async function notifyParentOfKilledJobs(
+  task: Task,
+  silentForMs: number,
+  killed: readonly KilledProcess[],
+  deps: HungTaskReaperDeps,
+): Promise<void> {
+  if (!task.parentTaskId || !deps.sendLineToSession) return;
+  const parent = deps.taskStore.getTask(task.parentTaskId);
+  if (!parent || parent.status !== 'inProgress') return;
+  const sessionId = liveSessionIdOf(parent);
+  if (!sessionId) return;
+  const line = formatReclaimKillLine({ workerName: task.name || task.id, silentForMs, killed });
+  try {
+    await deps.sendLineToSession(sessionId, line);
+  } catch (err) {
+    console.warn(
+      `[hung-task-reaper] could not tell parent ${parent.id} what reaping ${task.id} killed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 function reapIncidentId(now: Date): string {

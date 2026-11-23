@@ -821,3 +821,165 @@ describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
     expect(taskStore.getTask(task.id)?.disposition).toEqual(preExisting);
   });
 });
+
+describe('reapHungTask — reports the jobs the reap killed (issue #4243)', () => {
+  const REAP_NOW = new Date('2026-06-21T00:00:00.000Z');
+  const killed = [
+    { pid: 4242, command: 'python train.py', ageSeconds: 13 * 3600, holdsGpu: true },
+    { pid: 4243, command: 'python eval.py', ageSeconds: 1800, holdsGpu: false },
+  ];
+
+  /** A live lead task, and its worker that is about to be reaped. */
+  function parentAndWorker(taskStore: TaskStore): { parent: Task; worker: Task } {
+    const parent = makeTask(taskStore);
+    const created = taskStore.createTask({ prompt: 'Train the model', cwd: '/tmp', parentTaskId: parent.id });
+    taskStore.addSession(created.id, {
+      tmuxSession: `kookr-${created.id}`,
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date('2026-06-19T00:00:00.000Z'),
+    });
+    return { parent: taskStore.getTask(parent.id)!, worker: taskStore.getTask(created.id)! };
+  }
+
+  test('records the killed jobs on the disposition, the ledger and the audit row, and tells the live parent', async () => {
+    const taskStore = new TaskStore();
+    const { parent, worker } = parentAndWorker(taskStore);
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-reap-killed-'));
+    const auditLogPath = join(dir, 'audit.jsonl');
+    const ledgerPath = join(dir, 'disposition.jsonl');
+    const sendLineToSession = vi.fn(async () => undefined);
+
+    await reapHungTask(worker, evidence({ killedProcesses: killed }), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      auditLogPath,
+      dispositionLedgerPath: ledgerPath,
+      sendLineToSession,
+      now: () => REAP_NOW,
+    });
+
+    expect(taskStore.getTask(worker.id)?.status).toBe('terminated');
+    expect(taskStore.getTask(worker.id)?.disposition).toEqual({
+      reason: 'hung_reap',
+      at: REAP_NOW.toISOString(),
+      source: 'hung-task-reaper',
+      outcome: 'terminated',
+      killedProcesses: killed,
+    });
+    const entries = await readDispositionEntries(ledgerPath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ disposition: 'needs-human', killedProcesses: killed });
+    const rows = await readAuditRows(auditLogPath);
+    expect(rows).toEqual([expect.objectContaining({ type: 'task.hungTaskReap', killedProcesses: killed })]);
+
+    expect(sendLineToSession).toHaveBeenCalledTimes(1);
+    expect(sendLineToSession).toHaveBeenCalledWith(
+      `kookr-${parent.id}`,
+      `[kookr] worker ${worker.name} was reclaimed after 180 min of silence; it killed: `
+      + 'python train.py (pid 4242, 13.0h, GPU); python eval.py (pid 4243, 30m)',
+    );
+  });
+
+  test('a delivered_then_hung reap records the killed jobs on its obsolete ledger entry', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const ledgerPath = join(await mkdtemp(join(tmpdir(), 'kookr-disposition-')), 'disposition.jsonl');
+
+    await reapHungTask(task, evidence({ killedProcesses: killed }), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      dispositionLedgerPath: ledgerPath,
+      resolveMergedPr: mergedPrResolver(task.id, 1542, 'https://github.com/kookr-ai/kookr/pull/1542'),
+      now: () => REAP_NOW,
+    });
+
+    expect(taskStore.getTask(task.id)?.disposition).toMatchObject({
+      outcome: 'delivered_then_hung',
+      killedProcesses: killed,
+    });
+    const entries = await readDispositionEntries(ledgerPath);
+    expect(entries[0]).toMatchObject({ disposition: 'obsolete', killedProcesses: killed });
+  });
+
+  test('no killed jobs: no killedProcesses key anywhere, and the parent is not told', async () => {
+    const taskStore = new TaskStore();
+    const { worker } = parentAndWorker(taskStore);
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-reap-killed-'));
+    const auditLogPath = join(dir, 'audit.jsonl');
+    const ledgerPath = join(dir, 'disposition.jsonl');
+    const sendLineToSession = vi.fn(async () => undefined);
+
+    await reapHungTask(worker, evidence({ killedProcesses: [] }), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      auditLogPath,
+      dispositionLedgerPath: ledgerPath,
+      sendLineToSession,
+      now: () => REAP_NOW,
+    });
+
+    expect(taskStore.getTask(worker.id)?.disposition).not.toHaveProperty('killedProcesses');
+    expect((await readDispositionEntries(ledgerPath))[0]).not.toHaveProperty('killedProcesses');
+    expect((await readAuditRows(auditLogPath))[0]).not.toHaveProperty('killedProcesses');
+    expect(sendLineToSession).not.toHaveBeenCalled();
+  });
+
+  test('a parent that is no longer in progress is not told', async () => {
+    const taskStore = new TaskStore();
+    const { parent, worker } = parentAndWorker(taskStore);
+    taskStore.completeTask(parent.id);
+    const sendLineToSession = vi.fn(async () => undefined);
+
+    await reapHungTask(worker, evidence({ killedProcesses: killed }), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      sendLineToSession,
+      now: () => REAP_NOW,
+    });
+
+    expect(taskStore.getTask(worker.id)?.status).toBe('terminated');
+    expect(sendLineToSession).not.toHaveBeenCalled();
+  });
+
+  test('a failing parent notice does not fail the reap', async () => {
+    const taskStore = new TaskStore();
+    const { worker } = parentAndWorker(taskStore);
+    const sendLineToSession = vi.fn(async () => { throw new Error('session gone'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await reapHungTask(worker, evidence({ killedProcesses: killed }), {
+        taskStore,
+        lifecycleDeps: lifecycleDeps(taskStore),
+        sendLineToSession,
+        now: () => REAP_NOW,
+      });
+      expect(result.outcome).toBe('terminated');
+      expect(sendLineToSession).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`could not tell parent`),
+        'session gone',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('a terminate failure tells the parent nothing', async () => {
+    const taskStore = new TaskStore();
+    const { worker } = parentAndWorker(taskStore);
+    const sendLineToSession = vi.fn(async () => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(reapHungTask(worker, evidence({ killedProcesses: killed }), {
+        taskStore,
+        lifecycleDeps: { ...lifecycleDeps(taskStore), adapter: { stop: vi.fn(async () => { throw new Error('boom'); }) } },
+        sendLineToSession,
+        now: () => REAP_NOW,
+      })).rejects.toThrow('boom');
+      expect(sendLineToSession).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+});

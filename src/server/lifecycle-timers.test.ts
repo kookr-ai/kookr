@@ -828,6 +828,51 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     }
   });
 
+  test('issue #4243: past the cap, the reap records the jobs it killed and tells the live parent', async () => {
+    const taskStore = new TaskStore();
+    const parent = makeHungTask(taskStore, 'kookr-lead-1');
+    const agentId = 'kookr-gpu-2';
+    const created = taskStore.createTask({ prompt: 'Train', cwd: '/tmp', parentTaskId: parent.id });
+    taskStore.addSession(created.id, {
+      tmuxSession: agentId,
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(NOW - 2 * REAP_THRESHOLD_MS),
+    });
+    const task = taskStore.getTask(created.id)!;
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const job = { pid: 4242, command: 'python train.py', ageMs: REAP_THRESHOLD_MS, holdsGpu: true };
+    const snapshotSessionJobs = vi.fn(async () => new Map([[task.id, [job]]]));
+    const sendLineToSession = vi.fn(async () => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const reaped = await maybeReapHungTask(
+        agentId,
+        'frozen pane',
+        timerDeps({
+          watchdog,
+          getHungTaskReapMs: () => REAP_THRESHOLD_MS,
+          snapshotSessionJobs,
+          getLongRunningJobReclaimCapMs: () => REAP_THRESHOLD_MS,
+          sendLineToSession,
+        }),
+        taskStore,
+        lifecycleDeps(taskStore),
+        now,
+      );
+      expect(reaped).toBe(true);
+      const killed = [{ pid: 4242, command: 'python train.py', ageSeconds: REAP_THRESHOLD_MS / 1000, holdsGpu: true }];
+      expect(taskStore.getTask(task.id)?.disposition).toMatchObject({ reason: 'hung_reap', killedProcesses: killed });
+      expect(sendLineToSession).toHaveBeenCalledTimes(1);
+      expect(sendLineToSession).toHaveBeenCalledWith(
+        'kookr-lead-1',
+        expect.stringContaining('it killed: python train.py (pid 4242, 3.0h, GPU)'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('issue #3154: a terminate rejection increments hungTaskReaperMetrics through the sweep wiring', async () => {
     // Covers the TimerDeps → reapHungTask wiring (`metrics: deps.hungTaskReaperMetrics`)
     // at the actual watchdog-sweep entry point, which the reaper-level tests

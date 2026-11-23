@@ -126,7 +126,7 @@ import {
 import { restoreExpiredSnoozes } from './snooze-restore.js';
 import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import type { SessionJobSnapshotter } from './session-job-snapshot.js';
-import { evaluateLongRunningJobHold } from '../core/long-running-jobs.js';
+import { evaluateLongRunningJobHold, toKilledProcesses, type SessionJob } from '../core/long-running-jobs.js';
 import {
   runScheduledMaintenancePrune,
   runScheduledRelayOrphanSweep,
@@ -920,8 +920,10 @@ export async function maybeReapHungTask(
   // Issue #4237: a worker silently waiting on its own long job (a GPU run) is
   // not hung, and reaping it would kill the job with it. Same hold and cap as
   // the hungSuspect TTL sweep. A snapshot failure means "no job" (old behaviour).
+  // The snapshot is kept: a reap below kills these jobs with the agent and
+  // reports them (issue #4243).
+  let jobs: SessionJob[] | undefined;
   if (deps.snapshotSessionJobs) {
-    let jobs;
     try {
       jobs = (await deps.snapshotSessionJobs([task])).get(task.id);
     } catch {
@@ -1038,6 +1040,7 @@ export async function maybeReapHungTask(
       paneContent,
       ...(reapWarnedAt !== undefined ? { warnedAt: reapWarnedAt } : {}),
       ...(reapKeptAliveCount !== undefined ? { keptAliveCount: reapKeptAliveCount } : {}),
+      ...(jobs && jobs.length > 0 ? { killedProcesses: toKilledProcesses(jobs) } : {}),
     },
     {
       taskStore,
@@ -1048,6 +1051,7 @@ export async function maybeReapHungTask(
       broadcastToAll: deps.broadcastToAll,
       resolveMergedPr: deps.resolveMergedPr,
       metrics: deps.hungTaskReaperMetrics,
+      sendLineToSession: deps.sendLineToSession,
       now,
     },
   );
