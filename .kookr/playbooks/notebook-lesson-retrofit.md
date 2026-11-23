@@ -1,6 +1,6 @@
 ---
 name: Notebook Lesson Retrofit Review
-description: Read what the agent-notebook lessons say, find the ones a hook, command, skill or agent-definition rule could make unnecessary, verify each proposal against what already exists, and report which entries can be retired — both for new proposals and for earlier ones that have since shipped. Never removes or edits a notebook entry.
+description: Read what the agent-notebook lessons say, find the ones a hook, command, skill or agent-definition rule could make unnecessary, verify each proposal against what already exists, and report which entries can be retired — both for new proposals and for earlier ones that have since shipped. Also reads the idea store (`kookr idea`) and promotes the ideas that several tasks voted for. Never removes or edits a notebook entry.
 tags: [workflow, analysis, memory]
 cwd: $HOME/git/kookr
 parameters:
@@ -26,6 +26,11 @@ parameters:
     required: false
     default: "5"
     type: text
+  - name: ideaMinScore
+    description: "An idea from the idea store (kookr idea) is a candidate when its score is at least this and at least two different tasks added it or voted for it with a reason."
+    required: false
+    default: "3"
+    type: text
   - name: reportsDir
     description: "Directory that holds this playbook's reports, entry maps and shelf snapshots. Blank = ~/.kookr/reports."
     required: false
@@ -36,8 +41,9 @@ checklist:
   - For every earlier leaf that is now closed, verified the fix on the fetched default branch, checked it is live on this host, and listed the entries that are ready to retire
   - Every new proposal was checked against existing hooks, skills, agent definitions, playbooks and scripts on a fetched remote ref, with a positive control for each "nothing covers this"
   - Every cited entry id was validated by script against the snapshot
+  - Snapshotted the idea store, verified every idea at or above the idea threshold like any other candidate, and removed an idea only after filing its leaf (or listed the command when not filing leaves)
   - Wrote the report, the entry map and the snapshot to the reports directory
-  - Ran no mutating nb command other than the end-of-task retrospective, and put no lesson text and no private-repository name in a public issue
+  - Ran no mutating nb command on the lesson store other than the end-of-task retrospective, and put no lesson or idea text and no private-repository name in a public issue
 ---
 
 ## Objective
@@ -53,6 +59,11 @@ keeps a map from each change to the entries it makes unnecessary. It also closes
 the loop: when an earlier proposal has shipped, it says which entries can now be
 retired.
 
+It also reads the **idea store** (`kookr idea`, issue #4250). There, agents
+record proposed changes directly, as `<what is wrong or missing> -> <proposed
+change>`, and vote when they hit the same thing again. A well-voted idea is a
+candidate like a well-voted lesson, but it already names the change.
+
 It does not look at how `nb` is used (error rates, surfacing metrics) or at
 store hygiene (duplicates, eviction). Those belong to
 `agent-notebook-reflection.md` and `nb-janitor.md`. If you notice such a problem,
@@ -62,12 +73,14 @@ give it one line in the report and move on.
 
 This task may run unattended. Do not ask questions; decide and report.
 
-1. **The store is read-only.** Never run `nb rm`, `nb move`, `nb merge`,
+1. **The lesson store is read-only.** Never run `nb rm`, `nb move`, `nb merge`,
    `nb split` or `nb describe`, and never edit a shelf file. The only writes
    allowed are the end-of-task retrospective votes and at most one `nb add`,
    and that add only to a shelf below its cap: adding to a full shelf evicts
    one of its existing entries (Phase 9 says how to check). Retiring entries is
-   the operator's step; you list the commands.
+   the operator's step; you list the commands. The idea store is separate:
+   the only write allowed there is `kookr idea rm`, in Phase 8, and only as
+   that phase says.
 2. **Never read code from the current directory to decide what exists.** The
    checkout you start in may be hundreds of commits behind. For every repository
    you check, find its default branch
@@ -104,9 +117,10 @@ This task may run unattended. Do not ask questions; decide and report.
   `nb show <shelf>` prints its entries as `<id>  [<score>]  <text>`. The id is
   the first six-character token.
 - Reports live in `{{reportsDir}}` (blank means `~/.kookr/reports`). Each run
-  writes three files named `notebook-retrofit-<stamp>`: `.md` (the full report,
+  writes four files named `notebook-retrofit-<stamp>`: `.md` (the full report,
   with lesson text), `.map.tsv` (one row per mapped entry: finding, shelf, id,
-  status, score, visibility, text) and `.shelves.txt` (the snapshot). The stamp
+  status, score, visibility, text), `.shelves.txt` (the snapshot) and
+  `.ideas.tsv` (the idea-store snapshot, Phase 1). The stamp
   is today's date, with `-run2`, `-run3`, … added when that date already has
   files. A run never overwrites an earlier run's files: they are the baseline
   the next run diffs against.
@@ -119,14 +133,25 @@ This task may run unattended. Do not ask questions; decide and report.
   `{{umbrellaRepo}}`, a leaf elsewhere is written `owner/repo#12`). Those keys
   are the values of the map's `finding` column, so a leaf's entries are the map
   rows whose finding is one of the keys on its line.
+- The idea store is agent-notebook in its own folder (`kookr idea path`
+  prints it; default `~/.kookr/ideas`), one shelf per category and repository
+  (`<category>@<repo-slug>`), lines of up to 400 characters shaped
+  `<file or command>: <problem> -> <change> (keeps: <behaviour>)`. The
+  categories are a closed list of simplifications (`kookr idea --help`
+  prints it). Read the store only through `kookr idea` (it points `nb` at
+  the right folder; plain `nb` reads the lesson store). Its usage log and its
+  vote log (`.votes.tsv`) record which task (`NB_SESSION`) added or voted for
+  each idea; Phase 1 turns them into a `tasks` count. Ideas have no entry map: an idea leaves the
+  store when it is promoted or found obsolete.
 - Entry statuses: `full` (remove once the change is live), `partial` (the change
   covers part of the lesson; shorten it), `now` (already covered; remove),
   `recheck` (looks fixed, not reproduced), `move` (belongs on another shelf),
   `decide` (the operator chooses), `junk` (not a lesson), `investigate` (the
   finding itself is unverified; keep the entry).
 - Shell variables do not survive from one command call to the next. Phase 1
-  prints the reports directory and the three file paths; use those literal
-  paths in later commands. The
+  prints the reports directory and the three file paths of the lesson
+  snapshot, and its idea-store step prints the fourth (`IDEAS_SNAP`); use
+  those literal paths in later commands. The
   snippets are bash.
 
 ## Phases
@@ -164,6 +189,35 @@ and the weekly `nb-janitor.md` reports a shelf as silent when it has no usage
 rows in its window (30 days by default); reading every shelf in place would
 make every shelf look in use for most of each month. Do not run `nb show` or
 `nb search` on the live store in later phases either: read the snapshot.
+
+Then snapshot the idea store into a fourth file. `<REPORTS>` and `<STAMP>`
+are the values Phase 1 used (the STAMP is the part of the printed paths
+between `notebook-retrofit-` and the extension):
+
+```bash
+REPORTS=<the REPORTS path Phase 1 printed>; STAMP=<this run's stamp>
+IDEAS_SNAP="$REPORTS/notebook-retrofit-$STAMP.ideas.tsv"
+IDEAS_DIR=$(kookr idea path) || { echo "kookr idea is not available; skip the idea store this run"; exit 0; }
+TASKS=$(mktemp)
+# A task supports an idea when it added it, or voted +1 with a reason (`kookr idea vote --because`).
+{
+  awk -F'\t' '$3=="add" && $4=="ok" && $8=="accepted" && $6!="" { print $2"\t"$7"\t"$6 }' "$IDEAS_DIR/.nb-usage.log" 2>/dev/null
+  awk -F'\t' '$5=="+1" && $2!="" && $6!="" { print $3"\t"$4"\t"$2 }' "$IDEAS_DIR/.votes.tsv" 2>/dev/null
+} | sort -u | awk -F'\t' '{ n[$1"\t"$2]++ } END { for (k in n) print k"\t"n[k] }' > "$TASKS"
+printf 'repo\tcategory\tid\tscore\ttasks\ttext\n' > "$IDEAS_SNAP"
+for repo in $(ls "$IDEAS_DIR" | sed -n 's/^[a-z-]*@\(.*\)\.md$/\1/p' | sort -u); do
+  kookr idea show --repo "$repo" --top 1000 --json | jq -r --arg r "$repo" '.entries[] | [.shelf, .id, $r, .category, .score, .text] | @tsv'
+done | awk -F'\t' 'FILENAME==ARGV[1] { t[$1"\t"$2]=$3; next } { print $3"\t"$4"\t"$2"\t"$5"\t"(t[$1"\t"$2]+0)"\t"$6 }' "$TASKS" - >> "$IDEAS_SNAP"
+rm -f "$TASKS"
+echo "ideas: $(($(wc -l < "$IDEAS_SNAP") - 1)); IDEAS_SNAP=$IDEAS_SNAP"
+```
+
+`tasks` counts the different tasks that added the idea, or voted for it with a
+reason: re-adding an identical idea counts as such a vote. Votes cast without
+a reason are not counted, because agents upvote what they are shown far more
+than what they hit. The usage log is bounded, so an old idea can show fewer
+tasks than really supported it; that only makes promotion more cautious. An
+empty store is a valid result.
 
 ### Phase 2 — Load the previous run
 
@@ -232,6 +286,13 @@ several repositories, is the strongest signal; one highly voted entry is the
 next. A candidate is a group, or a single entry at or above `{{minVotes}}`, in
 one of the first four buckets. Most entries end in "Leave"; that is expected.
 
+Ideas from the IDEAS_SNAP file skip the bucketing: an idea with a score of at
+least `{{ideaMinScore}}` and a `tasks` count of 2 or more is a candidate, keyed
+`I-<category>-<repo>-<id>`. Ideas that name the same file or command and the
+same problem in different words are one candidate: add their `tasks`. An idea that restates a lesson candidate joins that group
+and adds its votes. Ideas below the threshold stay in the store; do not
+discuss them in the report beyond a count.
+
 ### Phase 5 — Verify each candidate against what exists
 
 For each candidate, name the repository and surface the change would touch,
@@ -263,6 +324,24 @@ drives a finding, look at its trend, not only a 30-day total: a rate that
 dropped last week is not a current problem. Record for each finding how it was
 checked: "on the fetched default branch", "reproduced", or "from lesson text
 only". Never mark an entry `full` on lesson text alone.
+
+An idea candidate proposes removing or changing something that exists, so
+"does something already do this?" is the wrong check for it. Check it by its
+category, on the default branch:
+
+| Category | Promotable when | Obsolete when |
+|---|---|---|
+| `guidance` | the quoted text is still in the named file and is wrong, stale or repeated elsewhere | the text is gone or correct |
+| `dead` | a search for the symbol or path finds no use outside its own tests | it is used, or already gone |
+| `duplicate` | both copies exist and still differ or could drift | only one copy is left |
+| `overbuilt`, `tangled` | the layer or module is as described; the leaf is marked "Needs a design" unless the change is mechanical | already collapsed or split |
+| `unused` | the hook logs and transcripts show little or no use over 30 days; the leaf asks the operator to decide and is never assigned to an implementer directly | it is used regularly |
+| `fragile` | you reproduced the failure or read the code path that swallows it | the failure no longer happens |
+| `tests` | the test still exists and is tautological, duplicated, flaky or slow as described (run it, or check what a mutation does) | already fixed |
+
+Before an idea that deletes or replaces something becomes a leaf, find the
+test that covers its `keeps:` behaviour. If there is none, the leaf adds that
+test first. Any verdict from the idea text alone keeps the idea in the store.
 
 ### Phase 6 — Build and validate the map
 
@@ -304,8 +383,12 @@ file), in this order:
 3. New findings, ranked by the votes on the entries each one retires. For each:
    where, evidence, change, how it was checked, and the entry table.
 4. Corrections to earlier findings (anything Phase 5 showed was wrong or stale).
-5. Private-repository findings.
-6. What was not checked.
+5. Ideas: how many the store holds, the candidates with their verdicts, and a
+   `kookr idea rm --repo <repo> <id> --reason obsolete` command for each
+   obsolete idea (and `--reason other --note "promoted: <issue>"` for each promoted one
+   when Phase 8 does not run).
+6. Private-repository findings.
+7. What was not checked.
 
 Write plainly: lead each finding with the problem a user or agent meets, define
 any term a new reader would not know, and state uncertainty once, where it applies.
@@ -333,6 +416,15 @@ when that value is exactly `umbrella` or `leaves`. Any other value, including
   the entry ids it retires. Add the leaf to the umbrella's task list as
   `- [ ] <finding keys>: <issue>`, so Phase 3 of the next run can find its
   map rows.
+- **`leaves` only, ideas:** a promotable idea is filed as a leaf in the same
+  way, written in your own words from what Phase 5 verified, never by pasting
+  the idea text (rule 5 applies). Record it on the umbrella with its key
+  (`- [ ] I-<category>-<repo>-<id>: <issue>`). Then, and only then, remove it from the
+  store: `kookr idea rm --repo <repo> <id> --reason other --note "promoted: <issue URL>"`
+  (agent-notebook's `rm` accepts only `wrong`, `obsolete` and `other` as reasons).
+  Remove each obsolete idea with `--reason obsolete --note "<where it is
+  handled>"`. File at most three idea leaves per run; the rest wait for the
+  next run with their votes intact.
 - A leaf that changes what every agent session does (a new blocking or
   session-start hook) gets the `automation-blocked` label and a line saying the
   operator must remove it to release the work. If the target repository has no
@@ -381,5 +473,5 @@ findings, the corrections, and the report path.
   repository, or mark `recheck`.
 - **Marking judgement as mechanical.** A reviewer heuristic about one bug shape
   is not a hook. When in doubt, leave it.
-- **Removing entries.** Even when a fix is verified, the playbook only lists
-  the commands.
+- **Removing lesson entries.** Even when a fix is verified, the playbook only
+  lists the commands. Ideas are the one exception, and only in Phase 8.

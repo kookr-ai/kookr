@@ -346,6 +346,33 @@ kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
   `GET /api/diagnostics/lesson-yield?days=N` and the `lessonYield` block on
   `GET /api/health`. See [lesson-decision-gate](./lesson-decision-gate.md).
 
+## `kookr idea`
+
+The idea store (issue #4250): simplification ideas that agents record, one
+agent-notebook shelf per category and repository (`<category>@<repo-slug>`) in
+its own folder (`~/.kookr/ideas`, or `KOOKR_IDEAS_DIR`), kept apart from the
+lesson notebooks. Lines hold up to 400 characters; a shelf holds up to 50.
+
+```bash
+kookr idea show [--grep TEXT] [--category C] [--top N] [--repo SLUG] [--json]
+kookr idea add  --category C "<file or command>: <problem> -> <change> (keeps: <behaviour>)" [--new] [--repo SLUG]
+kookr idea vote <id> +1 --because "<what in this task hit it>"   |   kookr idea vote <id> -1
+kookr idea rm   <id> --reason obsolete|wrong|other [--note TEXT] [--repo SLUG]
+kookr idea list | path | doctor | stats
+```
+
+- The repository defaults to `$KOOKR_REPO_SLUG`.
+- `--category` is one of a closed list of simplifications: `guidance`, `dead`,
+  `duplicate`, `overbuilt`, `tangled`, `unused`, `fragile`, `tests`.
+  `kookr idea --help` defines each one. There is no category for new features.
+- `add` refuses an idea without `->` or `(keeps:`. When the repository already
+  has an idea about the same file or command, or one worded much the same, it
+  records nothing and lists those ideas: vote for one, or re-run with `--new`.
+  An identical idea becomes a +1 vote. A task can add one new idea.
+- `vote +1` needs `--because`; the reason goes to `.votes.tsv` in the store.
+- `show` lists every category of the repository together, best score first.
+- See [idea-store](./idea-store.md) for how ideas are promoted to issues.
+
 ## `kookr effort-split`
 
 Daily-report helper for the operator's 80/20 output split (issue #1718): measure

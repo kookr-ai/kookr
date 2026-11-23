@@ -72,6 +72,7 @@ proposals for things that already exist.
 | `umbrellaRepo` | `kookr-ai/kookr` | Repository that holds the umbrella issue. |
 | `fileIssues` | `no` | `no` writes the report only. `umbrella` also updates the umbrella issue. `leaves` also files one issue per verified single-PR change. Start with `no`. |
 | `minVotes` | `5` | Score at which a single entry becomes a candidate. |
+| `ideaMinScore` | `3` | Score at which an idea from the [idea store](idea-store.md) becomes a candidate; two or more different tasks must also have added or voted for it. |
 | `reportsDir` | `` (blank) | Blank resolves to `~/.kookr/reports`. |
 
 ### Create it
@@ -94,6 +95,7 @@ curl -sS -X POST http://127.0.0.1:4800/api/schedules \
         "umbrellaRepo": "kookr-ai/kookr",
         "fileIssues": "no",
         "minVotes": "5",
+        "ideaMinScore": "3",
         "reportsDir": ""
       }
     }
@@ -141,16 +143,20 @@ on this.
   every `nb show` on the live store writes a usage row. The weekly
   [nb-janitor](nb-janitor-schedule.md) reports a shelf as *silent* when it has
   no usage rows in its 30-day window, so a monthly read of every shelf in place
-  would make every shelf look in use for most of each month.
-- **Writes** three dated files to the reports directory (report, entry map,
-  shelf snapshot), its own retrospective votes, and at most one new lesson. The
+  would make every shelf look in use for most of each month. It also reads the
+  [idea store](idea-store.md) through `kookr idea`, with its usage and vote logs.
+- **Writes** four dated files to the reports directory (report, entry map,
+  shelf snapshot, idea snapshot `.ideas.tsv`), its own retrospective votes, and at most one new lesson. The
   votes go to the live store and count as use of those shelves, which is
   correct: the run did use them. The new lesson is added only to a shelf below
   its cap (`maxLines` in `nb config`, 50 by default), because adding to a full
   shelf evicts an existing entry.
 - **Never** removes, moves, merges or edits an existing notebook entry, and never changes
   host configuration, hooks, settings or schedules. Retiring entries is the
-  operator's step; the report prints the exact commands.
+  operator's step; the report prints the exact commands. The one exception is
+  the idea store: when `fileIssues` is `leaves`, the run removes an idea with
+  `kookr idea rm` after filing its leaf issue, or when the idea is verified as
+  already handled. Lesson entries are still never removed.
 - **Issues** are touched only when `fileIssues` is exactly `umbrella` or `leaves`; any other value means report only. Public issues carry
   shelf names, entry ids, scores and actions only: no lesson text, and nothing
   from or about a private repository. Visibility is checked twice: for the
