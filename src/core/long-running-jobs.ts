@@ -96,7 +96,11 @@ const INTERPRETER_RE = /^(?:node|nodejs|bunx|deno|npx|pnpx|uvx|pipx|python[0-9.]
  * a worktree named `kookr-issue-N-mcp-server-retry` holds real jobs.
  */
 const LSP_NAME_RE = /language-?server|langserver|^(?:tsserver|pyright|pylsp|gopls|rust-analyzer|clangd|jdtls)$/;
-const MCP_NAME_RE = /^mcp$|mcp[-_]?server|server[-_]mcp|^@modelcontextprotocol$/;
+/** MCP servers by command or package name: `n8n-mcp`, `mcp-remote`, `@upstash/context7-mcp`. */
+const MCP_PACKAGE_RE = /(?:^|[-_])mcp(?:[-_]|$)|^@modelcontextprotocol$/;
+/** MCP servers by script file name, stricter so `train_mcp.py` stays a job: `mcp_server.py`. */
+const MCP_SCRIPT_RE = /^mcp$|mcp[-_]?server|server[-_]mcp/;
+const SCRIPT_EXT_RE = /\.(?:c?m?js|ts|py)$/;
 
 /** Programs that are a server whatever their arguments. */
 const SERVER_PROGRAMS = new Set(['webpack-dev-server', 'nodemon', 'uvicorn', 'gunicorn', 'http.server', 'http-server', 'live-server']);
@@ -111,23 +115,40 @@ const DEV_SERVER_SUBCOMMANDS = new Set(['dev', 'develop', 'serve', 'start', 'pre
 
 /** `/usr/lib/node_modules/vite/bin/vite.js` → `vite`. */
 function programName(token: string): string {
-  return token.replace(/^.*\//, '').replace(/\.(?:c?m?js|ts|py)$/, '');
+  return token.replace(/^.*\//, '').replace(SCRIPT_EXT_RE, '');
+}
+
+/** `mcp@latest` → `mcp`; a leading `@` (an npm scope) is kept. */
+function stripVersion(name: string): string {
+  return name.replace(/(.)@.*$/, '$1');
 }
 
 /**
- * The names a program token is known by: its own name, plus the package
- * directory (and npm scope) when it is a path into `node_modules` or an npm
- * package spec. `/r/node_modules/@scope/pkg/dist/cli.js` → `['cli', 'pkg', '@scope']`.
+ * The npm package a program token belongs to, as `[scope?, name]`: the
+ * directory right under the last `node_modules`, or an `@scope/name` spec.
+ * `/r/node_modules/@scope/pkg/dist/cli.js` → `['@scope', 'pkg']`. Empty
+ * otherwise: other directories never count.
  */
 function packageNames(token: string): string[] {
-  const names = [programName(token)];
   const segments = token.split('/').filter(Boolean);
   const nm = segments.lastIndexOf('node_modules');
   const pkg = nm >= 0 ? segments.slice(nm + 1) : token.startsWith('@') ? segments : [];
-  if (pkg[0]?.startsWith('@')) names.push(pkg[0], pkg[1] ?? '');
-  else if (pkg[0]) names.push(pkg[0]);
-  return names;
+  const names = pkg[0]?.startsWith('@') ? [pkg[0], pkg[1]] : [pkg[0]];
+  return names.filter((n): n is string => !!n && n !== '.bin').map(stripVersion);
 }
+
+/** A language or MCP server, judged from its program token. */
+function isLspOrMcpServer(token: string): boolean {
+  const program = stripVersion(programName(token));
+  const packages = packageNames(token);
+  if ([program, ...packages].some((name) => LSP_NAME_RE.test(name))) return true;
+  if (packages.some((name) => MCP_PACKAGE_RE.test(name))) return true;
+  const isScript = SCRIPT_EXT_RE.test(token.replace(/^.*\//, ''));
+  return (isScript ? MCP_SCRIPT_RE : MCP_PACKAGE_RE).test(program);
+}
+
+/** `npm exec <pkg>`, `pnpm dlx <pkg>`, `yarn dlx <pkg>`, `bun x <pkg>`: the package is the program. */
+const PACKAGE_EXEC_SUBCOMMANDS = new Set(['exec', 'dlx', 'x']);
 
 /**
  * True for a process on the deny-list above. Judged from `comm`, from a
@@ -156,9 +177,12 @@ export function isNonJobService(proc: Pick<ProcessInfo, 'comm' | 'command'>): bo
   if (!raw) return false;
   const program = programName(raw);
   if (SERVICE_COMMS.has(program) || SERVER_PROGRAMS.has(program)) return true;
-  if (packageNames(raw).some((name) => LSP_NAME_RE.test(name) || MCP_NAME_RE.test(name))) return true;
+  if (isLspOrMcpServer(raw)) return true;
   if (!DEV_SERVER_CLIS.has(program)) return false;
   const positional = tokens.slice(i + 1).filter((t) => !t.startsWith('-'));
+  if (PACKAGE_RUNNERS.has(program) && PACKAGE_EXEC_SUBCOMMANDS.has(positional[0] ?? '')) {
+    return isNonJobService({ comm: '', command: positional.slice(1).join(' ') });
+  }
   const sub = PACKAGE_RUNNERS.has(program) && positional[0] === 'run' ? positional[1] : positional[0];
   // Bare `vite` (or `vite --port 3000`) is its dev server; `vite build` is a job.
   if (program === 'vite' && (sub === undefined || !['build', 'optimize'].includes(sub))) return true;
