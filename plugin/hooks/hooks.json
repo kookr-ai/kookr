@@ -96,6 +96,16 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/nb-inject.sh --subagent"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
@@ -107,16 +117,6 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/chain-handoff-stop.sh"
           },
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/nb-retro.sh"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/nb-retro.sh"

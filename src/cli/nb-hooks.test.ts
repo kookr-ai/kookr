@@ -29,7 +29,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('nb-retro Stop/SubagentStop hook', () => {
+describe('nb-retro Stop hook (SubagentStop is let through)', () => {
   const hook = join(process.cwd(), 'plugin/hooks/nb-retro.mjs');
 
   /** Hook env: the ambient Kookr task env must not leak the slug / TTL / opt-out in. */
@@ -301,17 +301,70 @@ describe('nb-retro Stop/SubagentStop hook', () => {
     expect(r.err).toBe('');
   });
 
-  test('fan-out: the first agent to stop (a subagent) gets the single nudge, with the placement rule', () => {
-    // SubagentStop fires with the PARENT's session id. The first stop of the session
-    // is usually a subagent that never saw the SessionStart index, so the nudge text
-    // itself must carry the placement rule; every later stop is let through.
+  // Recorded Claude Code 2.1.x payload entries (issue #4231).
+  const runningSubagent = { id: 'a968876863f7fbf18', type: 'subagent', status: 'running', agent_type: 'general-purpose' };
+  const runningShell = { id: 'b4oxl3awv', type: 'shell', status: 'running', command: 'npm ci' };
+
+  test('a lead Stop while a background subagent is running is let through and does not spend the nudge (#4231)', () => {
+    const env = { NB_DIR: dir };
+    const waiting = runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-wait', background_tasks: [runningSubagent] });
+    expect(waiting).toEqual({ code: 0, err: '' });
+    expect(existsSync(join(dir, '.retro-sess-wait'))).toBe(false);
+    // The delegated work has come back: the next stop gets the nudge, once.
+    const done = { ...runningSubagent, status: 'completed' };
+    expect(runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-wait', background_tasks: [done] }).code).toBe(2);
+    expect(runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-wait', background_tasks: [] }).code).toBe(0);
+  });
+
+  test('only a running SUBAGENT defers the nudge: a running shell, or no/odd background_tasks, still nudges', () => {
+    const env = { NB_DIR: dir };
+    expect(runRetro(env, { session_id: 'sess-shell', background_tasks: [runningShell] }).code).toBe(2);
+    expect(runRetro(env, { session_id: 'sess-monitor', background_tasks: [{ id: 'm1', type: 'monitor', status: 'running' }] }).code).toBe(2);
+    expect(runRetro(env, { session_id: 'sess-empty', background_tasks: [] }).code).toBe(2);
+    expect(runRetro(env, { session_id: 'sess-odd', background_tasks: 'running' }).code).toBe(2);
+    expect(runRetro(env, { session_id: 'sess-null-entry', background_tasks: [null] }).code).toBe(2);
+  });
+
+  test('fan-out: SubagentStop never takes the nudge, so the lead gets it at its first stop with nothing running (#4231)', () => {
+    // SubagentStop fires with the PARENT's session id. A subagent that took the one
+    // nudge left the lead without one, and its answer displaced its report.
     const env = { NB_DIR: dir, KOOKR_REPO_SLUG: 'acme-widgets' };
-    const first = runRetro(env, { hook_event_name: 'SubagentStop', session_id: 'sess-fan' });
-    expect(first.code).toBe(2);
-    expect(first.err).toContain('<situation>@<slug>');
-    expect(first.err).toMatch(/Never write fleet-global directly/);
-    expect(runRetro(env, { hook_event_name: 'SubagentStop', session_id: 'sess-fan' }).code).toBe(0); // 2nd subagent
-    expect(runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-fan' }).code).toBe(0); // the main agent
+    const sid = 'sess-fan';
+    // 1. the lead stops to wait for its subagents
+    expect(runRetro(env, { hook_event_name: 'Stop', session_id: sid, background_tasks: [runningSubagent] }).code).toBe(0);
+    // 2. the subagent finishes (its own entry is still `running` at SubagentStop)
+    const sub = runRetro(env, {
+      hook_event_name: 'SubagentStop',
+      session_id: sid,
+      agent_id: runningSubagent.id,
+      agent_type: 'general-purpose',
+      background_tasks: [runningSubagent],
+    });
+    expect(sub).toEqual({ code: 0, err: '' });
+    // a SubagentStop with nothing else running does not claim it either
+    expect(runRetro(env, { hook_event_name: 'SubagentStop', session_id: sid }).code).toBe(0);
+    expect(existsSync(join(dir, `.retro-${sid}`))).toBe(false);
+    // 3. the lead's next stop, with nothing running, gets the single nudge with the placement rule
+    const lead = runRetro(env, { hook_event_name: 'Stop', session_id: sid, background_tasks: [] });
+    expect(lead.code).toBe(2);
+    expect(lead.err).toContain('<situation>@<slug>');
+    expect(lead.err).toMatch(/Never write fleet-global directly/);
+    // 4. and never again
+    expect(runRetro(env, { hook_event_name: 'Stop', session_id: sid }).code).toBe(0);
+  });
+
+  test('a SubagentStop is let through even on a fresh session with no sentinel', () => {
+    expect(runRetro({ NB_DIR: dir }, { hook_event_name: 'SubagentStop', session_id: 'sess-sub-only' })).toEqual({ code: 0, err: '' });
+    expect(readdirSync(dir).filter((f) => f.startsWith('.retro-'))).toEqual([]);
+  });
+
+  test('the nudge asks a subagent to end with its full report, before the #4141 re-signal line (#4231)', () => {
+    const r = runRetro({ NB_DIR: dir, KOOKR_TASK_ID: 'task-9' }, { session_id: 'sess-report' });
+    expect(r.code).toBe(2);
+    expect(r.err).toMatch(/If you are a subagent, end by repeating your full final report after the retrospective/);
+    expect(r.err).toMatch(/your last message is all your caller receives/);
+    const lines = r.err.trimEnd().split('\n');
+    expect(lines[lines.length - 1]).toContain('kookr signal completion-ready');
   });
 
   test.skipIf(process.getuid?.() === 0)('fails open (allows the stop, no nudge) when the sentinel cannot be written', () => {
