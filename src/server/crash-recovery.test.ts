@@ -154,6 +154,24 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(task.id)?.launchIntent?.prompt).toBe('raw user request');
   });
 
+  test('a restart that replays the prompt keeps the note given on kookr reopen (issue #4227)', async () => {
+    const cwd = join(tempDir, 'reopen-note-recovery');
+    const task = await setupCrashedTask('raw user request', cwd);
+    taskStore.getTaskForMutation(task.id)!.launchIntent = {
+      ...buildTaskLaunchIntent('claude-code'),
+      prompt: 'raw user request',
+      cwd,
+    };
+    taskStore.setReopenNote(task.id, 'Do not merge.');
+    const launch = vi.spyOn(adapter, 'launch');
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(1);
+    expect(launch).toHaveBeenCalledWith(task.id, 'Do not merge.\n\nraw user request', cwd, undefined, expect.any(Object));
+  });
+
   test('fails closed and records a durable reason when persisted intent is missing', async () => {
     const cwd = join(tempDir, 'missing-intent');
     const task = await setupCrashedTask('Do not guess', cwd);

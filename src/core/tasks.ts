@@ -210,6 +210,16 @@ export class TaskStore {
    */
   private resumeOnNextLaunch = new Set<string>();
   /**
+   * Tasks whose next RESUMED launch should get `reopenNote` in front of its
+   * first message (issue #4227). Set only by a reopen that both requested a
+   * resume and carried a note, and consumed with that resume request, so a
+   * later resume of the same conversation (account switch, a reopen without
+   * a note) does not repeat a note the conversation already holds. In memory,
+   * like {@link resumeOnNextLaunch}: after a restart the task launches fresh,
+   * and a fresh prompt always carries the note.
+   */
+  private reopenNoteOnNextResume = new Set<string>();
+  /**
    * Typed task-relation graph (issue #599). Keyed by
    * {@link taskRelationKey}`(source, target, type)` so dedup is a single map
    * lookup. The deterministic `parentTaskId` field on Task is the source of
@@ -1231,6 +1241,16 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /** Replace the operator's reopen note (see `Task.reopenNote`). */
+  setReopenNote(id: string, note: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.reopenNote = note;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   reopenTask(id: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
@@ -1262,6 +1282,16 @@ export class TaskStore {
    */
   takeResumeOnNextLaunch(id: string): boolean {
     return this.resumeOnNextLaunch.delete(id);
+  }
+
+  /** Mark the next resumed launch to carry `reopenNote` (see {@link reopenNoteOnNextResume}). */
+  requestReopenNoteOnNextResume(id: string): void {
+    this.reopenNoteOnNextResume.add(id);
+  }
+
+  /** Consume the mark set by {@link requestReopenNoteOnNextResume}; true when it was set. */
+  takeReopenNoteOnNextResume(id: string): boolean {
+    return this.reopenNoteOnNextResume.delete(id);
   }
 
   deleteTask(id: string): void {

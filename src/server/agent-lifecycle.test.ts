@@ -1295,6 +1295,7 @@ describe('promotePendingTasks', () => {
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       takeResumeOnNextLaunch: vi.fn().mockReturnValue(true),
+      takeReopenNoteOnNextResume: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
@@ -1316,6 +1317,139 @@ describe('promotePendingTasks', () => {
       { sessionId: 'sess-resumable', continuationMessage: expect.stringContaining('[Kookr] This conversation was resumed in a new process') },
       expect.objectContaining({ onSessionCreated: expect.any(Function) }),
     );
+  });
+
+  describe('reopen note (issue #4227)', () => {
+    const NOTE = 'Do not merge; stop at an open PR.';
+    function storeFor(pendingTask: ReturnType<typeof lifecycleTask>, resume: boolean, noteOnResume = resume) {
+      return {
+        getActiveCount: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(1),
+        getNextPending: vi.fn().mockReturnValueOnce(pendingTask).mockReturnValueOnce(undefined),
+        listTasks: vi.fn().mockReturnValue([]),
+        hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
+        getTask: vi.fn().mockReturnValue(pendingTask),
+        cancelTask: vi.fn(),
+        beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+        takeResumeOnNextLaunch: vi.fn().mockReturnValue(resume),
+        takeReopenNoteOnNextResume: vi.fn().mockReturnValue(noteOnResume),
+        ownsLaunchReservation: vi.fn().mockReturnValue(true),
+        endLaunch: vi.fn(),
+        listRelations: vi.fn().mockReturnValue([]),
+        setLaunchPermissionPosture: vi.fn(),
+      };
+    }
+
+    test('a fresh relaunch puts the note before the launch note and the original prompt', async () => {
+      const pendingTask = lifecycleTask({
+        id: 'pending-1',
+        status: 'pending',
+        launchNote: '[Kookr launch warning] KB unavailable.',
+        reopenNote: NOTE,
+      });
+      const deps = makePromotionDeps({ taskStore: storeFor(pendingTask, false) as any, lifecycleDeps: makeDeps() });
+
+      expect(await promotePendingTasks(deps)).toBe(1);
+      expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+        'pending-1',
+        `${NOTE}\n\n[Kookr launch warning] KB unavailable.\n\nFix the bug in auth`,
+        '/workspace/project',
+        undefined,
+        expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+      );
+    });
+
+    test('a parked task still carries the note, though its parked launch note is dropped', async () => {
+      // Promotion clears and skips launchNote for a parked admission; the
+      // operator's correction must survive that.
+      const pendingTask = lifecycleTask({
+        id: 'pending-1',
+        status: 'pending',
+        launchNote: '[Kookr launch parked] Required launch dependency is degraded.',
+        reopenNote: NOTE,
+        launchAdmission: { status: 'parked', reason: 'dependency_degraded' } as never,
+      });
+      const deps = makePromotionDeps({ taskStore: storeFor(pendingTask, false) as any, lifecycleDeps: makeDeps() });
+
+      expect(await promotePendingTasks(deps)).toBe(1);
+      const prompt = (deps.adapterRegistry.get('claude-code').launch as ReturnType<typeof vi.fn>).mock.calls[0]![1];
+      expect(prompt).toBe(`${NOTE}\n\nFix the bug in auth`);
+    });
+
+    test('a resumed conversation gets the note at the start of its first message', async () => {
+      const pendingTask = lifecycleTask({
+        id: 'pending-1',
+        status: 'pending',
+        reopenNote: NOTE,
+        sessions: [
+          aSession({
+            tmuxSession: 'kookr-prior',
+            cwd: '/workspace/project',
+            createdAt: new Date(),
+            claudeSessionId: 'sess-resumable',
+            lastStatus: 'aborted',
+          }),
+        ],
+      });
+      const deps = makePromotionDeps({ taskStore: storeFor(pendingTask, true) as any, lifecycleDeps: makeDeps() });
+
+      expect(await promotePendingTasks(deps)).toBe(1);
+      const call = (deps.adapterRegistry.get('claude-code').launch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      const resume = call[3] as { sessionId: string; continuationMessage: string };
+      expect(resume.sessionId).toBe('sess-resumable');
+      expect(resume.continuationMessage.startsWith(`${NOTE}\n\n[Kookr] This conversation was resumed in a new process`)).toBe(true);
+      // The usual continuation text (where the work lives) is kept after it.
+      expect(resume.continuationMessage).toContain('Before this you were working in /workspace/project.');
+      // An adapter that cannot resume after all falls back to this prompt.
+      expect(call[1]).toBe(`${NOTE}\n\nFix the bug in auth`);
+    });
+
+    test('a later resume that did not come with the note does not repeat it', async () => {
+      // e.g. an account switch, or a reopen without --note: the conversation
+      // already received the note on the reopen that set it.
+      const pendingTask = lifecycleTask({
+        id: 'pending-1',
+        status: 'pending',
+        reopenNote: NOTE,
+        sessions: [
+          aSession({
+            tmuxSession: 'kookr-prior',
+            cwd: '/workspace/project',
+            createdAt: new Date(),
+            claudeSessionId: 'sess-resumable',
+            lastStatus: 'aborted',
+          }),
+        ],
+      });
+      const store = storeFor(pendingTask, true, false);
+      const deps = makePromotionDeps({ taskStore: store as any, lifecycleDeps: makeDeps() });
+
+      expect(await promotePendingTasks(deps)).toBe(1);
+      expect(store.takeReopenNoteOnNextResume).toHaveBeenCalledWith('pending-1');
+      const call = (deps.adapterRegistry.get('claude-code').launch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect((call[3] as { continuationMessage: string }).continuationMessage.startsWith('[Kookr] This conversation was resumed')).toBe(true);
+    });
+
+    test('without a note the resumed first message is unchanged', async () => {
+      const pendingTask = lifecycleTask({
+        id: 'pending-1',
+        status: 'pending',
+        sessions: [
+          aSession({
+            tmuxSession: 'kookr-prior',
+            cwd: '/workspace/project',
+            createdAt: new Date(),
+            claudeSessionId: 'sess-resumable',
+            lastStatus: 'aborted',
+          }),
+        ],
+      });
+      const deps = makePromotionDeps({ taskStore: storeFor(pendingTask, true) as any, lifecycleDeps: makeDeps() });
+
+      expect(await promotePendingTasks(deps)).toBe(1);
+      const call = (deps.adapterRegistry.get('claude-code').launch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect((call[3] as { continuationMessage: string }).continuationMessage.startsWith('[Kookr] This conversation was resumed')).toBe(true);
+      expect(call[1]).toBe('Fix the bug in auth');
+    });
   });
 
   test('returns 0 and does not broadcast when no pending tasks', async () => {

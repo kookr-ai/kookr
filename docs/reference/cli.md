@@ -1844,8 +1844,9 @@ on where it stopped. `kookr spawn` with a new brief would throw that
 conversation away.
 
 ```bash
-kookr reopen <taskId>          # reopen and print resume vs fresh
-kookr reopen <taskId> --json   # machine-readable envelope
+kookr reopen <taskId>                                # reopen and print resume vs fresh
+kookr reopen <taskId> --note "Do not merge; stop at an open PR."
+kookr reopen <taskId> --json                         # machine-readable envelope
 ```
 
 The task is re-queued and relaunched as soon as a slot is free. The output
@@ -1869,10 +1870,38 @@ Conversation: resumes c3753022-…
   transcript is gone, or the agent (Codex CLI, Grok Build) does not support
   resume.
 
+`--note "<text>"` (also `--note=<text>`; issue #4227) gives the relaunch text
+to read first. Use it when something said to the task after launch contradicts
+its original prompt, for example a "do not merge" sent after a prompt that
+authorized merging: a relaunch from the original prompt would otherwise follow
+the prompt. The note is stored on the task as `reopenNote` and delivered as
+follows:
+
+- fresh start (`fresh`, `not_resumable`, or a resume that falls back to a
+  fresh launch): the relaunched agent's first prompt starts with the note,
+  followed by the original prompt;
+- `resume`: the note starts the first message typed into the resumed
+  conversation, before Kookr's usual "this conversation was resumed" message.
+  This happens once, on the reopen that gave the note: a later resume of the
+  same conversation (an account switch, a reopen without `--note`) does not
+  repeat it, because the conversation already holds it.
+
+The note stays on the task, so a later relaunch that replays the prompt (a
+restart after a server crash, another reopen that cannot resume) carries it
+too. Reopening again with `--note` replaces it. The server trims it and refuses a blank note or one
+longer than 8000 characters (HTTP 400, `invalid_reopen_note`).
+
+When the outcome is `not_resumable` and the task has no note, the command
+prints a warning that the task restarts from its original prompt unchanged.
+Send any correction to the running task with `kookr reply`.
+
 `--json` prints one `{ ok, code, message, details }` envelope.
 `details.resume` carries `{ mode: "resume" | "fresh" | "not_resumable",
 conversationId?, caveat?, reason? }`, and `details.status` is the task's status
-after the call (`pending` while it waits for a slot). The resume request lives
+after the call (`pending` while it waits for a slot). `details.note` is the
+note the relaunch carries, when there is one, and `details.warnings` is a list
+of warning strings (empty when there is nothing to warn about), including the
+`not_resumable` warning above. The resume request lives
 in server memory only: if the server restarts while the task is still
 `pending`, it launches fresh. `kookr reopen --json --help` prints the help text
 inside the same envelope, in `details.help`.
@@ -1882,8 +1911,8 @@ command forwards `KOOKR_SUPERVISOR_TOKEN` (else `KOOKR_API_TOKEN`), and
 `KOOKR_API_BASE_URL` / `KOOKR_PORT` override the probe of ports `4800` and
 `4801`.
 
-Exit codes: `0` reopened. `2` usage error, unknown task (`NOT_FOUND`), or a
-task that is not terminal (`TASK_NOT_TERMINAL`; nothing is launched). `3` no
+Exit codes: `0` reopened. `2` usage error, a note the server refuses
+(`INVALID_NOTE`), unknown task (`NOT_FOUND`), or a task that is not terminal (`TASK_NOT_TERMINAL`; nothing is launched). `3` no
 server reachable. `4` server/HTTP error, including a relaunch that failed
 (`details.serverCode: "reopen_launch_failed"`), dependency-probe cleanup still
 in progress (`task_cleanup_in_progress`), a missing or wrong supervisor token

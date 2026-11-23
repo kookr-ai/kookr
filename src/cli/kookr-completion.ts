@@ -125,7 +125,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     // Reopen a terminal task (#3671). Positional is the task id; keep in sync
     // with src/cli/kookr-reopen.ts.
     name: 'reopen',
-    flags: ['--json', '-h', '--help'],
+    flags: ['--note', '--json', '-h', '--help'],
   },
   {
     // Named Claude accounts and account switching; keep in sync with src/cli/kookr-account.ts.

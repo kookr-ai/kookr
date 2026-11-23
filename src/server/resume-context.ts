@@ -117,6 +117,15 @@ export function buildResumeContinuationMessage(
 }
 
 /**
+ * Put the operator's reopen note (`Task.reopenNote`, issue #4227) in front of
+ * `text`: the prompt of a fresh relaunch, or the first message of a resumed
+ * conversation.
+ */
+export function withReopenNote(note: string | undefined, text: string): string {
+  return note ? `${note}\n\n${text}` : text;
+}
+
+/**
  * The newest session on this task whose provider conversation is recoverable —
  * i.e. it carries a persisted `claudeSessionId` and has not already been
  * replaced by a later resumed session. Sessions are appended in launch order,

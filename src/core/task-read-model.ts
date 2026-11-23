@@ -191,6 +191,16 @@ export interface Task {
   launchHealthSummary?: TaskLaunchHealthSummary;
   /** Warning text prepended to the actual launch prompt, but not part of `prompt`. */
   launchNote?: string;
+  /**
+   * Note the operator gave when reopening this task (`kookr reopen --note`,
+   * issue #4227). Prepended to the prompt of every fresh relaunch and, when the
+   * reopen that set it resumes the conversation, to the first message typed
+   * into it (once; see `TaskStore.requestReopenNoteOnNextResume`). Kept apart from
+   * {@link launchNote} because promotion clears that one when a parked launch is
+   * admitted, which would silently drop the operator's correction. A later
+   * reopen with a note replaces it.
+   */
+  reopenNote?: string;
   parentTaskId?: string;
   /**
    * Immutable launch provenance (issue #1583): how this task was created —

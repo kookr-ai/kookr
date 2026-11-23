@@ -36,6 +36,115 @@ describe('parseReopenArgs', () => {
   it('rejects an unknown option', () => {
     expect(parseReopenArgs(['--force', 't-1']).error).toBe('unknown option: --force');
   });
+
+  it('takes --note <text> and --note=<text>, trimmed (issue #4227)', () => {
+    expect(parseReopenArgs(['t-1', '--note', ' Do not merge. '])).toEqual({ taskId: 't-1', note: 'Do not merge.', json: false, help: false });
+    expect(parseReopenArgs(['--note=--force is forbidden', 't-1']).note).toBe('--force is forbidden');
+  });
+
+  it('rejects --note without a value or with a blank one', () => {
+    expect(parseReopenArgs(['t-1', '--note']).error).toBe('--note requires a value');
+    expect(parseReopenArgs(['t-1', '--note', '--json']).error).toBe('--note requires a value');
+    expect(parseReopenArgs(['t-1', '--note', '  ']).error).toBe('--note must not be empty');
+    expect(parseReopenArgs(['t-1', '--note=']).error).toBe('--note must not be empty');
+  });
+});
+
+describe('runReopenCli --note and the not_resumable warning (issue #4227)', () => {
+  const NOT_RESUMABLE = { mode: 'not_resumable', reason: 'agent type codex-cli does not support resume' };
+  const withNote = (resume: unknown, reopenNote?: string) => ({
+    ok: true,
+    task: { id: 't-1', status: 'pending', ...(reopenNote !== undefined ? { reopenNote } : {}) },
+    resume,
+  });
+
+  it('sends the note as a JSON body', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(withNote(NOT_RESUMABLE, 'Do not merge.')));
+
+    expect(await runReopenCli(['t-1', '--note', 'Do not merge.'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(JSON.parse(init.body as string)).toEqual({ note: 'Do not merge.' });
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    const text = io.logs.join('\n');
+    expect(text).toContain('Note: the relaunch carries the reopen note');
+    expect(text).not.toContain('Warning:');
+  });
+
+  it('sends no body without --note', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(withNote({ mode: 'resume', conversationId: 's' })));
+    await runReopenCli(['t-1'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    expect((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body).toBeUndefined();
+  });
+
+  it('warns when a not_resumable task restarts with no note', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(withNote(NOT_RESUMABLE)));
+
+    expect(await runReopenCli(['t-1'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+
+    const text = io.logs.join('\n');
+    expect(text).toMatch(/Warning: the task restarts from its original prompt unchanged/);
+    expect(text).toContain('kookr reply t-1');
+    expect(text).toContain('--note');
+  });
+
+  it('--json carries the warning in details.warnings', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(withNote(NOT_RESUMABLE)));
+
+    expect(await runReopenCli(['t-1', '--json'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+
+    expect(io.logs).toHaveLength(1);
+    const env = JSON.parse(io.logs[0]!);
+    expect(env.details.warnings).toHaveLength(1);
+    expect(env.details.warnings[0]).toMatch(/restarts from its original prompt unchanged/);
+    expect(env.details.note).toBeUndefined();
+  });
+
+  it('does not warn when the task resumes, or already carries a note', async () => {
+    for (const body of [withNote({ mode: 'resume', conversationId: 's' }), withNote(NOT_RESUMABLE, 'kept from an earlier reopen')]) {
+      const io = captureConsole();
+      const fetchImpl = vi.fn(async () => jsonResponse(body));
+      await runReopenCli(['t-1', '--json'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+      expect(JSON.parse(io.logs[0]!).details.warnings).toEqual([]);
+    }
+  });
+
+  it('--json reports the stored note', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(withNote(NOT_RESUMABLE, 'Do not merge.')));
+    await runReopenCli(['t-1', '--json', '--note', 'Do not merge.'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    const env = JSON.parse(io.logs[0]!);
+    expect(env.details).toMatchObject({ note: 'Do not merge.', warnings: [] });
+  });
+
+  it('warns when the server did not store the note it was sent (an older server)', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(withNote({ mode: 'resume', conversationId: 's' })));
+    await runReopenCli(['t-1', '--json', '--note', 'Do not merge.'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    const env = JSON.parse(io.logs[0]!);
+    expect(env.details.warnings).toEqual([expect.stringMatching(/did not store the --note/)]);
+  });
+
+  it('a note the server refuses is a user error (exit 2, INVALID_NOTE), not a server error', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ error: 'note is longer than 8000 characters', code: 'invalid_reopen_note' }, 400),
+    );
+
+    const code = await runReopenCli(['t-1', '--json', '--note', 'x'.repeat(9000)], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+
+    expect(code).toBe(2);
+    expect(JSON.parse(io.logs[0]!)).toMatchObject({ ok: false, code: 'INVALID_NOTE', details: { serverCode: 'invalid_reopen_note', status: 400 } });
+  });
+
+  it('documents --note in the help text', () => {
+    expect(REOPEN_HELP_TEXT).toContain('kookr reopen <taskId> [--note "<text>"] [--json]');
+    expect(REOPEN_HELP_TEXT).toMatch(/--note <text>/);
+  });
 });
 
 describe('runReopenCli', () => {

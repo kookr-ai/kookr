@@ -292,14 +292,21 @@ export class TaskLifecycleCommands {
    * Reopen a terminal task and relaunch it (issue #3671). Like
    * {@link completeTask}, every outcome is audited as a `task.reopen` row
    * when `auditLogPath` is configured, attributed to `opts.actor` (#3914).
+   *
+   * `opts.note` (issue #4227) is stored as the task's `reopenNote` once the
+   * reopen is accepted, so the relaunch carries it whether it resumes the
+   * conversation or starts again from the original prompt.
    */
-  async reopenTask(taskId: string, opts: TaskDeletionAuditOpts = {}): Promise<TaskLifecycleCommandResult> {
-    const result = await this.reopenTaskInner(taskId);
+  async reopenTask(
+    taskId: string,
+    opts: { note?: string } & TaskDeletionAuditOpts = {},
+  ): Promise<TaskLifecycleCommandResult> {
+    const result = await this.reopenTaskInner(taskId, opts.note);
     await this.writeTaskCommandAudit('task.reopen', taskId, result, opts.actor);
     return result;
   }
 
-  private async reopenTaskInner(taskId: string): Promise<TaskLifecycleCommandResult> {
+  private async reopenTaskInner(taskId: string, note: string | undefined): Promise<TaskLifecycleCommandResult> {
     // Only a terminal task can be reopened. The store also allows
     // `inProgress -> open`, so without this guard a reopen of a running task
     // would pend and promote it, launching a second agent beside the live one.
@@ -358,8 +365,12 @@ export class TaskLifecycleCommands {
       return { outcome: 'invalid', code: 'task_cleanup_in_progress', error: err.message };
     }
     // Set after the reopen succeeded, so a refused reopen leaves no request.
+    // Likewise the operator's note: a refused reopen must not rewrite it.
+    if (note !== undefined) this.deps.taskStore.setReopenNote(taskId, note);
     if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
       this.deps.taskStore.requestResumeOnNextLaunch(taskId);
+      // A resumed conversation gets this note once, on this relaunch.
+      if (note !== undefined) this.deps.taskStore.requestReopenNoteOnNextResume(taskId);
     }
     const pended = this.deps.taskStore.pendTask(taskId); // open -> pending
     // Launch immediately when a slot is free so the task visibly resumes rather
