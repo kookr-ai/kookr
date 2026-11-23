@@ -143,7 +143,7 @@ print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
 | `skippedExemptAnomaly` | Legacy (#2045). After #2072 always 0 on new processes — past-TTL silence reclaims long-silent `needs_input` / `permission_blocked` (stuckReason already labels them `hung_suspect`) |
 | `skippedProviderPaused` | Billing/quota pause (#1667) hold-for-resume |
 | `skippedSupervisionWakeScheduled` | Supervisor whose next supervision wake is scheduled (#4162) — idle by design, not hung |
-| `skippedLongRunningJob` | Task waiting on its own long job (#4237): a process under its session, other than the agent and its shells, that is older than 10 minutes or holds the GPU. Held until the task has been silent `longRunningJobReclaimCapHours` (default 12h); `lastOutcomes` names the job's `jobPid` |
+| `skippedLongRunningJob` | Task waiting on its own long job (#4237): a process under its session, other than the agent, its shells and services or watchers (`tail -f`, git/gh, LSP/MCP/dev servers, `--watch`; #4243), that is older than 10 minutes or holds the GPU. Held until the task has been silent `longRunningJobReclaimCapHours` (default 12h); `lastOutcomes` names the job's `jobPid` |
 | `lastCandidatesConsidered` | HungSuspect candidates on the most recent sweep pass |
 | `lastOutcomes` | Last pass: `{ taskId, outcome, silentForMs? }[]` (#2072 task-id audit) |
 | `lastAttemptedTaskIds` | Last pass: task ids selected for terminate |

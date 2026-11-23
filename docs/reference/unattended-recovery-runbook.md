@@ -283,14 +283,19 @@ tree, including a job the worker started without detaching (a GPU training or
 evaluation run). So the hungSuspect TTL reclaim and the hung-task reaper leave
 a silent task alone while its session owns a live job: a process other than
 the agent, its shells and the helpers it started with the session, that is
-older than 10 minutes or appears in `nvidia-smi --query-compute-apps`. Such a
+older than 10 minutes or appears in `nvidia-smi --query-compute-apps`.
+Services and watchers are not jobs, nor is anything they started (issue
+#4243): `tail -f`, pagers, `watch`, `git` and `gh` (a hung `git push`,
+`gh run watch`), language servers, MCP servers, dev servers and any
+`--watch` process — unless that process holds the GPU. Such a
 task counts under `skippedLongRunningJob`. The hold ends once the task has been
 silent for the `longRunningJobReclaimCapHours` setting (default 12, clamped to
 1–48), and the normal reclaim resumes.
 
-When a TTL reclaim does kill jobs, the disposition entry, the task's
-`disposition.killedProcesses` and the `task.hungSuspectTtlReclaimed` audit row
-list them (pid, command, age, GPU use). If the task has a live parent, the
+When a TTL reclaim or a hung-task reap does kill jobs, the disposition entry,
+the task's `disposition.killedProcesses` and the audit row
+(`task.hungSuspectTtlReclaimed` or `task.hungTaskReap`, issue #4243) list them
+(pid, command, age, GPU use). If the task has a live parent, the
 parent also gets one typed line:
 `[kookr] worker <name> was reclaimed after <N> min of silence; it killed: …`.
 To keep a job out of a worker's process tree entirely, launch it detached

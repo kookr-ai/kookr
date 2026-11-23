@@ -74,6 +74,122 @@ const NON_JOB_COMMS = new Set([
   'sleep', 'timeout', 'taskset', 'nice', 'env', 'setsid', 'nohup', 'script',
 ]);
 
+/*
+ * Deny-list (issue #4243): long-lived processes a worker starts that are not
+ * work it waits on — a pager or `tail -f`, a git or gh call (a hung `git push`,
+ * `gh run watch`), a language server, an MCP server, a dev server, a `--watch`
+ * process. Counted as jobs, they would hold a genuinely hung task for the
+ * whole cap. Neither they nor anything under them is a job (a hung `git push`
+ * waits in an `ssh` child), unless that process holds the GPU.
+ */
+
+/** Executables (`comm`) that are watchers or network clients, never a job. */
+const SERVICE_COMMS = new Set(['tail', 'less', 'more', 'watch', 'git', 'gh']);
+
+/** Runtimes whose first non-flag argument names the real program (`node …/vite`, `python -m uvicorn`). */
+const INTERPRETER_RE = /^(?:node|nodejs|bunx|deno|npx|pnpx|uvx|pipx|python[0-9.]*|pypy[0-9.]*)$/;
+
+/**
+ * Language and MCP servers, matched on the program name or on the package
+ * directory right under a `node_modules` (`…/node_modules/typescript-language-server/lib/cli.mjs`,
+ * `npx @modelcontextprotocol/server-github`). Never on other directories:
+ * a worktree named `kookr-issue-N-mcp-server-retry` holds real jobs.
+ */
+const LSP_NAME_RE = /language-?server|langserver|^(?:tsserver|pyright|pylsp|gopls|rust-analyzer|clangd|jdtls)$/;
+/** MCP servers by command or package name: `n8n-mcp`, `mcp-remote`, `@upstash/context7-mcp`. */
+const MCP_PACKAGE_RE = /(?:^|[-_])mcp(?:[-_]|$)|^@modelcontextprotocol$/;
+/** MCP servers by script file name, stricter so `train_mcp.py` stays a job: `mcp_server.py`. */
+const MCP_SCRIPT_RE = /^mcp$|mcp[-_]?server|server[-_]mcp/;
+const SCRIPT_EXT_RE = /\.(?:c?m?js|ts|py)$/;
+
+/** Programs that are a server whatever their arguments. */
+const SERVER_PROGRAMS = new Set(['webpack-dev-server', 'nodemon', 'uvicorn', 'gunicorn', 'http.server', 'http-server', 'live-server']);
+
+/** Package runners: `npm run dev` and `pnpm dev` name the same script. */
+const PACKAGE_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+/** Package runners and frameworks that start a dev server with one of {@link DEV_SERVER_SUBCOMMANDS}. */
+const DEV_SERVER_CLIS = new Set([
+  ...PACKAGE_RUNNERS, 'vite', 'next', 'nuxt', 'nuxi', 'astro', 'webpack', 'remix', 'gatsby', 'flask', 'manage',
+]);
+const DEV_SERVER_SUBCOMMANDS = new Set(['dev', 'develop', 'serve', 'start', 'preview', 'watch', 'runserver']);
+
+/** `/usr/lib/node_modules/vite/bin/vite.js` → `vite`. */
+function programName(token: string): string {
+  return token.replace(/^.*\//, '').replace(SCRIPT_EXT_RE, '');
+}
+
+/** `mcp@latest` → `mcp`; a leading `@` (an npm scope) is kept. */
+function stripVersion(name: string): string {
+  return name.replace(/(.)@.*$/, '$1');
+}
+
+/**
+ * The npm package a program token belongs to, as `[scope?, name]`: the
+ * directory right under the last `node_modules`, or an `@scope/name` spec.
+ * `/r/node_modules/@scope/pkg/dist/cli.js` → `['@scope', 'pkg']`. Empty
+ * otherwise: other directories never count.
+ */
+function packageNames(token: string): string[] {
+  const segments = token.split('/').filter(Boolean);
+  const nm = segments.lastIndexOf('node_modules');
+  const pkg = nm >= 0 ? segments.slice(nm + 1) : token.startsWith('@') ? segments : [];
+  const names = pkg[0]?.startsWith('@') ? [pkg[0], pkg[1]] : [pkg[0]];
+  return names.filter((n): n is string => !!n && n !== '.bin').map(stripVersion);
+}
+
+/** A language or MCP server, judged from its program token. */
+function isLspOrMcpServer(token: string): boolean {
+  const program = stripVersion(programName(token));
+  const packages = packageNames(token);
+  if ([program, ...packages].some((name) => LSP_NAME_RE.test(name))) return true;
+  if (packages.some((name) => MCP_PACKAGE_RE.test(name))) return true;
+  const isScript = SCRIPT_EXT_RE.test(token.replace(/^.*\//, ''));
+  return (isScript ? MCP_SCRIPT_RE : MCP_PACKAGE_RE).test(program);
+}
+
+/** `npm exec <pkg>`, `pnpm dlx <pkg>`, `yarn dlx <pkg>`, `bun x <pkg>`: the package is the program. */
+const PACKAGE_EXEC_SUBCOMMANDS = new Set(['exec', 'dlx', 'x']);
+
+/**
+ * True for a process on the deny-list above. Judged from `comm`, from a
+ * `--watch` flag, and from the program token of the command line (past an
+ * interpreter and its flags) plus its subcommand (after `run` for a package
+ * runner). Other arguments are never matched, so a job reading `mcp.yaml` or
+ * `--log tail.txt` still counts. A shell or pacing
+ * helper ({@link NON_JOB_COMMS}) is never a service: its command line holds
+ * a whole script, and its children are judged one by one.
+ */
+export function isNonJobService(proc: Pick<ProcessInfo, 'comm' | 'command'>): boolean {
+  if (NON_JOB_COMMS.has(proc.comm)) return false;
+  if (SERVICE_COMMS.has(proc.comm)) return true;
+  const tokens = proc.command.split(/\s+/).filter(Boolean);
+  if (tokens.some((t) => t === '--watch' || t.startsWith('--watch='))) return true;
+  let i = 0;
+  if (tokens.length > 0 && INTERPRETER_RE.test(programName(tokens[0]!))) {
+    i = 1;
+    while (i < tokens.length && tokens[i]!.startsWith('-')) {
+      // `python -m uvicorn app:app`: the module after `-m` is the program.
+      if (tokens[i] === '-m') { i += 1; break; }
+      i += 1;
+    }
+  }
+  const raw = tokens[i];
+  if (!raw) return false;
+  const program = programName(raw);
+  if (SERVICE_COMMS.has(program) || SERVER_PROGRAMS.has(program)) return true;
+  if (isLspOrMcpServer(raw)) return true;
+  if (!DEV_SERVER_CLIS.has(program)) return false;
+  const positional = tokens.slice(i + 1).filter((t) => !t.startsWith('-'));
+  if (PACKAGE_RUNNERS.has(program) && PACKAGE_EXEC_SUBCOMMANDS.has(positional[0] ?? '')) {
+    return isNonJobService({ comm: '', command: positional.slice(1).join(' ') });
+  }
+  const sub = PACKAGE_RUNNERS.has(program) && positional[0] === 'run' ? positional[1] : positional[0];
+  // Bare `vite` (or `vite --port 3000`) is its dev server; `vite build` is a job.
+  if (program === 'vite' && (sub === undefined || !['build', 'optimize'].includes(sub))) return true;
+  if (sub === undefined) return false;
+  return DEV_SERVER_SUBCOMMANDS.has(sub) || (program === 'flask' && sub === 'run');
+}
+
 /** Longest command kept for one process. */
 export const MAX_JOB_COMMAND_CHARS = 120;
 /** Most jobs recorded for one task. */
@@ -94,7 +210,8 @@ export function sanitizeCommand(command: string, maxChars: number = MAX_JOB_COMM
 /**
  * Pick the worker's own jobs under the session rooted at `rootPid` (the dtach
  * master). Excluded: the root, its direct children (the agent), shells and
- * pacing helpers ({@link NON_JOB_COMMS}), and processes that started within
+ * pacing helpers ({@link NON_JOB_COMMS}), services and watchers
+ * ({@link isNonJobService}) with everything under them, and processes that started within
  * {@link SESSION_STARTUP_WINDOW_MS} of the root. A process holding the GPU is
  * always a job unless it is the root or the agent. A process with an unknown
  * start time is skipped, except when it holds the GPU (age then reads 0).
@@ -121,17 +238,22 @@ export function selectSessionJobs(
 
   const jobs: SessionJob[] = [];
   const seen = new Set<number>([rootPid]);
-  const stack = [...(children.get(rootPid) ?? [])];
+  // `underService`: an ancestor is on the deny-list, so this process is part
+  // of that service (a hung `git push`'s `ssh`, a dev server's bundler).
+  const stack = (children.get(rootPid) ?? []).map((pid) => ({ pid, underService: false }));
   while (stack.length > 0) {
-    const pid = stack.pop()!;
+    const { pid, underService } = stack.pop()!;
     if (seen.has(pid)) continue;
     seen.add(pid);
-    for (const child of children.get(pid) ?? []) stack.push(child);
-
     const proc = byPid.get(pid);
-    if (!proc || proc.ppid === rootPid) continue; // the agent itself
+    const isAgent = !proc || proc.ppid === rootPid;
+    const inService = underService || (!isAgent && isNonJobService(proc));
+    for (const child of children.get(pid) ?? []) stack.push({ pid: child, underService: inService });
+
+    if (isAgent) continue; // the agent itself
     const holdsGpu = gpuPids.has(pid);
     if (!holdsGpu) {
+      if (inService) continue;
       if (NON_JOB_COMMS.has(proc.comm)) continue;
       if (proc.startedAtMs === null) continue;
       if (rootStartedAt !== null && proc.startedAtMs - rootStartedAt < SESSION_STARTUP_WINDOW_MS) continue;
