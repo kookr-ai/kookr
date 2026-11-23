@@ -63,13 +63,17 @@ A "docs-only" diff means `origin/main` exists, the diff against it is non-empty,
 
 ### 1. Check scope before pushing
 
-Review the branch before you spend hook time:
+Review the branch before you spend hook time. Diff against the fetched PR base with three dots, so you see only what the branch changes since its merge base:
 
 ```bash
-git diff --stat main..HEAD
-git diff main..HEAD
+git fetch origin
+BASE_REF=${BASE_REF:-origin/main}  # set to the intended PR base when it is not origin/main
+git diff --stat "$BASE_REF"...HEAD
+git diff "$BASE_REF"...HEAD
 git log --oneline --decorate -n 5
 ```
+
+Never diff against local `main`: in a task checkout it can be hundreds of commits behind, and a two-dot diff then shows files the branch never touched, or files added on the base as deletions.
 
 Confirm:
 - The diff only contains issue-relevant changes
