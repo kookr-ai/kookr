@@ -1295,6 +1295,7 @@ describe('promotePendingTasks', () => {
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
       takeResumeOnNextLaunch: vi.fn().mockReturnValue(true),
+      takeReopenNoteOnNextResume: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
@@ -1320,7 +1321,7 @@ describe('promotePendingTasks', () => {
 
   describe('reopen note (issue #4227)', () => {
     const NOTE = 'Do not merge; stop at an open PR.';
-    function storeFor(pendingTask: ReturnType<typeof lifecycleTask>, resume: boolean) {
+    function storeFor(pendingTask: ReturnType<typeof lifecycleTask>, resume: boolean, noteOnResume = resume) {
       return {
         getActiveCount: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(1),
         getNextPending: vi.fn().mockReturnValueOnce(pendingTask).mockReturnValueOnce(undefined),
@@ -1330,6 +1331,7 @@ describe('promotePendingTasks', () => {
         cancelTask: vi.fn(),
         beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
         takeResumeOnNextLaunch: vi.fn().mockReturnValue(resume),
+        takeReopenNoteOnNextResume: vi.fn().mockReturnValue(noteOnResume),
         ownsLaunchReservation: vi.fn().mockReturnValue(true),
         endLaunch: vi.fn(),
         listRelations: vi.fn().mockReturnValue([]),
@@ -1399,6 +1401,32 @@ describe('promotePendingTasks', () => {
       expect(resume.continuationMessage).toContain('Before this you were working in /workspace/project.');
       // An adapter that cannot resume after all falls back to this prompt.
       expect(call[1]).toBe(`${NOTE}\n\nFix the bug in auth`);
+    });
+
+    test('a later resume that did not come with the note does not repeat it', async () => {
+      // e.g. an account switch, or a reopen without --note: the conversation
+      // already received the note on the reopen that set it.
+      const pendingTask = lifecycleTask({
+        id: 'pending-1',
+        status: 'pending',
+        reopenNote: NOTE,
+        sessions: [
+          aSession({
+            tmuxSession: 'kookr-prior',
+            cwd: '/workspace/project',
+            createdAt: new Date(),
+            claudeSessionId: 'sess-resumable',
+            lastStatus: 'aborted',
+          }),
+        ],
+      });
+      const store = storeFor(pendingTask, true, false);
+      const deps = makePromotionDeps({ taskStore: store as any, lifecycleDeps: makeDeps() });
+
+      expect(await promotePendingTasks(deps)).toBe(1);
+      expect(store.takeReopenNoteOnNextResume).toHaveBeenCalledWith('pending-1');
+      const call = (deps.adapterRegistry.get('claude-code').launch as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect((call[3] as { continuationMessage: string }).continuationMessage.startsWith('[Kookr] This conversation was resumed')).toBe(true);
     });
 
     test('without a note the resumed first message is unchanged', async () => {

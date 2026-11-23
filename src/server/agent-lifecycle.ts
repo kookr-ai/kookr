@@ -1373,12 +1373,16 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // launch fresh with a warning.
       let resumeContext: ResumeContext | undefined;
       if (taskStore.takeResumeOnNextLaunch(pending.id)) {
+        // Consumed with the resume request, whatever this launch turns out to be.
+        const deliverReopenNote = taskStore.takeReopenNoteOnNextResume(pending.id);
         const resolved = await buildTaskResumeContext(pending);
         resumeContext = resolved.resumeContext;
-        // A resumed conversation gets no prompt, so the reopen note rides on
-        // the first message typed into it. `launchPrompt` keeps the note too,
-        // for an adapter that falls back to a fresh launch.
-        if (resumeContext && pending.reopenNote) {
+        // A resumed conversation gets no prompt, so the note of the reopen that
+        // asked for this resume rides on the first message typed into it. A
+        // later resume (account switch, a reopen without a note) does not
+        // repeat it: the conversation already holds it. `launchPrompt` keeps
+        // the note too, for an adapter that falls back to a fresh launch.
+        if (resumeContext && pending.reopenNote && deliverReopenNote) {
           resumeContext = {
             ...resumeContext,
             continuationMessage: withReopenNote(

@@ -129,6 +129,18 @@ describe('runReopenCli --note and the not_resumable warning (issue #4227)', () =
     expect(env.details.warnings).toEqual([expect.stringMatching(/did not store the --note/)]);
   });
 
+  it('a note the server refuses is a user error (exit 2, INVALID_NOTE), not a server error', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ error: 'note is longer than 8000 characters', code: 'invalid_reopen_note' }, 400),
+    );
+
+    const code = await runReopenCli(['t-1', '--json', '--note', 'x'.repeat(9000)], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+
+    expect(code).toBe(2);
+    expect(JSON.parse(io.logs[0]!)).toMatchObject({ ok: false, code: 'INVALID_NOTE', details: { serverCode: 'invalid_reopen_note', status: 400 } });
+  });
+
   it('documents --note in the help text', () => {
     expect(REOPEN_HELP_TEXT).toContain('kookr reopen <taskId> [--note "<text>"] [--json]');
     expect(REOPEN_HELP_TEXT).toMatch(/--note <text>/);

@@ -241,6 +241,31 @@ describe('POST /api/tasks/:id/reopen (issue #3671)', () => {
       expect(taskStore.getTask(id)?.reopenNote).toBe('second');
     });
 
+    test('accepts a note of exactly 8000 characters', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+
+      expect((await reopenWithBody(app, id, JSON.stringify({ note: 'x'.repeat(8000) }))).status).toBe(200);
+      expect(taskStore.getTask(id)?.reopenNote).toHaveLength(8000);
+    });
+
+    test('marks the note for the resumed conversation only when the reopen resumes it', async () => {
+      const taskStore = new TaskStore();
+      const resumable = terminatedTask(taskStore, { claudeSessionId: 'sess-prior' });
+      const fresh = terminatedTask(taskStore);
+      const bare = terminatedTask(taskStore, { claudeSessionId: 'sess-other' });
+      const { app } = mkApp(taskStore);
+
+      expect((await reopenWithBody(app, resumable, JSON.stringify({ note: 'n' }))).status).toBe(200);
+      expect((await reopenWithBody(app, fresh, JSON.stringify({ note: 'n' }))).status).toBe(200);
+      expect((await reopen(app, bare)).status).toBe(200);
+
+      expect(taskStore.takeReopenNoteOnNextResume(resumable)).toBe(true);
+      expect(taskStore.takeReopenNoteOnNextResume(fresh)).toBe(false);
+      expect(taskStore.takeReopenNoteOnNextResume(bare)).toBe(false);
+    });
+
     test('an empty body or one without note means no note', async () => {
       const taskStore = new TaskStore();
       const a = terminatedTask(taskStore);

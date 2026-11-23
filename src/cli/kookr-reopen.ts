@@ -75,7 +75,8 @@ Environment:
 
 Exit codes:
   0  Reopened.
-  2  User error (bad arguments, unknown task, task not terminal).
+  2  User error (bad arguments, a note the server refuses, unknown task,
+     task not terminal).
   3  No server reachable.
   4  Server/HTTP error (a relaunch that failed, cleanup still in progress,
      a missing or wrong supervisor token, a timeout).
@@ -285,6 +286,11 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
     if (status === 404) return fail(EXIT_USER_ERROR, 'NOT_FOUND', `task not found: ${taskId}`, { taskId, status });
     if (serverCode === 'task_not_terminal') {
       return fail(EXIT_USER_ERROR, 'TASK_NOT_TERMINAL', message, { taskId, status, serverCode });
+    }
+    // A note the server refuses (e.g. over its length limit) is a usage error:
+    // retrying the same call cannot succeed.
+    if (serverCode === 'invalid_reopen_note') {
+      return fail(EXIT_USER_ERROR, 'INVALID_NOTE', message, { taskId, status, serverCode });
     }
     return fail(EXIT_SERVER_ERROR, 'SERVER_ERROR', message, { taskId, status, ...(serverCode ? { serverCode } : {}) });
   }

@@ -1882,10 +1882,13 @@ follows:
   followed by the original prompt;
 - `resume`: the note starts the first message typed into the resumed
   conversation, before Kookr's usual "this conversation was resumed" message.
+  This happens once, on the reopen that gave the note: a later resume of the
+  same conversation (an account switch, a reopen without `--note`) does not
+  repeat it, because the conversation already holds it.
 
 The note stays on the task, so a later relaunch that replays the prompt (a
-restart after a server crash, another reopen) carries it too. Reopening again
-with `--note` replaces it. The server trims it and refuses a blank note or one
+restart after a server crash, another reopen that cannot resume) carries it
+too. Reopening again with `--note` replaces it. The server trims it and refuses a blank note or one
 longer than 8000 characters (HTTP 400, `invalid_reopen_note`).
 
 When the outcome is `not_resumable` and the task has no note, the command
@@ -1908,8 +1911,8 @@ command forwards `KOOKR_SUPERVISOR_TOKEN` (else `KOOKR_API_TOKEN`), and
 `KOOKR_API_BASE_URL` / `KOOKR_PORT` override the probe of ports `4800` and
 `4801`.
 
-Exit codes: `0` reopened. `2` usage error, unknown task (`NOT_FOUND`), or a
-task that is not terminal (`TASK_NOT_TERMINAL`; nothing is launched). `3` no
+Exit codes: `0` reopened. `2` usage error, a note the server refuses
+(`INVALID_NOTE`), unknown task (`NOT_FOUND`), or a task that is not terminal (`TASK_NOT_TERMINAL`; nothing is launched). `3` no
 server reachable. `4` server/HTTP error, including a relaunch that failed
 (`details.serverCode: "reopen_launch_failed"`), dependency-probe cleanup still
 in progress (`task_cleanup_in_progress`), a missing or wrong supervisor token

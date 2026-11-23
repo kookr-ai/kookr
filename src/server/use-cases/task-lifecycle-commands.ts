@@ -365,11 +365,13 @@ export class TaskLifecycleCommands {
       return { outcome: 'invalid', code: 'task_cleanup_in_progress', error: err.message };
     }
     // Set after the reopen succeeded, so a refused reopen leaves no request.
-    if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
-      this.deps.taskStore.requestResumeOnNextLaunch(taskId);
-    }
     // Likewise the operator's note: a refused reopen must not rewrite it.
     if (note !== undefined) this.deps.taskStore.setReopenNote(taskId, note);
+    if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
+      this.deps.taskStore.requestResumeOnNextLaunch(taskId);
+      // A resumed conversation gets this note once, on this relaunch.
+      if (note !== undefined) this.deps.taskStore.requestReopenNoteOnNextResume(taskId);
+    }
     const pended = this.deps.taskStore.pendTask(taskId); // open -> pending
     // Launch immediately when a slot is free so the task visibly resumes rather
     // than only reappearing on the next periodic snapshot; if capacity is full
