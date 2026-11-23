@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { DEFAULT_LUCY_OPERATOR_MODEL, resolveLucyOperatorConfig } from './config.js';
+import { DEFAULT_LUCY_OPERATOR_MODEL, DEFAULT_LUCY_OPERATOR_PROVIDERS, resolveLucyOperatorConfig } from './config.js';
 
 const KEY = { KOOKR_OPENROUTER_API_KEY: 'sk-or-key' };
 
@@ -21,7 +21,7 @@ describe('resolveLucyOperatorConfig', () => {
     expect(resolveLucyOperatorConfig({ KOOKR_LUCY_OPERATOR: 'true' })).toMatchObject({ enabled: true, ok: false });
   });
 
-  test('defaults to the model, providers and reasoning level chosen in the trial', () => {
+  test('defaults to the trial\'s model and reasoning level, with no provider pinned', () => {
     expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true' })).toEqual({
       enabled: true,
       ok: true,
@@ -31,12 +31,13 @@ describe('resolveLucyOperatorConfig', () => {
         apiKey: 'sk-or-key',
         model: 'deepseek/deepseek-v4.1-flash-1017',
         baseUrl: 'https://openrouter.ai/api/v1',
-        providers: ['cohere/fp8'],
+        providers: [],
         reasoning: 'medium',
         appTitle: 'Kookr',
       },
     });
     expect(DEFAULT_LUCY_OPERATOR_MODEL).toBe('deepseek/deepseek-v4.1-flash-1017');
+    expect(DEFAULT_LUCY_OPERATOR_PROVIDERS).toEqual([]);
   });
 
   test('launching is a second switch, on by default and off when KOOKR_LUCY_LAUNCH is the kill switch', () => {
@@ -54,17 +55,17 @@ describe('resolveLucyOperatorConfig', () => {
       KOOKR_LUCY_OPERATOR: 'TRUE',
       OPENROUTER_API_KEY: 'fallback-key',
       KOOKR_LUCY_OPERATOR_MODEL: 'anthropic/claude-haiku-5.5',
-      KOOKR_LUCY_OPERATOR_PROVIDERS: ' DeepInfra/fp8 , cohere/fp8 ,deepinfra/fp8',
+      KOOKR_LUCY_OPERATOR_PROVIDERS: ' DeepInfra/fp8 , novita ,deepinfra/fp8',
       KOOKR_LUCY_OPERATOR_REASONING: 'Low',
     });
     expect(result).toMatchObject({
       ok: true,
       warnings: [],
-      model: { apiKey: 'fallback-key', model: 'anthropic/claude-haiku-5.5', providers: ['deepinfra/fp8', 'cohere/fp8'], reasoning: 'low' },
+      model: { apiKey: 'fallback-key', model: 'anthropic/claude-haiku-5.5', providers: ['deepinfra/fp8', 'novita'], reasoning: 'low' },
     });
   });
 
-  test.each([['any'], ['AUTO']])('KOOKR_LUCY_OPERATOR_PROVIDERS=%s lifts the provider restriction', (value) => {
+  test.each([['any'], ['AUTO'], ['  ']])('KOOKR_LUCY_OPERATOR_PROVIDERS=%j pins no provider', (value) => {
     expect(resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_OPERATOR_PROVIDERS: value })).toMatchObject({ model: { providers: [] } });
   });
 
@@ -74,9 +75,9 @@ describe('resolveLucyOperatorConfig', () => {
     expect(result.enabled && result.warnings[0]).toMatch(/KOOKR_LUCY_OPERATOR_REASONING="ultra" is not one of none, low, medium, high; using medium/);
   });
 
-  test.each([['cohere fp8'], ['https://evil.example'], [','], ['cohere/fp8,{"order":1}']])('a malformed provider list %j falls back to the default with a warning', (value) => {
+  test.each([['deepinfra fp8'], ['https://evil.example'], [','], ['deepinfra/fp8,{"order":1}']])('a malformed provider list %j falls back to no pinned provider with a warning', (value) => {
     const result = resolveLucyOperatorConfig({ ...KEY, KOOKR_LUCY_OPERATOR: 'true', KOOKR_LUCY_OPERATOR_PROVIDERS: value });
-    expect(result).toMatchObject({ ok: true, model: { providers: ['cohere/fp8'] } });
+    expect(result).toMatchObject({ ok: true, model: { providers: [] } });
     expect(result.enabled && result.warnings).toHaveLength(1);
   });
 

@@ -3,17 +3,16 @@
  *
  * OpenRouter exposes an OpenAI-compatible chat completions API, so this client
  * is a small `fetch` wrapper rather than another SDK dependency. It works with
- * any OpenRouter-hosted model; Kookr defaults to `deepseek/deepseek-v4.1-flash-1017`
- * served by Cohere, the only model/upstream pair the operator's OpenRouter
- * account guardrail allows (any other slug is rejected with HTTP 404).
+ * any OpenRouter-hosted model; Kookr defaults to `deepseek/deepseek-v4.1-flash-1017`.
+ * Requests carry no `provider` field: the routing rule on the OpenRouter account
+ * chooses which upstream serves them (operator decision, 2026-11-23).
  * In the `auto` provider chain it is tried last, since OpenRouter is paid.
  *
  * Structured output is best-effort: OpenRouter accepts an OpenAI-style
  * `response_format`, but `strict` JSON schema is not honored by every
  * model/provider, so it is sent with `strict: false` like the Groq client.
  *
- * Every request pins `provider.only = ['cohere']` with fallbacks off, and turns
- * hidden reasoning off: this model otherwise spends small `max_tokens` budgets
+ * Every request turns hidden reasoning off: this model otherwise spends small `max_tokens` budgets
  * (80-token speech summaries) entirely on reasoning and returns `content: null`.
  *
  * Timeout: OpenRouter routes through varied upstreams and DeepSeek V4 Flash
@@ -27,12 +26,11 @@ import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../..
 
 const DEFAULT_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
 /**
- * Top-level request fields sent with every OpenRouter call: route only to
- * Cohere (no silent fallback to other upstreams) and disable hidden reasoning
- * so short completions return text.
+ * Top-level request fields sent with every OpenRouter call: disable hidden
+ * reasoning so short completions return text. No `provider` field, so the
+ * account's routing rule picks the upstream.
  */
 const OPENROUTER_EXTRA_BODY: Record<string, unknown> = {
-  provider: { only: ['cohere'], allow_fallbacks: false },
   reasoning: { enabled: false },
 };
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';

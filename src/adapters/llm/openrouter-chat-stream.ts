@@ -8,9 +8,9 @@
  * nothing else; it implements `LucyModelPort`.
  *
  * The request shape is the one measured in the model trial recorded on issue #3632:
- * - `provider.order` lists the providers to try, in order, and `provider.only`
- *   forbids every other one, so a turn is never served by a provider that was not
- *   chosen;
+ * - by default there is no `provider` field, so the routing rule on the OpenRouter
+ *   account chooses the provider. When a list is configured, `provider.order` lists
+ *   the providers to try, in order, and `provider.only` forbids every other one;
  * - `reasoning.effort` sets how much the model thinks before it answers;
  * - `usage.include` makes the last chunk carry token counts and the price charged.
  *
@@ -39,7 +39,8 @@ export interface OpenRouterChatStreamConfig {
   baseUrl: string;
   /**
    * Providers to use, in order, as OpenRouter endpoint tags (for example
-   * `cohere/fp8`). Empty means "let OpenRouter choose".
+   * `deepinfra/fp8`). Empty (the default) sends no `provider` field, so the
+   * OpenRouter account's routing rule chooses.
    */
   providers: readonly string[];
   reasoning: LucyOperatorReasoning;
@@ -54,7 +55,7 @@ const MAX_LOGGED_ERROR_CHARS = 200;
 /** Most tool calls accepted from one reply. The loop runs at most four of them. */
 const MAX_TOOL_CALLS_PER_REPLY = 16;
 
-/** `cohere/fp8` → `cohere`: the provider part of an endpoint tag. */
+/** `deepinfra/fp8` → `deepinfra`: the provider part of an endpoint tag. */
 function providerSlug(tag: string): string {
   return tag.split('/')[0] ?? tag;
 }

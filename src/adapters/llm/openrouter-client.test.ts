@@ -102,14 +102,14 @@ describe('OpenRouterLlmClient', () => {
     expect(body.response_format).toBeUndefined();
   });
 
-  test('pins Cohere routing and disables hidden reasoning on every request', async () => {
+  test('pins no provider (the account routing rule decides) and disables hidden reasoning on every request', async () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
     const client = new OpenRouterLlmClient({ apiKey: API_KEY, model: 'openai/gpt-5-mini' });
 
     await client.complete(baseReq);
 
     const body = requestBody(fetchMock);
-    expect(body.provider).toEqual({ only: ['cohere'], allow_fallbacks: false });
+    expect(body).not.toHaveProperty('provider');
     expect(body.reasoning).toEqual({ enabled: false });
   });
 

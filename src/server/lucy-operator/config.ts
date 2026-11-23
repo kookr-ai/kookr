@@ -7,8 +7,9 @@
  * present and stays quietly off when it is not. Setting it to `true` asks for it
  * explicitly: a missing key then makes the route answer 503 and say why. `0`, `false`,
  * `off` or `no` switches it off. The model, the providers allowed to serve it and how
- * much it thinks before answering are each a setting; their defaults are the ones
- * chosen from the model trial recorded on issue #3632.
+ * much it thinks before answering are each a setting. The model and reasoning defaults
+ * are the ones chosen from the model trial recorded on issue #3632; the provider list
+ * is empty by default, so the routing rule on the OpenRouter account picks the provider.
  */
 
 import { isDefaultOnFlagEnabled, isKillSwitchValue } from '../../core/default-on-flag.js';
@@ -20,10 +21,12 @@ import {
 
 export const DEFAULT_LUCY_OPERATOR_MODEL = 'deepseek/deepseek-v4.1-flash-1017';
 /**
- * Cohere only, at 8-bit precision: the operator's OpenRouter account guardrail allows
- * this model on Cohere and nothing else, so any other fallback could only fail with 404.
+ * No provider: the request carries no `provider` field and the routing rule on the
+ * OpenRouter account decides which provider serves it (operator decision, 2026-11-23).
+ * Pinning one here would bypass that rule, and a pinned provider that stops serving
+ * the model fails every turn with 404. `KOOKR_LUCY_OPERATOR_PROVIDERS` opts in to a list.
  */
-export const DEFAULT_LUCY_OPERATOR_PROVIDERS: readonly string[] = ['cohere/fp8'];
+export const DEFAULT_LUCY_OPERATOR_PROVIDERS: readonly string[] = [];
 export const DEFAULT_LUCY_OPERATOR_REASONING: LucyOperatorReasoning = 'medium';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 /** A provider tag as OpenRouter writes it: a slug, optionally followed by variants (`deepinfra/fp8/flex`). */
@@ -50,7 +53,7 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
     else warnings.push(`KOOKR_LUCY_OPERATOR_REASONING="${rawReasoning}" is not one of ${LUCY_OPERATOR_REASONING_LEVELS.join(', ')}; using ${DEFAULT_LUCY_OPERATOR_REASONING}.`);
   }
 
-  // `any` (or `auto`) lifts the restriction; anything else is a comma-separated list of provider tags.
+  // Unset, `any` or `auto`: no restriction. Anything else is a comma-separated list of provider tags.
   const rawProviders = env.KOOKR_LUCY_OPERATOR_PROVIDERS?.trim().toLowerCase();
   let providers: readonly string[] = DEFAULT_LUCY_OPERATOR_PROVIDERS;
   if (rawProviders === 'any' || rawProviders === 'auto') {
@@ -59,7 +62,7 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
     const tags = rawProviders.split(',').map((tag) => tag.trim()).filter(Boolean);
     const bad = tags.filter((tag) => !PROVIDER_TAG_RE.test(tag));
     if (tags.length === 0 || bad.length > 0) {
-      warnings.push(`KOOKR_LUCY_OPERATOR_PROVIDERS is not a list of provider tags such as "cohere/fp8,deepinfra/fp8"; using ${DEFAULT_LUCY_OPERATOR_PROVIDERS.join(',')}.`);
+      warnings.push('KOOKR_LUCY_OPERATOR_PROVIDERS is not a list of provider tags such as "deepinfra/fp8,novita"; letting the OpenRouter account routing rule choose.');
     } else {
       providers = [...new Set(tags)];
     }

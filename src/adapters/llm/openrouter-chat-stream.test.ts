@@ -11,7 +11,7 @@ const CONFIG: OpenRouterChatStreamConfig = {
   apiKey: 'sk-or-test-key',
   model: 'deepseek/deepseek-v4.1-flash-1017',
   baseUrl: 'https://openrouter.example/api/v1/',
-  providers: ['cohere/fp8', 'deepinfra/fp8'],
+  providers: ['deepinfra/fp8', 'novita'],
   reasoning: 'medium',
 };
 
@@ -39,7 +39,7 @@ async function collect(events: AsyncIterable<LucyModelEvent>): Promise<LucyModel
 }
 
 describe('buildOpenRouterChatBody', () => {
-  test('sends the measured request shape: pinned providers in order, no other provider, reasoning level, usage', () => {
+  test('with an opt-in provider list: those providers in order, no other provider, reasoning level, usage', () => {
     expect(buildOpenRouterChatBody(CONFIG, REQUEST)).toEqual({
       model: 'deepseek/deepseek-v4.1-flash-1017',
       messages: [{ role: 'user', content: 'hi' }],
@@ -50,7 +50,7 @@ describe('buildOpenRouterChatBody', () => {
       reasoning: { effort: 'medium' },
       tools: [TOOL],
       tool_choice: 'auto',
-      provider: { order: ['cohere/fp8', 'deepinfra/fp8'], only: ['cohere', 'deepinfra'] },
+      provider: { order: ['deepinfra/fp8', 'novita'], only: ['deepinfra', 'novita'] },
     });
   });
 
@@ -59,7 +59,7 @@ describe('buildOpenRouterChatBody', () => {
     expect(body.provider).toEqual({ order: ['deepinfra/fp8', 'deepinfra/fp8/flex'], only: ['deepinfra'] });
   });
 
-  test('no providers means no routing block, and no tools means no tool fields', () => {
+  test('no providers (the default) means no routing block, and no tools means no tool fields', () => {
     const body = buildOpenRouterChatBody({ ...CONFIG, providers: [] }, { ...REQUEST, tools: [] });
     expect(body).not.toHaveProperty('provider');
     expect(body).not.toHaveProperty('tools');
