@@ -43,7 +43,16 @@ export interface ClaudeAccountTestOptions {
   timeoutMs?: number;
 }
 
-const PROBE_ARGS = ['-p', 'Reply with the single word OK.', '--max-turns', '1', '--model', 'haiku'];
+// Hooks off: the probe tests the account's credentials, not the operator's hook
+// setup. A user Stop hook that blocks the stop adds a second turn, which
+// `--max-turns 1` reports as "Reached max turns (1)" even though the account
+// answered; SessionStart and prompt hooks also make every probe slower and dearer.
+const PROBE_ARGS = [
+  '-p', 'Reply with the single word OK.',
+  '--max-turns', '1',
+  '--model', 'haiku',
+  '--settings', JSON.stringify({ disableAllHooks: true }),
+];
 
 // Plan quota exhausted. Wording seen from Claude Code: "Claude AI usage limit
 // reached", "5-hour limit reached - resets 3pm", "You've hit your weekly limit",
