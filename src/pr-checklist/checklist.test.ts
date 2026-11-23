@@ -6,7 +6,9 @@ import {
   findMissingEnv,
   findUnparsedMarkerIds,
   findUntested,
+  hasEvidence,
   isSourceFile,
+  isTestFile,
   parseChecklist,
   parseEnvKeys,
   parseTemplateRows,
@@ -372,5 +374,18 @@ describe('expected lines on a rejected row (#3651)', () => {
     expect(parseChecklist(renderRow(row, 'waived', 'no README change'))).toEqual([
       { id: 'readme', checked: false, struck: true, reason: 'no README change' },
     ]);
+  });
+});
+
+describe('isTestFile / tests evidence (#4226)', () => {
+  it('counts shell tests, JS/TS tests and test directories, but not product source', () => {
+    expect(isTestFile('.claude/hooks-tests/bash-wait-nudge.test.sh')).toBe(true);
+    expect(isTestFile('src/a.test.ts')).toBe(true);
+    expect(isTestFile('src/a.spec.tsx')).toBe(true);
+    expect(isTestFile('test/helpers.ts')).toBe(true);
+    expect(isTestFile('src/a.ts')).toBe(false);
+    expect(isTestFile('scripts/run-tests.sh')).toBe(false);
+    expect(hasEvidence('tests', ['.claude/hooks-tests/x.test.sh'])).toBe(true);
+    expect(hasEvidence('new-tests', ['.claude/hooks-tests/x.test.sh'])).toBe(true);
   });
 });

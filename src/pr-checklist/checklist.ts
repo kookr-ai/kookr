@@ -17,6 +17,20 @@ export interface BoxEvidence {
   paths: RegExp[];
 }
 
+/**
+ * Paths the `tests` / `new-tests` rows count as tests: anything under a `test/`
+ * or `tests/` directory, JS/TS `*.test.*` / `*.spec.*` files, and shell tests
+ * (`*.test.sh`, e.g. `.claude/hooks-tests/`). The env-variable scan skips the
+ * same files (`isTestFile`), so a variable only a test reads is not reported
+ * as a new product env var.
+ */
+export const TEST_FILE_PATTERNS: readonly RegExp[] = [/(^|\/)tests?\//, /\.(?:test|spec)\.[jt]sx?$/, /\.test\.sh$/];
+
+/** True when `path` is a test file by the `tests` evidence rule. Pure. */
+export function isTestFile(path: string): boolean {
+  return TEST_FILE_PATTERNS.some((re) => re.test(path));
+}
+
 export const BOX_EVIDENCE: Record<string, BoxEvidence> = {
   readme: { label: 'README updated', paths: [/^README\.md$/] },
   help: { label: 'command surfaces updated', paths: [/^src\/commands\.[jt]s$/, /^README\.md$/] },
@@ -29,8 +43,8 @@ export const BOX_EVIDENCE: Record<string, BoxEvidence> = {
   roadmap: { label: 'ROADMAP updated', paths: [/^ROADMAP\.md$/] },
   changelog: { label: 'changelog updated', paths: [/^CHANGELOG\.md$/] },
   benchmarks: { label: 'benchmark evidence updated', paths: [/^benchmarks?\//] },
-  'new-tests': { label: 'new behavior has tests', paths: [/(^|\/)tests?\//, /\.(?:test|spec)\.[jt]sx?$/] },
-  tests: { label: 'tests added/updated', paths: [/(^|\/)tests?\//, /\.(?:test|spec)\.[jt]sx?$/] },
+  'new-tests': { label: 'new behavior has tests', paths: [...TEST_FILE_PATTERNS] },
+  tests: { label: 'tests added/updated', paths: [...TEST_FILE_PATTERNS] },
   'integration-tests': {
     label: 'integration tests added/updated',
     paths: [/(^|\/)tests?\//],

@@ -6,6 +6,7 @@
 // so a pathological diff surfaces as an error, never an OOM.
 
 import { execFile } from 'node:child_process';
+import { isTestFile } from './checklist.js';
 import { ChecklistInputError } from './errors.js';
 import type { DiffFacts } from './types.js';
 
@@ -96,7 +97,9 @@ export async function collectDiffFacts(runner: GitRunner, base: string): Promise
     } else if (line.startsWith('+') && !line.startsWith('+++') && currentFile) {
       if (++count > MAX_ADDED_LINES) throw new ChecklistInputError('diff exceeds MAX_ADDED_LINES cap');
       const text = line.slice(1);
-      if (/^src\/.*\.[jt]s$/.test(currentFile)) addedSourceLines.push(text);
+      // Test files are not product source: an env var only a test reads or
+      // sets is not one `.env.example` must document (#4226).
+      if (/^src\/.*\.[jt]s$/.test(currentFile) && !isTestFile(currentFile)) addedSourceLines.push(text);
       if (!/^\.env(\.|$)/.test(currentFile) && !/\.md$/.test(currentFile)) {
         addedScannableLines.push({ file: currentFile, text });
       }

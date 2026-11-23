@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectAndVerify, verifyChecklist } from './engine.js';
+import { collectAndVerify, collectScaffold, verifyChecklist } from './engine.js';
 import { ChecklistInputError } from './errors.js';
 import type { GitRunner } from './git.js';
 import type { DiffFacts } from './types.js';
@@ -408,5 +408,52 @@ describe('collectAndVerify (with injected git + fs)', () => {
     expect(report.results.some((r) => r.id === 'env')).toBe(false);
     expect(report.notes.join(' ')).toMatch(/rule "env" disabled/);
     expect(report.ok).toBe(true);
+  });
+});
+
+// #4226: shell tests count as tests, and an env var only a test reads is not a
+// new product env var. End-to-end through the real diff parsing (git.ts).
+describe('test files in the tests and env rules (#4226)', () => {
+  const range = 'BASE...HEAD';
+  const TESTS_TEMPLATE = '- [ ] <!-- kookr:check:tests --> Tests were added or updated\n';
+  const TEMPLATE_GIT = { 'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' } };
+  // Split so this very file does not read as an env reference.
+  const envRef = 'process' + '.env.KOOKR_PROBE_ONLY_IN_TEST';
+
+  function diffOf(path: string, status: 'A' | 'M', added: string) {
+    return fakeGit({
+      'merge-base origin/main HEAD': { stdout: 'BASE' },
+      [`diff --name-status ${range}`]: { stdout: `${status}\t${path}` },
+      [`diff --unified=0 ${range}`]: { stdout: `+++ b/${path}\n+${added}` },
+      'ls-files -- .env.example': { stdout: '.env.example' },
+      ...TEMPLATE_GIT,
+    });
+  }
+  const read = async (p: string) => (p.endsWith('.env.example') ? 'EXISTING=1\n' : TESTS_TEMPLATE);
+
+  it('a diff that only edits a .claude/hooks-tests/*.test.sh: scaffold ticks tests and verify passes', async () => {
+    const git = diffOf('.claude/hooks-tests/bash-wait-nudge.test.sh', 'M', 'assert_eq 1 1');
+    const outcome = await collectScaffold({ cwd: '/repo', base: 'main', gitRunner: git, readFileText: read });
+    if (outcome.kind !== 'ok') throw new Error(`unexpected scaffold outcome ${outcome.kind}`);
+    expect(outcome.scaffold.checked).toEqual(['tests']);
+    expect(outcome.scaffold.struck).toEqual([]);
+
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: outcome.scaffold.body, gitRunner: git, readFileText: read });
+    expect(report.results.find((r) => r.id === 'tests')?.status).toBe('pass');
+    expect(report.ok).toBe(true);
+  });
+
+  it('a new *.test.ts reading an undocumented env var passes the env row', async () => {
+    const git = diffOf('src/core/zz-probe.test.ts', 'A', `const v = ${envRef};`);
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: read });
+    expect(report.results.some((r) => r.id === 'env')).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('the same read in a non-test source file still fails the env row', async () => {
+    const git = diffOf('src/core/zz-probe.ts', 'M', `const v = ${envRef};`);
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: read });
+    expect(report.results.find((r) => r.id === 'env')?.summary).toMatch(/KOOKR_PROBE_ONLY_IN_TEST/);
+    expect(report.ok).toBe(false);
   });
 });
