@@ -42,7 +42,21 @@
 // rows from the text `nb list`, so it gets those problems from one extra, best-effort
 // `nb list --json` call (or reuses the JSON the layered attempt already fetched); if
 // that call fails in any way the flat index is printed without them (issue #3836).
+//
+// SubagentStart (`--subagent`, issue #4231). A subagent gets no SessionStart index, so
+// in `--subagent` mode this hook prints a short notebook CONTRACT instead: where the
+// shelves are (`nb list`), the retrospective to run before the final report, and that
+// the final report must come last, because a subagent's last message is all its caller
+// receives. It is a few lines, not the index: the full index would cost its whole length
+// in every subagent. It runs no `nb` command (no extra process per subagent) and is
+// printed as JSON `hookSpecificOutput.additionalContext`, the only SubagentStart output
+// Claude Code adds to the subagent's context (plain stdout is dropped). It stays silent
+// when `nb` is not on PATH, and for `kookr-toolkit:*` agent types: their definitions
+// already carry the Notebook Protocol (scripts/apply-notebook-protocol.mjs), and the
+// two that have none must not start writing the notebook.
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 
 const TIMEOUT_MS = 4000;
 const MAX_ROWS = 60;
@@ -109,6 +123,50 @@ function runNb(args) {
     );
     process.exit(0);
   }
+}
+
+if (process.argv.includes('--subagent')) {
+  subagentContract();
+  process.exit(0);
+}
+
+/** True when an executable named `nb` is on PATH (a lookup only: nothing is run). */
+function nbOnPath() {
+  for (const d of (process.env.PATH ?? '').split(delimiter)) {
+    if (d && existsSync(join(d, process.platform === 'win32' ? 'nb.cmd' : 'nb'))) return true;
+  }
+  return false;
+}
+
+/** SubagentStart: print the notebook contract as additionalContext, or nothing. */
+function subagentContract() {
+  let event = {};
+  try {
+    event = JSON.parse(readFileSync(0, 'utf-8'));
+  } catch {
+    /* no or bad payload: no agent type to skip on */
+  }
+  const agentType = String(event?.agent_type ?? '');
+  if (agentType.startsWith('kookr-toolkit:')) return;
+  if (!nbOnPath()) return;
+  const slug = (process.env.KOOKR_REPO_SLUG ?? '').trim();
+  const slugHint = slug ? ` (here: ${slug})` : '';
+  const contract =
+    `## Agent notebook\n` +
+    `This host keeps an agent notebook: shelves of one-line lessons from past tasks. ` +
+    `\`nb list\` shows each shelf and when to open it; open the ones that fit your task with ` +
+    `\`nb show <shelf>\` and apply what they say.\n` +
+    `Before your final report, if you opened a shelf: \`nb vote <shelf> <id1,id2,…> +1\` the ` +
+    `lessons that helped (\`-1\` the ones that misled you). Add at most one new lesson, or none, ` +
+    `with \`nb add <shelf> "<lesson>"\` (~150 characters): only what stays true at another commit ` +
+    `and on another task, never what you just changed or how this task was fixed. Placement: ` +
+    `<situation>@<slug> (slug = $KOOKR_REPO_SLUG${slugHint}) unless the lesson would be true in ` +
+    `another repo, then the unscoped <situation> shelf. Never write fleet-global directly.\n` +
+    `Your last message is all your caller receives: end with your full report, not with the ` +
+    `notebook steps.`;
+  process.stdout.write(
+    JSON.stringify({ hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: contract } }),
+  );
 }
 
 // The layers module is loaded through a guarded dynamic import: a missing or broken file

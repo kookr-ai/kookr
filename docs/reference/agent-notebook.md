@@ -190,10 +190,23 @@ that runs its `.mjs`) run for every session:
   - **Failure.** If `nb list` times out or exits non-zero the hook prints a
     one-line `WARNING` on stdout, so a broken store is not mistaken for an empty
     one; a missing `nb` stays silent. It always exits 0.
-- **Stop / SubagentStop → `nb-retro.sh`** (runs `nb-retro.mjs`): blocks the first
-  stop of a session once (per-session sentinel file claimed atomically, so parallel
-  subagent stops yield exactly one nudge; `stop_hook_active` lets a re-run
-  through) and shows the maintenance checklist — vote up what helped and vote down
+- **SubagentStart → `nb-inject.sh --subagent`** (issue #4231): a subagent gets no
+  SessionStart index, so it gets a short notebook contract instead, as JSON
+  `hookSpecificOutput.additionalContext` (plain stdout from a SubagentStart hook
+  never reaches the subagent): `nb list` shows the shelves, run the vote/add steps
+  before the final report, and end with the full report, because the last message
+  is all the caller receives. It runs no `nb` command, stays silent when `nb` is not
+  on PATH, and skips `kookr-toolkit:*` agent types, whose definitions carry the
+  Notebook Protocol already.
+- **Stop → `nb-retro.sh`** (runs `nb-retro.mjs`): blocks the first eligible
+  stop of a session once (per-session sentinel file claimed atomically, so racing
+  stops yield exactly one nudge; `stop_hook_active` lets a re-run through). A stop
+  whose `background_tasks` lists a subagent still `running` is the lead waiting on
+  delegated work: it is let through without claiming the sentinel, so the nudge
+  lands at a later stop, after the work has come back (a running shell or monitor
+  does not defer it). A `SubagentStop` never nudges (issue #4231): blocking a
+  subagent turns its answer to the nudge into its last message and displaces the
+  report its caller needed. The nudge shows the maintenance checklist — vote up what helped and vote down
   what misled (several ids per call), **`nb rm --reason wrong|obsolete`** what proved
   incorrect, `nb merge`/`split` redundant or overloaded entries, and `nb add` at
   most one new lesson (aim ~150 characters; the text also carries the placement
@@ -426,7 +439,7 @@ All optional; defaults match the RFC.
 | `NB_DIR` | `~/.kookr/notebooks` | notebooks directory |
 | `NB_GIT_AUTOCOMMIT` | `1` (when `NB_DIR` is a git repo) | `0` disables the per-change commit in `bin/nb.js` |
 | `KOOKR_NB_CURATOR` | unset | read by `bin/nb.js` only: set (non-empty) by the curator/promotion run so an `nb add` to `fleet-global` prints no stderr advisory. It has no effect on `nb move`/`nb rm`, which the promotion scripts use. Never set it for ordinary tasks. |
-| `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
+| `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop retrospective nudge |
 | `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session. `Infinity` never prunes; `0`, a negative or a non-numeric value means 7 |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |
 | `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to aim for about 150 characters — a style target under this ceiling. A folder's own `.nb.json` (`{ "maxChars": N }`, agent-notebook 0.12.0+) wins over it for every `nb` command run on that folder; the idea store uses this for its 400-character lines ([idea-store](idea-store.md)). The lesson store has no `.nb.json`. |

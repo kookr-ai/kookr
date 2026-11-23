@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — JS module without bundled types.
-import { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
+import { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, waitingOnSubagent, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
 import { LESSON_DECISION_TEMPLATE } from '../core/lesson-decision.js';
 
 const NUDGE = resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'bin', 'kookr-stop-nudge.js');
@@ -59,6 +59,13 @@ describe('kookr-stop-nudge pure helpers', () => {
   it('markerPath sanitizes the task id', () => {
     expect(markerPath('../etc/passwd')).not.toContain('..');
   });
+  it('waitingOnSubagent counts only a running subagent (issue #4231)', () => {
+    expect(waitingOnSubagent([{ type: 'subagent', status: 'running' }])).toBe(true);
+    expect(waitingOnSubagent([{ type: 'shell', status: 'running' }, { type: 'subagent', status: 'running' }])).toBe(true);
+    expect(waitingOnSubagent([{ type: 'subagent', status: 'completed' }])).toBe(false);
+    expect(waitingOnSubagent([{ type: 'shell', status: 'running' }, { type: 'monitor', status: 'running' }])).toBe(false);
+    for (const odd of [undefined, null, [], 'running', {}, [null]]) expect(waitingOnSubagent(odd)).toBe(false);
+  });
 });
 
 describe('kookr-stop-nudge behavior (subprocess, hard fail-open)', () => {
@@ -102,6 +109,32 @@ describe('kookr-stop-nudge behavior (subprocess, hard fail-open)', () => {
     const second = await run({ stdin: JSON.stringify({ stop_hook_active: false }), env: baseEnv() });
     expect(second.status).toBe(0);
     expect(blocked(second.stdout)).toBe(false);
+  });
+
+  it('does not spend the reminder while a background subagent is running; the next idle stop gets it (issue #4231)', async () => {
+    const subagent = { id: 'a968876863f7fbf18', type: 'subagent', status: 'running', agent_type: 'general-purpose' };
+    const waiting = await run({
+      stdin: JSON.stringify({ stop_hook_active: false, background_tasks: [subagent] }),
+      env: baseEnv(),
+    });
+    expect(waiting.status).toBe(0);
+    expect(blocked(waiting.stdout)).toBe(false);
+    expect(existsSync(join(home, '.kookr', 'stop-nudge', 't-1'))).toBe(false);
+
+    const idle = await run({
+      stdin: JSON.stringify({ stop_hook_active: false, background_tasks: [{ ...subagent, status: 'completed' }] }),
+      env: baseEnv(),
+    });
+    expect(blocked(idle.stdout)).toBe(true);
+    expect(existsSync(join(home, '.kookr', 'stop-nudge', 't-1'))).toBe(true);
+  });
+
+  it('a running background shell does not defer the reminder (only subagents do)', async () => {
+    const res = await run({
+      stdin: JSON.stringify({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running' }] }),
+      env: baseEnv(),
+    });
+    expect(blocked(res.stdout)).toBe(true);
   });
 
   it('never re-blocks when stop_hook_active is true', async () => {

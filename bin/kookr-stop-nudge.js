@@ -165,6 +165,11 @@ async function main(env = process.env) {
   }
   if (payload && payload.stop_hook_active === true) return done(false);
 
+  // 2b. The agent is waiting on delegated work, not finishing (issue #4231): a
+  // background subagent is still running. Stay silent WITHOUT writing the marker,
+  // so the once-per-task reminder lands at a later stop, after the work is back.
+  if (waitingOnSubagent(payload && payload.background_tasks)) return done(false);
+
   // 3. Must be a managed task.
   const taskId = env.KOOKR_TASK_ID && env.KOOKR_TASK_ID.trim();
   if (!taskId) return done(false);
@@ -228,6 +233,18 @@ async function main(env = process.env) {
   return done(true);
 }
 
+/**
+ * True when a Stop payload's `background_tasks` lists a subagent still running.
+ * Only subagents count: a running shell or monitor can outlive the task, and
+ * waiting on it would withhold the reminder for good. Same rule as
+ * plugin/hooks/nb-retro.mjs (the plugin ships without this file, so the two are
+ * kept in step by hand).
+ */
+function waitingOnSubagent(tasks) {
+  if (!Array.isArray(tasks)) return false;
+  return tasks.some((t) => t && t.type === 'subagent' && t.status === 'running');
+}
+
 function parseMinAge(raw) {
   if (raw === undefined || raw === '') return DEFAULT_MIN_TASK_AGE_MS;
   const n = Number(raw);
@@ -251,4 +268,4 @@ if (isInvokedDirectly()) {
   main().catch(() => done(false));
 }
 
-export { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };
+export { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, waitingOnSubagent, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Stop / SubagentStop hook — nudge the Agent Notebook retrospective once.
+# Stop hook — nudge the Agent Notebook retrospective once.
 #
 # Role-agnostic: it fires for every session (no NB_ROLE gate). Delegates to
-# nb-retro.mjs, which blocks the first Stop of the session (exit 2) to instruct
-# the vote/curate retrospective, then allows subsequent stops (fires once per
-# session via a per-session sentinel).
+# nb-retro.mjs, which blocks the first eligible Stop of the session (exit 2) to
+# instruct the vote/curate retrospective, then allows subsequent stops (fires once
+# per session via a per-session sentinel). A Stop while a background subagent is
+# still running, and any SubagentStop, is let through without spending the nudge
+# (issue #4231).
 #
 # Exit codes pass through from the .mjs: 0 = allow stop, 2 = block with reason.
 # Fail-open on a missing node so a session can always end.

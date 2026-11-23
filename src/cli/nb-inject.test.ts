@@ -4,7 +4,7 @@
 // INDEX (every shelf + description) into context for every session, or stays
 // silent on an empty store / missing `nb`. It must never fail a session start.
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -233,3 +233,94 @@ describe('nb-inject — a failing `nb list` is reported, not mistaken for an emp
   });
 });
 
+
+// ---- SubagentStart: the short notebook contract (issue #4231) ----------------------------
+describe('nb-inject --subagent (SubagentStart contract)', () => {
+  const SH = join(process.cwd(), 'plugin/hooks/nb-inject.sh');
+  const general = { session_id: 's', agent_id: 'a9af72eb6cf1b8c97', agent_type: 'general-purpose', hook_event_name: 'SubagentStart' };
+
+  function contract(
+    event: unknown,
+    { viaSh = false, path = `${binDir}:${process.env.PATH ?? ''}`, slug }: { viaSh?: boolean; path?: string; slug?: string } = {},
+  ): { code: number; out: string } {
+    const env = { ...flatEnv(), NB_DIR: dir, PATH: path, ...(slug ? { KOOKR_REPO_SLUG: slug } : {}) };
+    try {
+      const out = viaSh
+        ? execFileSync('bash', [SH, '--subagent'], { input: JSON.stringify(event), env, encoding: 'utf-8' })
+        : execFileSync(process.execPath, [HOOK, '--subagent'], { input: JSON.stringify(event), env, encoding: 'utf-8' });
+      return { code: 0, out };
+    } catch (e) {
+      const err = e as { status?: number; stdout?: Buffer | string };
+      return { code: err.status ?? -1, out: err.stdout?.toString() ?? '' };
+    }
+  }
+
+  test('prints the contract as SubagentStart additionalContext JSON (plain stdout never reaches a subagent)', () => {
+    const r = contract(general, { slug: 'acme-widgets' });
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('SubagentStart');
+    const text: string = parsed.hookSpecificOutput.additionalContext;
+    expect(text).toContain('`nb list`'); // where the shelves are
+    expect(text).toContain('nb show <shelf>');
+    expect(text).toContain('Before your final report');
+    expect(text).toContain('nb vote <shelf> <id1,id2,…> +1');
+    expect(text).toContain('stays true at another commit and on another task');
+    expect(text).toContain('(here: acme-widgets)');
+    expect(text).toMatch(/Never write fleet-global directly/);
+    // The report must come last: a subagent's last message is all its caller receives.
+    expect(text).toContain('Your last message is all your caller receives: end with your full report');
+    // A contract, not the index: small enough to pay in every subagent.
+    expect(Buffer.byteLength(text)).toBeLessThan(1200);
+  });
+
+  test('runs no `nb` command (no extra process per subagent)', () => {
+    const fakeBin = mkdtempSync(join(tmpdir(), 'kookr-nb-inject-fake-'));
+    const marker = join(fakeBin, 'ran');
+    writeFileSync(join(fakeBin, 'nb'), `#!/bin/sh\ntouch '${marker}'\n`);
+    chmodSync(join(fakeBin, 'nb'), 0o755);
+    try {
+      const r = contract(general, { path: `${fakeBin}:${process.env.PATH ?? ''}` });
+      expect(JSON.parse(r.out).hookSpecificOutput.hookEventName).toBe('SubagentStart');
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  test('silent when `nb` is not on PATH', () => {
+    const nodeOnly = mkdtempSync(join(tmpdir(), 'kookr-nb-inject-nonb-'));
+    symlinkSync(process.execPath, join(nodeOnly, 'node'));
+    try {
+      expect(contract(general, { path: nodeOnly })).toEqual({ code: 0, out: '' });
+    } finally {
+      rmSync(nodeOnly, { recursive: true, force: true });
+    }
+  });
+
+  test('silent for kookr-toolkit:* agents, whose definitions carry the Notebook Protocol', () => {
+    expect(contract({ ...general, agent_type: 'kookr-toolkit:patch-author' })).toEqual({ code: 0, out: '' });
+    expect(contract({ ...general, agent_type: 'kookr-toolkit:product-owner' })).toEqual({ code: 0, out: '' });
+  });
+
+  test('a missing or unparseable payload still gets the contract (fail toward telling the subagent)', () => {
+    const r = contract('not an object');
+    expect(JSON.parse(r.out).hookSpecificOutput.additionalContext).toContain('nb list');
+  });
+
+  test('the shell wrapper passes the event through, so the agent-type skip works end to end', () => {
+    expect(contract({ ...general, agent_type: 'kookr-toolkit:change-verifier' }, { viaSh: true })).toEqual({ code: 0, out: '' });
+    const r = contract(general, { viaSh: true });
+    expect(JSON.parse(r.out).hookSpecificOutput.hookEventName).toBe('SubagentStart');
+  });
+
+  test('hooks.json wires SubagentStart to the contract and no longer routes SubagentStop to nb-retro', () => {
+    const cfg = JSON.parse(readFileSync(join(process.cwd(), 'plugin/hooks/hooks.json'), 'utf-8'));
+    const commands = (ev: string): string[] =>
+      (cfg.hooks[ev] ?? []).flatMap((m: { hooks: { command: string }[] }) => m.hooks.map((h) => h.command));
+    expect(commands('SubagentStart')).toContain('${CLAUDE_PLUGIN_ROOT}/hooks/nb-inject.sh --subagent');
+    expect(commands('SubagentStop').some((c) => c.includes('nb-retro'))).toBe(false);
+    expect(commands('Stop').some((c) => c.includes('nb-retro'))).toBe(true);
+    expect(commands('SessionStart')).toContain('${CLAUDE_PLUGIN_ROOT}/hooks/nb-inject.sh');
+  });
+});
