@@ -45,7 +45,7 @@ export interface DiffFacts {
   changedPaths: string[];
   /** Repo-relative paths added (status A) in the range. */
   addedFiles: string[];
-  /** Added ('+') lines under src, for env-var extraction. */
+  /** Added ('+') lines in non-test source files under src, for env-var extraction. */
   addedSourceLines: string[];
   /** Added ('+') lines outside env-templates/markdown, for the secret scan. */
   addedScannableLines: { file: string; text: string }[];
