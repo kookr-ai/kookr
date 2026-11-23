@@ -67,7 +67,6 @@ export const IDEA_CATEGORIES = [
   ['tests', 'a test that is tautological, duplicated, flaky, slow or tied to implementation details -> delete, merge or rewrite it'],
 ] as const;
 
-export type IdeaCategory = (typeof IDEA_CATEGORIES)[number][0];
 const CATEGORY_NAMES: readonly string[] = IDEA_CATEGORIES.map(([name]) => name);
 
 export function categoryList(indent = '  '): string {
@@ -212,12 +211,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       const value = Number(takeValue('--top'));
       if (!Number.isInteger(value) || value < 1) parsed.error = '--top needs a positive whole number';
       else parsed.top = value;
-    } else if (named('--repo') || named('--shelf') || named('--category') || named('--grep') || named('--because')) {
+    } else if (named('--repo') || named('--category') || named('--grep') || named('--because')) {
       const name = arg.split('=')[0];
       const value = takeValue(name);
       if (!value || !value.trim()) {
         parsed.error = `${name} needs a value`;
-      } else if (name === '--repo' || name === '--shelf') {
+      } else if (name === '--repo') {
         parsed.repo = value.trim();
       } else if (name === '--category') {
         parsed.category = value.trim();
@@ -367,12 +366,12 @@ export async function runIdeaCli(argv: string[], io: IdeaCliIo = {}): Promise<nu
     return ideas.sort((a, b) => b.score - a.score);
   };
 
-  const markerPath = (kind: 'added') => join(dir, `.${kind}-${session}`);
-  const writeMarker = (kind: 'added') => {
+  const addedMarker = join(dir, `.added-${session}`);
+  const writeAddedMarker = () => {
     if (!session) return;
     try {
       mkdirSync(dir, { recursive: true });
-      writeFileSync(markerPath(kind), now().toISOString());
+      writeFileSync(addedMarker, now().toISOString());
       const cutoff = now().getTime() - MARKER_TTL_MS;
       for (const f of readdirSync(dir)) {
         if (!f.startsWith('.added-')) continue;
@@ -433,14 +432,25 @@ export async function runIdeaCli(argv: string[], io: IdeaCliIo = {}): Promise<nu
         );
         return 2;
       }
-      if (session && existsSync(markerPath('added'))) {
+      const ideas = readIdeas();
+      if (!Array.isArray(ideas)) return passOutput(ideas.error);
+      // The same idea already recorded, in any category: a sighting, so vote for it on its own shelf.
+      // (agent-notebook turns an identical add into a duplicate only within one shelf, and ids are
+      // content hashes, so a second copy on another shelf could never be voted for or removed.)
+      const same = ideas.find((e) => normal(e.text) === normal(text));
+      if (same) {
+        const vote = runNb(['vote', same.shelf, same.id, '+1'], nbEnv);
+        if (vote.status !== 0) return passOutput(vote);
+        logVote(dir, now(), session, same.shelf, same.id, '+1', 'identical idea added again');
+        out.log(`Already recorded as ${same.id} on ${same.shelf}; voted +1 for it.`);
+        return 0;
+      }
+      if (session && existsSync(addedMarker)) {
         err.error('kookr idea add: Nothing recorded. This task already added an idea; one per task.');
         return 3;
       }
       if (!args.isNew) {
-        const ideas = readIdeas();
-        if (!Array.isArray(ideas)) return passOutput(ideas.error);
-        const similar = similarIdeas(text, ideas).filter((e) => e.text !== text);
+        const similar = similarIdeas(text, ideas);
         if (similar.length > 0) {
           printIdeas(similar, `Similar ideas already recorded for ${repo}`, 5);
           err.error(
@@ -467,16 +477,16 @@ export async function runIdeaCli(argv: string[], io: IdeaCliIo = {}): Promise<nu
         return 0;
       }
       if (!result.added) return passOutput(res);
-      writeMarker('added');
+      writeAddedMarker();
       out.log(result.id ? `Recorded idea ${result.id} on ${shelf}.` : `Recorded the idea on ${shelf}.`);
       if (result.evicted) out.log(`(The shelf was full, so its lowest-scored idea was evicted: ${result.evicted})`);
       return 0;
     }
 
     case 'vote': {
-      const [ids, direction] = args.positional;
-      if (!ids || (direction !== '+1' && direction !== '-1')) {
-        err.error('kookr idea vote: give an id and +1 or -1.');
+      const [id, direction] = args.positional;
+      if (!id || id.includes(',') || (direction !== '+1' && direction !== '-1')) {
+        err.error('kookr idea vote: give one id and +1 or -1.');
         return 2;
       }
       if (direction === '+1' && !args.because) {
@@ -488,17 +498,15 @@ export async function runIdeaCli(argv: string[], io: IdeaCliIo = {}): Promise<nu
       }
       const ideas = readIdeas();
       if (!Array.isArray(ideas)) return passOutput(ideas.error);
-      for (const id of ids.split(',').map((s) => s.trim()).filter(Boolean)) {
-        const match = ideas.filter((e) => e.id.startsWith(id));
-        if (match.length !== 1) {
-          err.error(`kookr idea vote: ${match.length === 0 ? 'no idea' : 'more than one idea'} matches "${id}" in ${repo}. Run kookr idea show.`);
-          return 2;
-        }
-        const res = runNb(['vote', match[0].shelf, match[0].id, direction], nbEnv);
-        if (res.status !== 0) return passOutput(res);
-        logVote(dir, now(), session, match[0].shelf, match[0].id, direction, args.because ?? '');
-        out.log(res.stdout.replace(/\n$/, ''));
+      const match = ideas.filter((e) => e.id.startsWith(id));
+      if (match.length !== 1) {
+        err.error(`kookr idea vote: ${match.length === 0 ? 'no idea' : 'more than one idea'} matches "${id}" in ${repo}. Run kookr idea show.`);
+        return 2;
       }
+      const res = runNb(['vote', match[0].shelf, match[0].id, direction], nbEnv);
+      if (res.status !== 0) return passOutput(res);
+      logVote(dir, now(), session, match[0].shelf, match[0].id, direction, args.because ?? '');
+      out.log(res.stdout.replace(/\n$/, ''));
       return 0;
     }
 

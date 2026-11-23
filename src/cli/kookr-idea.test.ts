@@ -89,6 +89,12 @@ describe('ideaTarget / similarIdeas', () => {
     expect(similarIdeas(GOOD, [other, unrelated]).map((e) => e.id)).toEqual(['a1']);
   });
 
+  it('does not treat two ideas without a target as similar when their wording differs', () => {
+    const noTarget = entry('e5', 'kookr spawn --foo is never read -> remove the flag (keeps: spawn)');
+    const other = 'the retry wrapper hides timeouts from callers -> let the timeout surface (keeps: one retry)';
+    expect(similarIdeas(other, [noTarget])).toEqual([]);
+  });
+
   it('finds close wording without a shared target, and ignores distant wording', () => {
     const close = entry('c3', 'legacy.ts imported nowhere -> delete it and its test (keeps: sync via queue.ts)');
     const far = entry('d4', 'scripts/x.sh: retries hide a failure -> fail on the first error (keeps: exit code)');
@@ -170,18 +176,34 @@ describe('runIdeaCli (fake nb)', () => {
   it('turns an identical idea into a +1 vote and logs it as a sighting', async () => {
     const io = capture();
     const home = scratch();
-    const { runNb, nonShow } = fakeNb({ 'dead@acme-repo': [{ id: 'abc123', score: 1, text: GOOD }] }, [
-      { stdout: JSON.stringify({ added: false, reason: 'duplicate', id: 'abc123', collidedId: 'abc123' }) },
-      { stdout: '+1 → [+2]' },
-    ]);
+    const { runNb, nonShow } = fakeNb({ 'dead@acme-repo': [{ id: 'abc123', score: 1, text: GOOD }] }, [{ stdout: '+1 → [+2]' }]);
     const code = await runIdeaCli(['add', '--category', 'dead', GOOD], { ...io, env: { ...env, NB_SESSION: 'task-2' }, runNb, homeDir: home });
     expect(code).toBe(0);
-    expect(nonShow()).toEqual([
-      ['add', 'dead@acme-repo', GOOD, '--json'],
-      ['vote', 'dead@acme-repo', 'abc123', '+1'],
-    ]);
+    expect(nonShow()).toEqual([['vote', 'dead@acme-repo', 'abc123', '+1']]);
     expect(io.lines.join('\n')).toMatch(/Already recorded as abc123 on dead@acme-repo; voted \+1/);
     expect(readFileSync(join(home, '.kookr', 'ideas', '.votes.tsv'), 'utf8')).toMatch(/\ttask-2\tdead@acme-repo\tabc123\t\+1\tidentical idea added again\n$/);
+  });
+
+  it('votes on the original shelf when the identical idea is filed under another category, even with --new', async () => {
+    const io = capture();
+    const home = scratch();
+    // Same text up to case and punctuation, which is how agent-notebook compares lines.
+    const shelves = { 'dead@acme-repo': [{ id: 'abc123', score: 1, text: GOOD }] };
+    const { runNb, nonShow } = fakeNb(shelves, [{ stdout: '+1 → [+2]' }]);
+    const code = await runIdeaCli(['add', '--category', 'duplicate', `${GOOD.replace('imported nowhere', 'Imported  nowhere')}.`, '--new'], { ...io, env: { ...env, NB_SESSION: 'task-3' }, runNb, homeDir: home });
+    expect(code).toBe(0);
+    expect(nonShow()).toEqual([['vote', 'dead@acme-repo', 'abc123', '+1']]);
+    expect(io.lines.join('\n')).toMatch(/Already recorded as abc123 on dead@acme-repo/);
+  });
+
+  it('still votes when this task has already added an idea, since a repeat is a sighting, not a new idea', async () => {
+    const home = scratch();
+    const taskEnv = { ...env, NB_SESSION: 'task-1' };
+    const first = fakeNb({}, [{ stdout: JSON.stringify({ added: true, id: 'a1' }) }]);
+    expect(await runIdeaCli(['add', '--category', 'dead', GOOD], { ...capture(), env: taskEnv, runNb: first.runNb, homeDir: home })).toBe(0);
+    const again = fakeNb({ 'dead@acme-repo': [{ id: 'a1', score: 1, text: GOOD }] }, [{ stdout: '+1' }]);
+    expect(await runIdeaCli(['add', '--category', 'dead', GOOD], { ...capture(), env: taskEnv, runNb: again.runNb, homeDir: home })).toBe(0);
+    expect(again.nonShow()).toEqual([['vote', 'dead@acme-repo', 'a1', '+1']]);
   });
 
   it('reports a failed duplicate vote instead of claiming success', async () => {
@@ -239,6 +261,28 @@ describe('runIdeaCli (fake nb)', () => {
     const cat = capture();
     await runIdeaCli(['show', '--category', 'tests', '--json'], { ...cat, env, runNb, homeDir: '/h' });
     expect(JSON.parse(cat.lines[0])).toMatchObject({ repo: 'acme-repo', total: 1, entries: [{ id: 't1', category: 'tests' }] });
+  });
+
+  it('show refuses an unknown --category and lists the categories', async () => {
+    const io = capture();
+    const { calls, runNb } = fakeNb();
+    expect(await runIdeaCli(['show', '--category', 'feature'], { ...io, env, runNb, homeDir: '/h' })).toBe(2);
+    expect(calls).toHaveLength(0);
+    expect(io.errors.join('\n')).toContain('guidance');
+  });
+
+  it('says so when adding evicted the lowest-scored idea of a full shelf', async () => {
+    const io = capture();
+    const { runNb } = fakeNb({}, [{ stdout: JSON.stringify({ added: true, id: 'n1', evicted: 'old idea text' }) }]);
+    expect(await runIdeaCli(['add', '--category', 'dead', GOOD], { ...io, env, runNb, homeDir: scratch() })).toBe(0);
+    expect(io.lines.join('\n')).toMatch(/evicted: old idea text/);
+  });
+
+  it('vote takes one id; a comma list is refused', async () => {
+    const io = capture();
+    const { calls, runNb } = fakeNb();
+    expect(await runIdeaCli(['vote', 'a1,b2', '-1'], { ...io, env, runNb, homeDir: '/h' })).toBe(2);
+    expect(calls).toHaveLength(0);
   });
 
   it('show caps the list at --top (default 30) and says how many more there are', async () => {

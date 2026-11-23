@@ -149,8 +149,9 @@ This task may run unattended. Do not ask questions; decide and report.
   `decide` (the operator chooses), `junk` (not a lesson), `investigate` (the
   finding itself is unverified; keep the entry).
 - Shell variables do not survive from one command call to the next. Phase 1
-  prints the reports directory and the three file paths; use those literal
-  paths in later commands. The
+  prints the reports directory and the three file paths of the lesson
+  snapshot, and its idea-store step prints the fourth (`IDEAS_SNAP`); use
+  those literal paths in later commands. The
   snippets are bash.
 
 ## Phases
