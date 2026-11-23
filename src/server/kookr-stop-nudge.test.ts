@@ -182,3 +182,14 @@ describe('lesson decision template in the nudge (issue #3695)', () => {
     expect(NUDGE_REASON).toContain(LESSON_DECISION_TEMPLATE);
   });
 });
+
+describe('idea prompt in the nudge (issue #4250)', () => {
+  it('asks for a simplification idea before the completion signal, not for a feature', () => {
+    // Any tool call after the signal clears it, so the idea step must come first.
+    const idea = NUDGE_REASON.indexOf('kookr idea add');
+    expect(idea).toBeGreaterThan(-1);
+    expect(idea).toBeLessThan(NUDGE_REASON.indexOf('kookr signal completion-ready'));
+    expect(NUDGE_REASON).toContain('not a new feature');
+    expect(NUDGE_REASON).toContain('most tasks have none');
+  });
+});

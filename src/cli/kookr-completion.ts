@@ -292,7 +292,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   {
     name: 'idea',
     subcommands: ['show', 'add', 'vote', 'rm', 'list', 'path', 'doctor', 'stats'],
-    flags: ['--shelf', '--top', '--reason', '--note', '--json'],
+    flags: ['--repo', '--category', '--grep', '--top', '--because', '--new', '--reason', '--note', '--json'],
   },
   {
     name: 'effort-split',

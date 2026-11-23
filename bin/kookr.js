@@ -50,7 +50,7 @@ Usage:
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember|yield  Durable lesson-write spool + yield metric.
-  kookr idea show|add|vote|rm|list|path|doctor|stats  Improvement ideas, voted by the agents that hit them (#4250).
+  kookr idea show|add|vote|rm|list|path|doctor|stats  Simplification ideas, voted by the agents that hit them (#4250).
   kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
   kookr emission plan|override|dedupe|metrics|defer|version  Issue filing budget, bounded override + dedupe.
   kookr value-density classify|admit|composition|decline  Refactor-class emission/spawn governor + composition (#1846).
@@ -69,7 +69,7 @@ Options:
 
 Use --json for one machine-readable output envelope with: spawn, stop, keep-alive, queue, open, reply, reopen, account, interrupted, ask, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, chain, drain, resume, brief, ops digest, ops timers, github, opinion, logs, containers,
-maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
+maintenance, lesson, idea, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
 
 Compatibility aliases:

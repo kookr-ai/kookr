@@ -54,7 +54,10 @@ const LESSON_DECISION_TEMPLATE = [
 
 const NUDGE_REASON =
   'If you consider this Kookr task fully complete and ready to be closed: first record the '
-  + 'post-task lesson decision, then run `kookr signal completion-ready` (optionally with '
+  + 'post-task lesson decision. If this task hit code, a doc, a tool or a check that should be '
+  + 'deleted, merged, simplified or corrected (not a new feature), record it with `kookr idea add` '
+  + '(`kookr idea --help` gives the format; most tasks have none). Then run '
+  + '`kookr signal completion-ready` (optionally with '
   + '--note "..."). Completion-ready is rejected without that decision (issue #1538).\n'
   + LESSON_DECISION_TEMPLATE
   + '\nThe user will then review and complete it. If there is more to do — or this is just a '

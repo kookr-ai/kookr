@@ -108,17 +108,6 @@ const resignalHint = kookrTaskId
     `run it again (same --note) as your LAST call, after the retrospective: any other tool call, ` +
     `nb included, clears a pending completion signal.\n`
   : '';
-// Inside a Kookr task (issue #4250): ideas for changing a tool, skill, doc or check go to
-// the separate idea store (`kookr idea`, agent-notebook in ~/.kookr/ideas), where a repeat
-// becomes a vote and the curator promotes the best-scored ones to issues. Only offered in
-// a Kookr task, where the `kookr` command is on PATH.
-const ideaHint = kookrTaskId
-  ? `Ideas: if this task showed that a tool, skill, doc or check should change (a fix to make, ` +
-    `not a lesson to remember), run \`kookr idea show\`, then vote for a matching idea ` +
-    `(\`kookr idea vote <id> +1\`) or record at most one new one: ` +
-    `\`kookr idea add "<what is wrong or missing> -> <proposed change>"\`, naming the file or ` +
-    `command. Ideas have their own store; never put them on a notebook shelf.\n`
-  : '';
 process.stderr.write(
   `Before finishing, run the agent-notebook retrospective on the shelves you opened this task ` +
     `(one pass, then stop). Steps 1-4 apply only to shelves you opened; if you opened none, skip ` +
@@ -143,7 +132,6 @@ process.stderr.write(
     `Never write fleet-global directly.\n` +
     `Do not pad to hit a quota: "nothing new worth storing" is a valid outcome. ` +
     `When done, finish as you normally would; this reminder won't repeat this session.\n` +
-    ideaHint +
     resignalHint,
 );
 process.exit(2);

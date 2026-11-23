@@ -27,7 +27,7 @@ parameters:
     default: "5"
     type: text
   - name: ideaMinScore
-    description: "An idea from the idea store (kookr idea) is a candidate when its score is at least this and at least two different tasks added or voted for it."
+    description: "An idea from the idea store (kookr idea) is a candidate when its score is at least this and at least two different tasks added it or voted for it with a reason."
     required: false
     default: "3"
     type: text
@@ -117,9 +117,10 @@ This task may run unattended. Do not ask questions; decide and report.
   `nb show <shelf>` prints its entries as `<id>  [<score>]  <text>`. The id is
   the first six-character token.
 - Reports live in `{{reportsDir}}` (blank means `~/.kookr/reports`). Each run
-  writes three files named `notebook-retrofit-<stamp>`: `.md` (the full report,
+  writes four files named `notebook-retrofit-<stamp>`: `.md` (the full report,
   with lesson text), `.map.tsv` (one row per mapped entry: finding, shelf, id,
-  status, score, visibility, text) and `.shelves.txt` (the snapshot). The stamp
+  status, score, visibility, text), `.shelves.txt` (the snapshot) and
+  `.ideas.tsv` (the idea-store snapshot, Phase 1). The stamp
   is today's date, with `-run2`, `-run3`, … added when that date already has
   files. A run never overwrites an earlier run's files: they are the baseline
   the next run diffs against.
@@ -133,11 +134,14 @@ This task may run unattended. Do not ask questions; decide and report.
   are the values of the map's `finding` column, so a leaf's entries are the map
   rows whose finding is one of the keys on its line.
 - The idea store is agent-notebook in its own folder (`kookr idea path`
-  prints it; default `~/.kookr/ideas`), one shelf per repository slug, lines
-  of up to 400 characters. Read it only through `kookr idea` (it points `nb`
-  at the right folder; plain `nb` reads the lesson store). Its usage log
-  records which task (`NB_SESSION`) added or voted for each idea; Phase 1
-  turns that into a `tasks` count. Ideas have no entry map: an idea leaves the
+  prints it; default `~/.kookr/ideas`), one shelf per category and repository
+  (`<category>@<repo-slug>`), lines of up to 400 characters shaped
+  `<file or command>: <problem> -> <change> (keeps: <behaviour>)`. The
+  categories are a closed list of simplifications (`kookr idea --help`
+  prints it). Read the store only through `kookr idea` (it points `nb` at
+  the right folder; plain `nb` reads the lesson store). Its usage log and its
+  vote log (`.votes.tsv`) record which task (`NB_SESSION`) added or voted for
+  each idea; Phase 1 turns them into a `tasks` count. Ideas have no entry map: an idea leaves the
   store when it is promoted or found obsolete.
 - Entry statuses: `full` (remove once the change is live), `partial` (the change
   covers part of the lesson; shorten it), `now` (already covered; remove),
@@ -194,21 +198,25 @@ REPORTS=<the REPORTS path Phase 1 printed>; STAMP=<this run's stamp>
 IDEAS_SNAP="$REPORTS/notebook-retrofit-$STAMP.ideas.tsv"
 IDEAS_DIR=$(kookr idea path) || { echo "kookr idea is not available; skip the idea store this run"; exit 0; }
 TASKS=$(mktemp)
-awk -F'\t' '$4=="ok" && $6!="" && (($3=="add" && $8=="accepted") || ($3=="vote" && $8=="up")) { k=$2"\t"$7; if (!((k"\t"$6) in seen)) { seen[k"\t"$6]=1; n[k]++ } } END { for (k in n) print k"\t"n[k] }' "$IDEAS_DIR/.nb-usage.log" 2>/dev/null > "$TASKS"
-printf 'shelf\tid\tscore\ttasks\ttext\n' > "$IDEAS_SNAP"
-for f in "$IDEAS_DIR"/*.md; do
-  [ -e "$f" ] || continue
-  shelf=$(basename "$f" .md)
-  kookr idea show --shelf "$shelf" --top 50 --json | jq -r --arg s "$shelf" '.entries[] | [$s, .id, .score, .text] | @tsv'
-done | awk -F'\t' 'FILENAME==ARGV[1] { t[$1"\t"$2]=$3; next } { print $1"\t"$2"\t"$3"\t"(t[$1"\t"$2]+0)"\t"$4 }' "$TASKS" - >> "$IDEAS_SNAP"
+# A task supports an idea when it added it, or voted +1 with a reason (`kookr idea vote --because`).
+{
+  awk -F'\t' '$3=="add" && $4=="ok" && $8=="accepted" && $6!="" { print $2"\t"$7"\t"$6 }' "$IDEAS_DIR/.nb-usage.log" 2>/dev/null
+  awk -F'\t' '$5=="+1" && $2!="" && $6!="" { print $3"\t"$4"\t"$2 }' "$IDEAS_DIR/.votes.tsv" 2>/dev/null
+} | sort -u | awk -F'\t' '{ n[$1"\t"$2]++ } END { for (k in n) print k"\t"n[k] }' > "$TASKS"
+printf 'repo\tcategory\tid\tscore\ttasks\ttext\n' > "$IDEAS_SNAP"
+for repo in $(ls "$IDEAS_DIR" | sed -n 's/^[a-z-]*@\(.*\)\.md$/\1/p' | sort -u); do
+  kookr idea show --repo "$repo" --top 1000 --json | jq -r --arg r "$repo" '.entries[] | [.shelf, .id, $r, .category, .score, .text] | @tsv'
+done | awk -F'\t' 'FILENAME==ARGV[1] { t[$1"\t"$2]=$3; next } { print $3"\t"$4"\t"$2"\t"$5"\t"(t[$1"\t"$2]+0)"\t"$6 }' "$TASKS" - >> "$IDEAS_SNAP"
 rm -f "$TASKS"
 echo "ideas: $(($(wc -l < "$IDEAS_SNAP") - 1)); IDEAS_SNAP=$IDEAS_SNAP"
 ```
 
-`tasks` counts the different tasks that added the idea or voted it up. The
-usage log is bounded, so an old idea can show fewer tasks than really
-supported it; that only makes promotion more cautious. An empty store is a
-valid result.
+`tasks` counts the different tasks that added the idea, or voted for it with a
+reason: re-adding an identical idea counts as such a vote. Votes cast without
+a reason are not counted, because agents upvote what they are shown far more
+than what they hit. The usage log is bounded, so an old idea can show fewer
+tasks than really supported it; that only makes promotion more cautious. An
+empty store is a valid result.
 
 ### Phase 2 — Load the previous run
 
@@ -279,7 +287,8 @@ one of the first four buckets. Most entries end in "Leave"; that is expected.
 
 Ideas from the IDEAS_SNAP file skip the bucketing: an idea with a score of at
 least `{{ideaMinScore}}` and a `tasks` count of 2 or more is a candidate, keyed
-`I-<shelf>-<id>`. An idea that restates a lesson candidate joins that group
+`I-<category>-<repo>-<id>`. Ideas that name the same file or command and the
+same problem in different words are one candidate: add their `tasks`. An idea that restates a lesson candidate joins that group
 and adds its votes. Ideas below the threshold stay in the store; do not
 discuss them in the report beyond a count.
 
@@ -315,10 +324,23 @@ dropped last week is not a current problem. Record for each finding how it was
 checked: "on the fetched default branch", "reproduced", or "from lesson text
 only". Never mark an entry `full` on lesson text alone.
 
-For an idea candidate, a **New** or **Exists as prose** verdict makes it
-**promotable**. An **Exists and works** or **Already fixed** verdict, checked on
-the default branch or reproduced, makes it **obsolete**. Any verdict from the
-idea text alone keeps the idea in the store.
+An idea candidate proposes removing or changing something that exists, so
+"does something already do this?" is the wrong check for it. Check it by its
+category, on the default branch:
+
+| Category | Promotable when | Obsolete when |
+|---|---|---|
+| `guidance` | the quoted text is still in the named file and is wrong, stale or repeated elsewhere | the text is gone or correct |
+| `dead` | a search for the symbol or path finds no use outside its own tests | it is used, or already gone |
+| `duplicate` | both copies exist and still differ or could drift | only one copy is left |
+| `overbuilt`, `tangled` | the layer or module is as described; the leaf is marked "Needs a design" unless the change is mechanical | already collapsed or split |
+| `unused` | the hook logs and transcripts show little or no use over 30 days; the leaf asks the operator to decide and is never assigned to an implementer directly | it is used regularly |
+| `fragile` | you reproduced the failure or read the code path that swallows it | the failure no longer happens |
+| `tests` | the test still exists and is tautological, duplicated, flaky or slow as described (run it, or check what a mutation does) | already fixed |
+
+Before an idea that deletes or replaces something becomes a leaf, find the
+test that covers its `keeps:` behaviour. If there is none, the leaf adds that
+test first. Any verdict from the idea text alone keeps the idea in the store.
 
 ### Phase 6 — Build and validate the map
 
@@ -361,8 +383,8 @@ file), in this order:
    where, evidence, change, how it was checked, and the entry table.
 4. Corrections to earlier findings (anything Phase 5 showed was wrong or stale).
 5. Ideas: how many the store holds, the candidates with their verdicts, and a
-   `kookr idea rm --shelf <shelf> <id> --reason obsolete` command for each
-   obsolete idea (and `--reason promoted --note <issue>` for each promoted one
+   `kookr idea rm --repo <repo> <id> --reason obsolete` command for each
+   obsolete idea (and `--reason other --note "promoted: <issue>"` for each promoted one
    when Phase 8 does not run).
 6. Private-repository findings.
 7. What was not checked.
@@ -396,8 +418,9 @@ when that value is exactly `umbrella` or `leaves`. Any other value, including
 - **`leaves` only, ideas:** a promotable idea is filed as a leaf in the same
   way, written in your own words from what Phase 5 verified, never by pasting
   the idea text (rule 5 applies). Record it on the umbrella with its key
-  (`- [ ] I-<shelf>-<id>: <issue>`). Then, and only then, remove it from the
-  store: `kookr idea rm --shelf <shelf> <id> --reason promoted --note <issue URL>`.
+  (`- [ ] I-<category>-<repo>-<id>: <issue>`). Then, and only then, remove it from the
+  store: `kookr idea rm --repo <repo> <id> --reason other --note "promoted: <issue URL>"`
+  (agent-notebook's `rm` accepts only `wrong`, `obsolete` and `other` as reasons).
   Remove each obsolete idea with `--reason obsolete --note "<where it is
   handled>"`. File at most three idea leaves per run; the rest wait for the
   next run with their votes intact.
