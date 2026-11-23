@@ -63,6 +63,15 @@ describe('testClaudeAccount', () => {
     expect(env.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
   });
 
+  test('runs the probe with hooks disabled so a blocking Stop hook cannot fail it', async () => {
+    const run = vi.fn(async () => probe(0, 'OK'));
+    await testClaudeAccount(registry, 'host', { env: { PATH: '/bin' }, run });
+    const args = (run.mock.calls[0] as unknown as [string, string[]])[1];
+    const settings = args[args.indexOf('--settings') + 1];
+    expect(args).toContain('--settings');
+    expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
+  });
+
   test('host gets no token', async () => {
     const run = vi.fn(async () => probe(0, 'OK'));
     await testClaudeAccount(registry, 'host', { env: { PATH: '/bin' }, run });
