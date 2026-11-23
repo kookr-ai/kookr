@@ -25,13 +25,14 @@ is unavailable. With the setting switched off, or left unset with no key, the ro
 ever called. With `KOOKR_LUCY_OPERATOR=true` set explicitly and no key, it answers `503` and says a key
 is needed.
 
-Three more settings choose the model. Their defaults are the ones picked in the model trial recorded
-on issue #3632.
+Three more settings choose the model. The model and reasoning defaults are the ones picked in the
+model trial recorded on issue #3632. No provider is pinned by default: the routing rule on the
+OpenRouter account chooses which provider serves the model.
 
 | Setting | Default | What it does |
 |---|---|---|
 | `KOOKR_LUCY_OPERATOR_MODEL` | `deepseek/deepseek-v4.1-flash-1017` | The OpenRouter model that answers. It must support tool calls. |
-| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `cohere/fp8` | The providers allowed to serve it, tried in this order. No other provider is used. `any` lets OpenRouter choose. |
+| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `any` (no provider pinned) | Opt-in: the providers allowed to serve it, tried in this order; no other provider is used. Unset, `any` or `auto` sends no `provider` field, so the OpenRouter account's routing rule decides. |
 | `KOOKR_LUCY_OPERATOR_REASONING` | `medium` | How much the model thinks before answering: `none`, `low`, `medium` or `high`. |
 
 ## Trying it
@@ -532,7 +533,7 @@ tasks. Seven questions, one run each, so treat these as orders of magnitude.
 | What does the release notes task say? | read the task | 1.81 s | 2.72 s | $0.00012 |
 | Which projects do we have? | list projects | 1.90 s | 2.16 s | $0.00019 |
 
-All seven were served by Cohere, the first provider in the list. What she did:
+All seven were served by Cohere, the provider the trial pinned at the time (Kookr no longer pins one). What she did:
 
 - With two tasks named "Fix login", she asked which one was meant instead of picking.
 - Asked to close and launch, she said she can only look things up.

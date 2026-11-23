@@ -90,7 +90,7 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
       apiKey: 'sk-or-wiring',
       model: 'deepseek/deepseek-v4.1-flash-1017',
       baseUrl: `http://127.0.0.1:${portOf(provider)}/api/v1`,
-      providers: ['cohere/fp8', 'deepinfra/fp8'],
+      providers: [],
       reasoning: 'medium',
     },
   });
@@ -156,16 +156,17 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     expect(events.at(-1)).toMatchObject({ type: 'done', end: 'answered', steps: 2, inputTokens: 1700, outputTokens: 29, provider: 'Cohere' });
     expect((events.at(-1) as { costUsd: number }).costUsd).toBeCloseTo(0.00023, 8);
 
-    // What the provider was sent: the key in a header, the pinned providers, the reasoning level,
+    // What the provider was sent: the key in a header, no pinned provider (the OpenRouter
+    // account's routing rule decides), the reasoning level,
     // the five look tools, and a board built from the real task store.
     expect(received).toHaveLength(2);
     expect(received[0]!.auth).toBe('Bearer sk-or-wiring');
     expect(received[0]!.body).toMatchObject({
       model: 'deepseek/deepseek-v4.1-flash-1017',
       stream: true,
-      provider: { order: ['cohere/fp8', 'deepinfra/fp8'], only: ['cohere', 'deepinfra'] },
       reasoning: { effort: 'medium' },
     });
+    expect(received[0]!.body).not.toHaveProperty('provider');
     expect(received[0]!.body.tools.map((t: any) => t.function.name)).toEqual(['read_board', 'read_task', 'read_task_output', 'read_questions', 'show_task', 'list_projects']);
     expect(received[0]!.body.messages[0].content).toContain(`[${code}] "Fix login flow"`);
     // The second call carries the look-up's answer back.
