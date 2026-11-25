@@ -332,7 +332,7 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(onOperatorInput).toHaveBeenCalledWith('test', { text: 'ligne 1\nligne 2', paste: true });
   });
 
-    test('input preserves literal JSON and transport failures are not reported as agent exit', async () => {
+  test('input preserves literal JSON and transport failures are not reported as agent exit', async () => {
     const h = await setup();
     h.attach(); await drain();
     h.send({ type: 'input', text: '{"type":"resize"}' });

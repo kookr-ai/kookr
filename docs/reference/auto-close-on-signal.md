@@ -33,6 +33,13 @@ path, the auto-close delay and the TTL escalation share one live-work veto:
 they defer while a turn is running, the pane shows a human prompt, a viewer has
 the task open, or the task holds a confirmed-open PR.
 
+Every row above also defers while the operator has unsent text for the task,
+typed in its terminal or in the dashboard reply box, so a task is never closed
+under someone writing its next prompt. A draft stops protecting the task after
+an hour with no keystroke. If a task is closed anyway (manually, or after that
+hour), the dashboard terminal offers the unsent text back when the task is
+reopened.
+
 **What clears a pending signal (issue #3954).** The agent raises the signal
 from inside a Bash call (`kookr signal completion-ready`), so the hook events
 of that same call arrive around the signal and look like a live turn. For

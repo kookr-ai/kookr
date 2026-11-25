@@ -136,7 +136,7 @@ describe('WebSocket MessageRouter', () => {
     }
   });
 
-    test('client connects - receives snapshot message', () => {
+  test('client connects - receives snapshot message', () => {
     router.handleConnect();
 
     expect(sentMessages).toHaveLength(1);

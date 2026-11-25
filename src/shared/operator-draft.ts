@@ -11,10 +11,12 @@
  * the typed text recoverable, but it is not a faithful editor model.
  *
  * Rules, per input chunk:
- * - Enter (CR or LF) submits the draft, so the draft becomes empty. Ctrl-C and
- *   Ctrl-U also empty it, because the agent clears its input box on both.
- * - A backslash or ESC right before Enter is the agent's "insert a newline"
- *   chord, not a submit: it becomes a newline in the draft.
+ * - Enter submits the draft, so the draft becomes empty. The terminal sends
+ *   Enter as CR (a CRLF pair counts as one Enter). Ctrl-C and Ctrl-U also
+ *   empty it, because the agent clears its input box on both.
+ * - A lone LF is Ctrl-J, which the agents treat as "insert a newline", not as
+ *   submit. A backslash or ESC right before Enter is the same newline chord.
+ *   All three become a newline in the draft.
  * - Backspace / DEL remove the last character.
  * - Text inside a bracketed paste (`ESC [200~ ... ESC [201~`) is kept as
  *   typed, newlines included: a paste never submits.
@@ -22,7 +24,6 @@
  *   and other control bytes are dropped: they are not text.
  */
 
-const ENTER_CHARS = new Set(['\r', '\n']);
 const CTRL_C = '\u0003';
 const CTRL_U = '\u0015';
 const BACKSPACE = '\b';
@@ -78,7 +79,7 @@ export function reduceOperatorDraft(draft: string, input: OperatorDraftInput): s
     const char = rest[0]!;
     if (char === ESC) {
       // ESC + Enter: the agent's newline chord (Meta/Option+Enter).
-      if (rest.length > 1 && ENTER_CHARS.has(rest[1]!)) {
+      if (rest.length > 1 && (rest[1] === '\r' || rest[1] === '\n')) {
         next += '\n';
         rest = rest.slice(2);
         continue;
@@ -88,7 +89,10 @@ export function reduceOperatorDraft(draft: string, input: OperatorDraftInput): s
       continue;
     }
     rest = rest.slice(1);
-    if (ENTER_CHARS.has(char)) {
+    if (char === '\n') {
+      // Ctrl-J: a newline in the input box, not a submit.
+      next += '\n';
+    } else if (char === '\r') {
       // Backslash + Enter: the agent's newline chord, not a submit.
       if (next.endsWith('\\')) {
         next = `${next.slice(0, -1)}\n`;
@@ -96,7 +100,7 @@ export function reduceOperatorDraft(draft: string, input: OperatorDraftInput): s
         next = '';
       }
       // Swallow the LF of a CRLF pair so it does not count twice.
-      if (char === '\r' && rest.startsWith('\n')) rest = rest.slice(1);
+      if (rest.startsWith('\n')) rest = rest.slice(1);
     } else if (char === CTRL_C || char === CTRL_U) {
       next = '';
     } else if (char === DELETE || char === BACKSPACE) {

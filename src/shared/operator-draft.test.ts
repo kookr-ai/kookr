@@ -24,7 +24,7 @@ describe('reduceOperatorDraft', () => {
 
   it('empties on Enter (submit), Ctrl-C and Ctrl-U', () => {
     expect(typed('envoyé', '\r')).toBe('');
-    expect(typed('envoyé\n')).toBe('');
+    expect(typed('envoyé\r\n')).toBe('');
     expect(typed('abandon', '\u0003')).toBe('');
     expect(typed('effacé', '\u0015')).toBe('');
     expect(typed('avant\rapres')).toBe('apres');
@@ -36,7 +36,8 @@ describe('reduceOperatorDraft', () => {
     expect(typed('pizza 🍕', '\u007f')).toBe('pizza ');
   });
 
-  it('turns the newline chords (backslash+Enter, ESC+Enter) into newlines, not submits', () => {
+  it('turns the newline chords (Ctrl-J, backslash+Enter, ESC+Enter) into newlines, not submits', () => {
+    expect(typed('ligne 1 du prompt', '\n', 'ligne 2')).toBe('ligne 1 du prompt\nligne 2');
     expect(typed('ligne 1\\', '\r', 'ligne 2')).toBe('ligne 1\nligne 2');
     expect(typed('ligne 1', '\u001b\r', 'ligne 2')).toBe('ligne 1\nligne 2');
   });

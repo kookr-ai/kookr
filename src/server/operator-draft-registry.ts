@@ -28,7 +28,7 @@ import {
  * forwards; and the dashboard reply box, keyed by task id, reported by the
  * dashboard as present/absent (`composerDraft` WebSocket message).
  * In-memory: a server restart forgets drafts, and the next keystroke starts a
- * new one (still non-empty, so the veto comes back on the first key).
+ * new one, so the veto comes back once two characters are typed again.
  */
 
 /** A draft untouched for this long stops vetoing closes. */

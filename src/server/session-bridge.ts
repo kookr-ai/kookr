@@ -280,10 +280,10 @@ export function stripLeadingTerminalClear(bytes: Uint8Array): Uint8Array {
   return bytes;
 }
 
-/** Construction options for {@link SessionBridge}. */
 /** Decodes operator input for the draft tracker (lenient: bad bytes become U+FFFD). */
 const INPUT_DECODER = new TextDecoder();
 
+/** Construction options for {@link SessionBridge}. */
 export interface SessionBridgeOptions {
   /**
    * When true, the bridge is **output-only**: the inbound `ws.on('message')`

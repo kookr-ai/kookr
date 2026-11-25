@@ -550,6 +550,26 @@ describe('signalled tips', () => {
     expect(h.service.findTip(first.chain!.chainId)!.chain).toMatchObject({ iteration: 2, unhealthyStreak: 0 });
   });
 
+  it('does not close a signalled tip while the operator has an unsent draft in its terminal', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    const sessionId = `kookr-${first.id}`;
+    h.setIdle(first, true);
+    signal(h, first);
+    operatorDraftRegistry.record(sessionId, { text: 'encore une chose' });
+    try {
+      h.advance(CHAIN_SIGNAL_CLOSE_CEILING_MS + 1_000);
+      await h.service.sweep();
+      expect(h.completeIdleIteration).not.toHaveBeenCalled();
+
+      operatorDraftRegistry.record(sessionId, { text: '\r' });
+      await h.service.sweep();
+      expect(h.completeIdleIteration).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }), 'signalled', expect.any(Function));
+    } finally {
+      operatorDraftRegistry.clear(sessionId);
+    }
+  });
+
   it('waits while the agent is still mid-turn after signalling, up to a ceiling', async () => {
     const h = harness();
     const first = await startResearchChain(h, { maxIterations: 3 });

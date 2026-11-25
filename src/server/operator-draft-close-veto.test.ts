@@ -214,6 +214,28 @@ describe('a task is never closed while the operator has an unsent draft in it', 
     expect(taskStore.completeTask).not.toHaveBeenCalled();
   });
 
+  it('meta playbook auto-complete: an unsent draft holds the close', async () => {
+    const t = await terminal();
+    await t.type('consigne pour l\'orchestrateur');
+    const metaTtlMs = 12 * 60_000;
+    const task = finishedTask(t.sessionId, metaTtlMs + 60_000, {
+      playbookId: 'cross-repo-orchestrator.md',
+      name: 'Cross-Repo Autonomous Orchestrator',
+    });
+    task.pendingSignal = { ...task.pendingSignal!, source: 'http' };
+    const taskStore = makeTaskStore([task]);
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      // Unknown PR state: the strict path skips the task, only the meta path could close it.
+      { taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), auditLogPath, isHoldingOpenPr: () => undefined },
+      { ttlMs: HARD_TTL_MS, metaAutoCompleteTtlMs: metaTtlMs },
+    );
+
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual([task.id]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+  });
+
   it('FAA ack-path reaper: never warns-then-reaps a task holding a draft', async () => {
     const t = await terminal();
     await t.type('encore une question');
