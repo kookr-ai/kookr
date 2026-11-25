@@ -23,6 +23,7 @@ import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import type { ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
 import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
+import { createComposerDraftReporter } from '../composer-draft-reporter.js';
 import {
   detectShortcutPlatform,
   getDefaultShortcutBindings,
@@ -640,6 +641,16 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   useEffect(() => {
     setInput(agent ? loadDetailReplyDraft(replyDraftScope) : '');
   }, [agent?.taskId, agent?.agentId]);
+
+  // Tell the server while the reply box holds unsent text, so it does not
+  // close this task under the operator.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const composerDraftReporterRef = useRef<ReturnType<typeof createComposerDraftReporter> | null>(null);
+  composerDraftReporterRef.current ??= createComposerDraftReporter((msg) => sendRef.current(msg));
+  useEffect(() => {
+    if (agent?.taskId) composerDraftReporterRef.current?.report(agent.taskId, input);
+  }, [agent?.taskId, input]);
 
   // Auto-grow the reply textarea with its content (1 row up to ~6 rows), then
   // scroll internally. Runs on every input change so drafts, typing, and voice

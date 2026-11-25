@@ -31,6 +31,7 @@ import { reduceOperatorDraft, type OperatorDraftInput } from '../../shared/opera
 import {
   discardRecoverableTerminalDrafts,
   findRecoverableTerminalDraft,
+  loadUnsentTerminalDraft,
   saveUnsentTerminalDraft,
   type UnsentTerminalDraft,
 } from '../store/unsent-terminal-drafts.js';
@@ -202,9 +203,15 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
   // The unsent prompt as text (escape sequences dropped), kept in browser
   // storage so it survives the task being closed under the operator.
   const operatorDraftRef = useRef('');
+  const recoveredDraftRestoredRef = useRef(false);
   const taskIdRef = useRef(taskId ?? null);
   taskIdRef.current = taskId ?? null;
   const [recoveredDraft, setRecoveredDraft] = useState<UnsentTerminalDraft | null>(null);
+  // Set once the operator put the recovered text back into the prompt. The
+  // stored copy is kept until that prompt is sent (or erased): a paste into an
+  // agent that is still booting can be swallowed, and the stored text would be
+  // the only copy left.
+  const [recoveredDraftRestored, setRecoveredDraftRestored] = useState(false);
   const onEmptySubmitRef = useRef(onEmptySubmit);
   const turnStateRef = useRef(turnState);
   turnStateRef.current = turnState;
@@ -768,17 +775,25 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
 
   /** Follow the unsent prompt and keep it in browser storage for this task + session. */
   function trackOperatorDraft(input: OperatorDraftInput) {
+    const hadDraft = operatorDraftRef.current.length > 0;
     operatorDraftRef.current = reduceOperatorDraft(operatorDraftRef.current, input);
     const owner = taskIdRef.current;
     const session = currentTmuxRef.current;
     if (owner && session) saveUnsentTerminalDraft(owner, session, operatorDraftRef.current);
+    // The restored prompt was sent (or erased on purpose): the old copy is done.
+    if (hadDraft && operatorDraftRef.current.length === 0 && recoveredDraftRestoredRef.current && owner) {
+      discardRecoverableTerminalDrafts(owner, session);
+      recoveredDraftRestoredRef.current = false;
+      setRecoveredDraftRestored(false);
+      setRecoveredDraft(null);
+    }
   }
 
   function restoreRecoveredDraft() {
     const draft = recoveredDraft;
     if (!draft || !sendSafePaste(draft.text)) return;
-    discardRecoverableTerminalDrafts(draft.taskId, currentTmuxRef.current);
-    setRecoveredDraft(null);
+    recoveredDraftRestoredRef.current = true;
+    setRecoveredDraftRestored(true);
     terminalRef.current?.focus();
   }
 
@@ -950,6 +965,8 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
   // closed while the operator was writing it) is offered back on reopen.
   useEffect(() => {
     setRecoveredDraft(taskId ? findRecoverableTerminalDraft(taskId, tmuxName) : null);
+    recoveredDraftRestoredRef.current = false;
+    setRecoveredDraftRestored(false);
   }, [taskId, tmuxName]);
 
   // One protocol owner per selected, visible terminal. The writer itself lives
@@ -964,7 +981,12 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
       continuityRef.current = { cursor: null, hadView: false };
       retryBudgetRef.current = { attempts: [] };
       terminalInputDraftRef.current = '';
-      operatorDraftRef.current = '';
+      // Pick up where this session's prompt was left (switching tasks, or a
+      // page reload), so the next keystroke does not overwrite the saved draft
+      // with a draft rebuilt from nothing.
+      operatorDraftRef.current = taskIdRef.current && tmuxName
+        ? loadUnsentTerminalDraft(taskIdRef.current, tmuxName)
+        : '';
       resetJumpLatest();
       searchOpenRef.current = false;
       setSearchOpen(false);
@@ -1097,11 +1119,17 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
       {recoveredDraft && (
         <div className="terminal-history-notice terminal-recovered-draft" role="status" aria-label="Unsent draft recovered">
           <div className="terminal-recovered-draft-body">
-            <span>This task was closed while you were writing. Your unsent text:</span>
+            <span>
+              {recoveredDraftRestored
+                ? 'Restored into the prompt. This copy is kept until you send it:'
+                : 'This task was closed while you were writing. Your unsent text:'}
+            </span>
             <pre className="terminal-recovered-draft-text">{recoveredDraft.text}</pre>
           </div>
           <div className="terminal-recovered-draft-actions">
-            <button type="button" onClick={restoreRecoveredDraft}>Restore into prompt</button>
+            <button type="button" onClick={restoreRecoveredDraft}>
+              {recoveredDraftRestored ? 'Restore again' : 'Restore into prompt'}
+            </button>
             <button type="button" onClick={() => { void copyRecoveredDraft(); }}>Copy</button>
             <button type="button" onClick={dismissRecoveredDraft} aria-label="Dismiss recovered draft">×</button>
           </div>

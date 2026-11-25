@@ -108,7 +108,14 @@ export function reduceOperatorDraft(draft: string, input: OperatorDraftInput): s
   return cap(next);
 }
 
-/** True when the draft holds something a human would not want to lose. */
-export function isNonEmptyOperatorDraft(draft: string | undefined | null): boolean {
-  return typeof draft === 'string' && draft.trim().length > 0;
+/**
+ * True when the draft holds something a human would not want to lose: at
+ * least two non-blank characters. A lone character is what a menu or
+ * permission answer leaves behind (`1`, `y`): those keys pick an option
+ * without Enter, so the tracker sees them as typed text. Counting them would
+ * hold the task open for an hour, and offer "1" back as a lost prompt.
+ */
+export function isMeaningfulOperatorDraft(draft: string | undefined | null): boolean {
+  if (typeof draft !== 'string') return false;
+  return Array.from(draft.replace(/\s+/g, '')).length >= 2;
 }

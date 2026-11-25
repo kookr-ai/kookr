@@ -321,7 +321,18 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(h.ws.close).not.toHaveBeenCalled();
   });
 
-  test('input preserves literal JSON and transport failures are not reported as agent exit', async () => {
+  test('operator input and pastes reach the unsent-draft tracker', async () => {
+    const onOperatorInput = vi.fn();
+    const h = await setup(undefined, false, false, undefined, { onOperatorInput });
+    h.attach(); await drain();
+    h.send({ type: 'input', text: 'Peux-tu' });
+    h.send({ type: 'paste', text: 'ligne 1\nligne 2' });
+    await drain();
+    expect(onOperatorInput).toHaveBeenCalledWith('test', { text: 'Peux-tu' });
+    expect(onOperatorInput).toHaveBeenCalledWith('test', { text: 'ligne 1\nligne 2', paste: true });
+  });
+
+    test('input preserves literal JSON and transport failures are not reported as agent exit', async () => {
     const h = await setup();
     h.attach(); await drain();
     h.send({ type: 'input', text: '{"type":"resize"}' });

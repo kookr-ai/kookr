@@ -1,4 +1,4 @@
-import { isNonEmptyOperatorDraft } from '../../shared/operator-draft.js';
+import { isMeaningfulOperatorDraft } from '../../shared/operator-draft.js';
 
 /**
  * Unsent terminal drafts, kept in this browser so a prompt the operator was
@@ -78,7 +78,7 @@ export function saveUnsentTerminalDraft(
   if (!store) return;
   try {
     const key = keyFor(taskId, sessionName);
-    if (!isNonEmptyOperatorDraft(text)) {
+    if (!isMeaningfulOperatorDraft(text)) {
       store.removeItem(key);
       return;
     }
@@ -91,6 +91,17 @@ export function saveUnsentTerminalDraft(
     store.setItem(key, JSON.stringify(draft));
   } catch {
     // Quota or access error: the draft simply is not kept.
+  }
+}
+
+/** The stored draft of one task session (empty string when none). */
+export function loadUnsentTerminalDraft(taskId: string, sessionName: string): string {
+  const store = storage();
+  if (!store) return '';
+  try {
+    return parse(store.getItem(keyFor(taskId, sessionName)))?.text ?? '';
+  } catch {
+    return '';
   }
 }
 
@@ -109,7 +120,7 @@ export function findRecoverableTerminalDraft(
     let latest: UnsentTerminalDraft | null = null;
     for (const { draft } of allEntries(store)) {
       if (!draft || draft.taskId !== taskId || draft.sessionName === currentSessionName) continue;
-      if (!isNonEmptyOperatorDraft(draft.text)) continue;
+      if (!isMeaningfulOperatorDraft(draft.text)) continue;
       if (!latest || draft.savedAt > latest.savedAt) latest = draft;
     }
     return latest;

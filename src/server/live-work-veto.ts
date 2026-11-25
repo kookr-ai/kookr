@@ -86,7 +86,7 @@ export function liveWorkVetoReasonText(reason: LiveWorkVetoReason): string {
  * not read the store.
  */
 export function evaluateLiveWorkVeto(
-  task: Pick<Task, 'sessions'>,
+  task: Pick<Task, 'sessions'> & { id?: string },
   signals: LiveWorkSignals = {},
 ): LiveWorkVetoResult {
   if (taskHasLiveTurn(task)) return { veto: true, reason: 'live_turn' };

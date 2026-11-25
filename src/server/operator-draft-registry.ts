@@ -1,6 +1,6 @@
 import type { Task } from '../core/tasks.js';
 import {
-  isNonEmptyOperatorDraft,
+  isMeaningfulOperatorDraft,
   reduceOperatorDraft,
   type OperatorDraftInput,
 } from '../shared/operator-draft.js';
@@ -23,7 +23,10 @@ import {
  * bounded by {@link OPERATOR_DRAFT_VETO_MAX_IDLE_MS} only so that a forgotten
  * draft cannot hold a concurrency slot forever.
  *
- * Keyed by terminal session id, which is the task session's `tmuxSession`.
+ * Two sources: terminal drafts, keyed by terminal session id (the task
+ * session's `tmuxSession`) and rebuilt from the bytes the terminal bridge
+ * forwards; and the dashboard reply box, keyed by task id, reported by the
+ * dashboard as present/absent (`composerDraft` WebSocket message).
  * In-memory: a server restart forgets drafts, and the next keystroke starts a
  * new one (still non-empty, so the veto comes back on the first key).
  */
@@ -39,6 +42,8 @@ export interface OperatorDraftEntry {
 
 export class OperatorDraftRegistry {
   private readonly drafts = new Map<string, OperatorDraftEntry>();
+  /** Task id → epoch ms of the last report that its dashboard reply box holds unsent text. */
+  private readonly composerDrafts = new Map<string, number>();
 
   constructor(private readonly maxIdleMs: number = OPERATOR_DRAFT_VETO_MAX_IDLE_MS) {}
 
@@ -58,21 +63,40 @@ export class OperatorDraftRegistry {
     return this.drafts.get(sessionId);
   }
 
+  /**
+   * The dashboard reply box of `taskId` holds unsent text (`hasDraft`), or no
+   * longer does. The text itself stays in the browser; only its presence
+   * matters here. The dashboard re-reports while the operator keeps typing,
+   * which refreshes the idle bound.
+   */
+  recordComposerDraft(taskId: string, hasDraft: boolean, nowMs: number = Date.now()): void {
+    if (hasDraft) this.composerDrafts.set(taskId, nowMs);
+    else this.composerDrafts.delete(taskId);
+  }
+
   /** Forget a session's draft (session ended, or the draft was delivered). */
   clear(sessionId: string): void {
     this.drafts.delete(sessionId);
   }
 
   /**
-   * True when one of the task's live sessions holds a non-empty unsent draft
-   * typed within the idle bound. Ended sessions are ignored: their input box is
+   * True when the operator holds unsent text for this task, typed within the
+   * idle bound: in the dashboard reply box, or in the terminal input box of
+   * one of its live sessions. Ended sessions are ignored: their input box is
    * gone, so their draft can no longer be lost by closing the task.
    */
-  hasUnsentDraft(task: Pick<Task, 'sessions'>, nowMs: number = Date.now()): boolean {
+  hasUnsentDraft(
+    task: Pick<Task, 'sessions'> & { id?: string },
+    nowMs: number = Date.now(),
+  ): boolean {
+    if (task.id !== undefined) {
+      const reportedAt = this.composerDrafts.get(task.id);
+      if (reportedAt !== undefined && nowMs - reportedAt <= this.maxIdleMs) return true;
+    }
     for (const session of task.sessions) {
       if (session.lastStatus === 'completed' || session.lastStatus === 'aborted') continue;
       const entry = this.drafts.get(session.tmuxSession);
-      if (!entry || !isNonEmptyOperatorDraft(entry.text)) continue;
+      if (!entry || !isMeaningfulOperatorDraft(entry.text)) continue;
       if (nowMs - entry.lastInputAtMs <= this.maxIdleMs) return true;
     }
     return false;

@@ -600,6 +600,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'navigate', agentId: 'agent-1' }),
   clientMessageCase({ type: 'getNext' }),
   clientMessageCase({ type: 'selectionChanged', selectedTaskId: 'task-1', selectedSessionId: 'session-1' }),
+  clientMessageCase({ type: 'composerDraft', taskId: 'task-1', hasDraft: true }),
   clientMessageCase({
     type: 'emptyEnterIntent',
     intentId: 'intent-1',

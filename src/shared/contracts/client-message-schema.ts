@@ -133,6 +133,7 @@ const ClientMessageSchemaImpl = z.union([
     selectedTaskId: z.string().nullable(),
     selectedSessionId: z.string().nullable(),
   }),
+  z.object({ type: z.literal('composerDraft'), taskId: z.string().min(1), hasDraft: z.boolean() }),
   z.object({
     type: z.literal('emptyEnterIntent'),
     intentId: z.string(),

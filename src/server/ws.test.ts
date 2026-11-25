@@ -23,6 +23,7 @@ import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 const execFile = promisify(execFileCb);
 
@@ -122,7 +123,20 @@ describe('WebSocket MessageRouter', () => {
     });
   });
 
-  test('client connects - receives snapshot message', () => {
+  test('routes composerDraft into the operator draft registry (reply box holds unsent text)', async () => {
+    const taskId = 'task-composer-draft';
+    try {
+      await router.handleMessage({ type: 'composerDraft', taskId, hasDraft: true });
+      expect(operatorDraftRegistry.hasUnsentDraft({ id: taskId, sessions: [] })).toBe(true);
+
+      await router.handleMessage({ type: 'composerDraft', taskId, hasDraft: false });
+      expect(operatorDraftRegistry.hasUnsentDraft({ id: taskId, sessions: [] })).toBe(false);
+    } finally {
+      operatorDraftRegistry.recordComposerDraft(taskId, false);
+    }
+  });
+
+    test('client connects - receives snapshot message', () => {
     router.handleConnect();
 
     expect(sentMessages).toHaveLength(1);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   OPERATOR_DRAFT_MAX_CHARS,
-  isNonEmptyOperatorDraft,
+  isMeaningfulOperatorDraft,
   reduceOperatorDraft,
 } from './operator-draft.js';
 
@@ -60,10 +60,17 @@ describe('reduceOperatorDraft', () => {
   });
 });
 
-describe('isNonEmptyOperatorDraft', () => {
+describe('isMeaningfulOperatorDraft', () => {
   it('ignores whitespace-only drafts', () => {
-    expect(isNonEmptyOperatorDraft('  \n ')).toBe(false);
-    expect(isNonEmptyOperatorDraft(undefined)).toBe(false);
-    expect(isNonEmptyOperatorDraft(' a ')).toBe(true);
+    expect(isMeaningfulOperatorDraft('  \n ')).toBe(false);
+    expect(isMeaningfulOperatorDraft(undefined)).toBe(false);
+    expect(isMeaningfulOperatorDraft(' ab ')).toBe(true);
+  });
+
+  it('ignores the single key a menu or permission answer leaves behind', () => {
+    expect(isMeaningfulOperatorDraft('1')).toBe(false);
+    expect(isMeaningfulOperatorDraft(' y ')).toBe(false);
+    expect(isMeaningfulOperatorDraft('🍕')).toBe(false);
+    expect(isMeaningfulOperatorDraft('ok')).toBe(true);
   });
 });
