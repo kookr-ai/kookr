@@ -6,7 +6,6 @@ import {
   listMetaFinishedAwaitingAckAutoCompleteTasks,
   emptyFinishedAwaitingAckReclaimSkipCounts,
   finishedAwaitingAckOpenPrFailsafeSkipTotal,
-  taskHasLiveTurn,
   DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
   DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS,
   type FinishedAwaitingAckReclaimCandidateOutcome,
@@ -15,6 +14,7 @@ import {
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { paneHasHumanInteractiveMarkers } from '../shared/pane-semantics.js';
+import { evaluateLiveWorkVeto, liveWorkVetoReasonText } from './live-work-veto.js';
 
 /** Cap last-pass outcome samples on health (issue #2084 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -383,32 +383,22 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
       // Acked / dismissed / transitioned since selection — no longer ours to close.
       continue;
     }
-    if (taskHasLiveTurn(fresh)) {
-      deferredTaskIds.push(task.id);
-      console.warn(
-        `[finished-awaiting-ack-ttl] deferred task ${task.id} — turn resumed (live turn) since selection`,
-      );
-      continue;
+    // Shared live-work veto: live turn, an unsent operator draft in the
+    // terminal (the operator is writing the next prompt), a human-interactive
+    // pane, or a confirmed-open delivery PR landed since selection. Only a
+    // definite PR `true` blocks (parity with the ack-path reaper #2170); an
+    // unknown ref does not re-exempt an actionable relaxed reclaim the selector
+    // already cleared (issue #2695). Cheap checks first; the pane read is the
+    // one async per-task cost.
+    const holdingOpenPr = deps.isHoldingOpenPr?.(fresh);
+    let veto = evaluateLiveWorkVeto(fresh, { holdingOpenPr });
+    if (!veto.veto && deps.getTaskPaneText) {
+      veto = evaluateLiveWorkVeto(fresh, { paneText: await deps.getTaskPaneText(task.id), holdingOpenPr });
     }
-    const paneText = deps.getTaskPaneText ? await deps.getTaskPaneText(task.id) : undefined;
-    if (paneHasHumanInteractiveMarkers(paneText)) {
+    if (veto.veto) {
       deferredTaskIds.push(task.id);
       console.warn(
-        `[finished-awaiting-ack-ttl] deferred task ${task.id} — pane shows a human-interactive prompt`,
-      );
-      continue;
-    }
-    // A confirmed-open delivery PR may have landed between selection and now.
-    // Never force-complete out from under it — the PR is the deliverable and a
-    // premature "completed" would strand it. Only a definite `true` blocks here
-    // (parity with the ack-path reaper #2170); an unknown/unconfirmed ref does
-    // not re-exempt an actionable relaxed reclaim the selector already cleared
-    // (issue #2695), so this re-check is safe for both the strict and relaxed
-    // selections.
-    if (deps.isHoldingOpenPr?.(fresh) === true) {
-      deferredTaskIds.push(task.id);
-      console.warn(
-        `[finished-awaiting-ack-ttl] deferred task ${task.id} — confirmed-open PR hold landed since selection`,
+        `[finished-awaiting-ack-ttl] deferred task ${task.id} — ${liveWorkVetoReasonText(veto.reason)}`,
       );
       continue;
     }
@@ -499,12 +489,14 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     ) {
       continue;
     }
-    if (taskHasLiveTurn(fresh)) {
-      deferredTaskIds.push(task.id);
-      continue;
+    // Shared live-work veto (live turn / unsent operator draft / interactive
+    // pane) defers; the PR hold is re-checked separately below because a
+    // landed PR is a skip here, not a countable deferral.
+    let veto = evaluateLiveWorkVeto(fresh);
+    if (!veto.veto && deps.getTaskPaneText) {
+      veto = evaluateLiveWorkVeto(fresh, { paneText: await deps.getTaskPaneText(task.id) });
     }
-    const paneText = deps.getTaskPaneText ? await deps.getTaskPaneText(task.id) : undefined;
-    if (paneHasHumanInteractiveMarkers(paneText)) {
+    if (veto.veto) {
       deferredTaskIds.push(task.id);
       continue;
     }

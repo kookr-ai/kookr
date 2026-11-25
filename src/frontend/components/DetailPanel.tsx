@@ -1373,6 +1373,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                       <Suspense fallback={null}>
                         <TerminalPanel
                           tmuxName={agent.agentId}
+                          taskId={agent.taskId ?? null}
                           agentType={agent.agentType}
                           visible={terminalVisible}
                           onEmptySubmit={terminalEmptyEnterAdvance ? handleEmptyEnterAdvance : undefined}

@@ -52,6 +52,7 @@ import {
   type TerminalSuccessVerdictMatch,
 } from '../core/terminal-success-verdict.js';
 import { deriveTurnStateDetails } from '../core/turn-state.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 /**
  * Max terminal-success tasks completed per sweep. Same rationale as the
@@ -208,6 +209,10 @@ function evaluateCandidate(
   // never tear down a newer one that is still working).
   const session = soleLiveSession(task);
   if (!session) return null;
+
+  // The operator is writing a reply in this task's terminal: a parked agent is
+  // exactly where a human types the next prompt, so never complete it now.
+  if (operatorDraftRegistry.hasUnsentDraft(task)) return null;
 
   // Must be genuinely PARKED in needs_input with no concrete question. The
   // watchdog only mints needs_input once the agent is idle at the prompt past the

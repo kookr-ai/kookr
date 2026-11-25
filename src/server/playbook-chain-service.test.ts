@@ -14,6 +14,7 @@ import {
 } from './launch-service.js';
 import { CHAIN_HELD_LOG_INTERVAL_MS, CHAIN_IDLE_COMPLETE_MS, CHAIN_SIGNAL_CLOSE_CEILING_MS, CHAIN_SIGNAL_SETTLE_MS, PlaybookChainService } from './playbook-chain-service.js';
 import type { PreparePlaybookLaunchInput, PreparedPlaybookLaunch } from './use-cases/playbook-launch.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 const HOUR = 60 * 60_000;
 
@@ -409,6 +410,22 @@ describe('launch failures', () => {
 });
 
 describe('idle backstop', () => {
+  it('never idle-completes a tip while the operator has an unsent draft in its terminal', async () => {
+    const h = harness();
+    const first = await startResearchChain(h, { maxIterations: 3 });
+    const sessionId = `kookr-${first.id}`;
+    h.setIdle(first, true);
+    operatorDraftRegistry.record(sessionId, { text: 'une consigne en cours' });
+    try {
+      await h.service.sweep();
+      h.advance(CHAIN_IDLE_COMPLETE_MS * 2);
+      await h.service.sweep();
+      expect(h.completeIdleIteration).not.toHaveBeenCalled();
+    } finally {
+      operatorDraftRegistry.clear(sessionId);
+    }
+  });
+
   it('completes an iteration idle at its prompt for the hold period, then advances the chain', async () => {
     const h = harness();
     const first = await startResearchChain(h, { maxIterations: 3 });

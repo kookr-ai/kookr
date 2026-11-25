@@ -37,6 +37,8 @@ import {
 import type { snapshotStreamingAttachSeed, StreamingAttachSnapshotResult } from './streaming-attach-snapshot.js';
 import { snapshotStreamingAttachSeedIsolated } from './terminal-snapshot-worker.js';
 import { getInstalledLiveScreenModels, type LiveScreenSeedResult, type LiveScreenSeedSource } from './terminal-live-screen-models.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
+import type { OperatorDraftInput } from '../shared/operator-draft.js';
 
 /**
  * Server → browser text control frame for attach join keys (RFC Phase 0.0).
@@ -279,6 +281,9 @@ export function stripLeadingTerminalClear(bytes: Uint8Array): Uint8Array {
 }
 
 /** Construction options for {@link SessionBridge}. */
+/** Decodes operator input for the draft tracker (lenient: bad bytes become U+FFFD). */
+const INPUT_DECODER = new TextDecoder();
+
 export interface SessionBridgeOptions {
   /**
    * When true, the bridge is **output-only**: the inbound `ws.on('message')`
@@ -381,6 +386,14 @@ export interface SessionBridgeOptions {
   onBridgeReplay?: (sessionId: SessionId) => void;
   onBridgeLiveBytes?: (sessionId: SessionId) => void;
   onBridgeClosed?: (sessionId: SessionId) => void;
+  /**
+   * Receives every chunk of operator input (keystrokes and paste frames) so
+   * the operator's unsent draft can be tracked and protect the task from
+   * background closes. Defaults to recording into the process-wide
+   * {@link operatorDraftRegistry}; the terminal-host child overrides it to
+   * forward the chunk to the server process over IPC.
+   */
+  onOperatorInput?: (sessionId: SessionId, input: OperatorDraftInput) => void;
 }
 
 export class SessionBridge {
@@ -406,6 +419,7 @@ export class SessionBridge {
   private readonly onBridgeReplay?: (sessionId: SessionId) => void;
   private readonly onBridgeLiveBytes?: (sessionId: SessionId) => void;
   private readonly onBridgeClosed?: (sessionId: SessionId) => void;
+  private readonly onOperatorInput: (sessionId: SessionId, input: OperatorDraftInput) => void;
   private readonly ringReplayPolicy: RingReplayPolicy;
   private readonly forceFullRingAttach: boolean;
   private readonly streamingAttachViewportBytes: number;
@@ -459,6 +473,8 @@ export class SessionBridge {
     this.onBridgeReplay = options?.onBridgeReplay;
     this.onBridgeLiveBytes = options?.onBridgeLiveBytes;
     this.onBridgeClosed = options?.onBridgeClosed;
+    this.onOperatorInput = options?.onOperatorInput
+      ?? ((id, input) => operatorDraftRegistry.record(id, input));
     this.readOnly = options?.readOnly ?? false;
     this.ringReplayPolicy = options?.ringReplay ?? 'auto';
     this.forceFullRingAttach = options?.forceFullRingAttach
@@ -1926,6 +1942,16 @@ export class SessionBridge {
     );
     this.safeForwardWrite(bytes);
     this.onAnyKeystroke?.(this.sessionId);
+    this.recordOperatorInput({ text: sanitized, paste: true });
+  }
+
+  /** Feed operator input to the draft tracker; never lets it break the write path. */
+  private recordOperatorInput(input: OperatorDraftInput): void {
+    try {
+      this.onOperatorInput(this.sessionId, input);
+    } catch {
+      // Draft tracking is advisory; a failure must not drop keystrokes.
+    }
   }
 
   private handleBackendRejection(err: unknown, op: 'write' | 'resize'): void {
@@ -2013,6 +2039,7 @@ export class SessionBridge {
 
   private notifyInput(bytes: Uint8Array): void {
     this.onAnyKeystroke?.(this.sessionId);
+    this.recordOperatorInput({ text: INPUT_DECODER.decode(bytes) });
     // Fire onInput when the user submits — Enter key. Parity with the v7
     // TerminalBridge behavior used by permission-response detection.
     for (let i = 0; i < bytes.length; i++) {

@@ -1,6 +1,7 @@
 import type { Task } from '../core/tasks.js';
 import { taskHasLiveTurn } from '../core/finished-awaiting-ack-ttl.js';
 import { paneHasHumanInteractiveMarkers } from '../shared/pane-semantics.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 /**
  * Single owner of the "is a human actively here right now?" veto shared by
@@ -26,6 +27,11 @@ import { paneHasHumanInteractiveMarkers } from '../shared/pane-semantics.js';
 export type LiveWorkVetoReason =
   /** A non-terminal session reports a running / waiting-for-input / blocked turn. */
   | 'live_turn'
+  /**
+   * The operator has typed text into the task's terminal and not submitted it:
+   * closing now would throw away a prompt being written.
+   */
+  | 'operator_draft'
   /** The live pane shows a high-confidence human input prompt or permission dialog. */
   | 'interactive_pane'
   /** A viewer connection currently has the task selected/attached. */
@@ -48,6 +54,12 @@ export interface LiveWorkSignals {
    * ack-path reaper's fail-safe contract.
    */
   holdingOpenPr?: boolean | undefined;
+  /**
+   * Whether the operator holds an unsent draft in one of the task's live
+   * sessions. Omitted ⇒ read from the process-wide operator draft registry,
+   * so no caller of this veto can forget the signal.
+   */
+  operatorDraft?: boolean;
 }
 
 /**
@@ -57,6 +69,8 @@ export function liveWorkVetoReasonText(reason: LiveWorkVetoReason): string {
   switch (reason) {
     case 'live_turn':
       return 'turn resumed (live turn) since selection';
+    case 'operator_draft':
+      return 'the operator is writing an unsent prompt in its terminal';
     case 'interactive_pane':
       return 'pane shows a human-interactive prompt';
     case 'viewer_present':
@@ -76,6 +90,9 @@ export function evaluateLiveWorkVeto(
   signals: LiveWorkSignals = {},
 ): LiveWorkVetoResult {
   if (taskHasLiveTurn(task)) return { veto: true, reason: 'live_turn' };
+  if (signals.operatorDraft ?? operatorDraftRegistry.hasUnsentDraft(task)) {
+    return { veto: true, reason: 'operator_draft' };
+  }
   if (paneHasHumanInteractiveMarkers(signals.paneText)) {
     return { veto: true, reason: 'interactive_pane' };
   }
