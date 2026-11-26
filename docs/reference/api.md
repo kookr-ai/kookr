@@ -1973,6 +1973,7 @@ delta sequence number.
 | `navigate` | Record navigation to an agent. | `agentId` |
 | `getNext` | Request the next task from the attention queue. | none |
 | `selectionChanged` | Tell the server which task/session this connection selected. | `selectedTaskId`, `selectedSessionId` |
+| `composerDraft` | Tell the server the task's reply box holds unsent text (or no longer does). While it does, automatic closes leave the task open. | `taskId`, `hasDraft` |
 | `emptyEnterIntent` | Ask the server whether an empty terminal Enter should advance or send Enter. | `intentId`, `taskId`, `sessionId`, `selectionVersion`, `inputStateEpoch`, `observedReadinessVersion` |
 | `skip` | Skip the current finding for one agent. | `agentId` |
 | `skipAll` | Skip findings for multiple agents. | `agentIds` |

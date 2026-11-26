@@ -39,6 +39,7 @@ import type { DashboardSelectionController } from './dashboard-selection-control
 import type { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { resolveLifecycleActor, type LifecycleAuditActor } from './actor-attribution.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 export interface MessageRouterDeps {
   taskStore: TaskStore;
@@ -413,6 +414,9 @@ export class MessageRouter {
         if (duplicate) this._lastLaunchDuplicate = true;
         return;
       }
+      case 'composerDraft':
+        operatorDraftRegistry.recordComposerDraft(msg.taskId, msg.hasDraft);
+        return;
       case 'getNext':
       case 'selectionChanged':
         if (msg.type === 'selectionChanged') {

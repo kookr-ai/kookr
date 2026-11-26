@@ -1,11 +1,8 @@
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { completeTask, type LifecycleDeps } from './agent-lifecycle.js';
-import {
-  selectExpiredFinishedAwaitingAckTasks,
-  taskHasLiveTurn,
-} from '../core/finished-awaiting-ack-ttl.js';
-import { paneHasHumanInteractiveMarkers } from './finished-awaiting-ack-ttl-sweep.js';
+import { selectExpiredFinishedAwaitingAckTasks } from '../core/finished-awaiting-ack-ttl.js';
+import { evaluateLiveWorkVeto } from './live-work-veto.js';
 import {
   DEFAULT_FAA_ACK_REAP_DEADLINE_MS,
   DEFAULT_FAA_ACK_REAP_GRACE_SECONDS,
@@ -292,16 +289,14 @@ export async function reapAwaitingPollFinishedAwaitingAckTasks(
     // the maintenance pass clears any stale warning it already holds.
     const fresh = deps.taskStore.getTask(task.id);
     if (!fresh || !isFinishedAwaitingAckCloseCandidate(fresh)) continue;
-    if (taskHasLiveTurn(fresh)) {
-      deferredTaskIds.push(task.id);
-      continue;
+    // Shared live-work veto: live turn, an unsent operator draft in the
+    // terminal, a human-interactive pane, or a confirmed-open PR hold.
+    const holdingOpenPr = deps.isHoldingOpenPr?.(fresh);
+    let veto = evaluateLiveWorkVeto(fresh, { holdingOpenPr });
+    if (!veto.veto && deps.getTaskPaneText) {
+      veto = evaluateLiveWorkVeto(fresh, { paneText: await deps.getTaskPaneText(task.id), holdingOpenPr });
     }
-    const paneText = deps.getTaskPaneText ? await deps.getTaskPaneText(task.id) : undefined;
-    if (paneHasHumanInteractiveMarkers(paneText)) {
-      deferredTaskIds.push(task.id);
-      continue;
-    }
-    if (deps.isHoldingOpenPr?.(fresh) === true) {
+    if (veto.veto) {
       deferredTaskIds.push(task.id);
       continue;
     }

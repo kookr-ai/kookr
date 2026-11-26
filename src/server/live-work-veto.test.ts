@@ -79,9 +79,18 @@ describe('evaluateLiveWorkVeto', () => {
     ).toEqual({ veto: false });
   });
 
+  it('vetoes on an unsent operator draft, and an explicit false overrides the registry', () => {
+    expect(evaluateLiveWorkVeto(IDLE, { operatorDraft: true })).toEqual({
+      veto: true,
+      reason: 'operator_draft',
+    });
+    expect(evaluateLiveWorkVeto(IDLE, { operatorDraft: false })).toEqual({ veto: false });
+  });
+
   it('gives every reason a human-readable string', () => {
     const reasons: LiveWorkVetoReason[] = [
       'live_turn',
+      'operator_draft',
       'interactive_pane',
       'viewer_present',
       'open_pr',

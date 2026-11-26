@@ -55,6 +55,7 @@ import { storeResolverWithMergedPr } from './__fixtures__/delivered-pr-resolver.
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 const MERGED: MergedPrAttribution = {
   prNumber: 1542,
@@ -148,6 +149,27 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
     expect(taskStore.getTask(id)?.status).toBe('completed');
     // The completion tick (budget + polling slack) is within the 15-minute bound.
     expect(at.getTime() - T0.getTime()).toBeLessThanOrEqual(15 * 60_000);
+  });
+
+  test('the post-merge budget path never completes a task the operator is writing in', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const sessionId = `kookr-${id}`;
+    const tracker = createDeliveredCompletionTracker();
+    const past = plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS + 5_000);
+    operatorDraftRegistry.record(sessionId, { text: 'une dernière question' });
+    try {
+      await autoCompleteDeliveredTasks(baseDeps(taskStore, () => MERGED, { tracker, now: () => T0 }));
+      const held = await autoCompleteDeliveredTasks(baseDeps(taskStore, () => MERGED, { tracker, now: () => past }));
+      expect(held.completedTaskIds).toEqual([]);
+      expect(taskStore.getTask(id)?.status).toBe('inProgress');
+
+      operatorDraftRegistry.record(sessionId, { text: '\r' });
+      const after = await autoCompleteDeliveredTasks(baseDeps(taskStore, () => MERGED, { tracker, now: () => past }));
+      expect(after.completedTaskIds).toEqual([id]);
+    } finally {
+      operatorDraftRegistry.clear(sessionId);
+    }
   });
 
   test('surfaces a dirty-worktree finding before completing a delivered task (issue #1580)', async () => {

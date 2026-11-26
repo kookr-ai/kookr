@@ -23,6 +23,7 @@ import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import type { ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
 import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
+import { createComposerDraftReporter } from '../composer-draft-reporter.js';
 import {
   detectShortcutPlatform,
   getDefaultShortcutBindings,
@@ -99,6 +100,12 @@ function truncate(text: string, max: number): string {
 interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
+  /**
+   * Sends the reply box's unsent-draft signal (`composerDraft`) to the server,
+   * so it does not close a task the operator is writing to. Unset ⇒ the
+   * signal is not sent.
+   */
+  sendComposerDraft?: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
   /** Opens Launch on the Manual tab with a starter prompt filled (overview chips). */
   onLaunchSample?: (prompt: string) => void;
@@ -278,7 +285,7 @@ function TaskNextActionsPanel({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onOpenAccountSettings, onCheckSetup, onOpenCostComparison, onExpandCompleted, onExpandHealthy, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
+export function DetailPanel({ agent, send, sendComposerDraft, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onOpenAccountSettings, onCheckSetup, onOpenCostComparison, onExpandCompleted, onExpandHealthy, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -640,6 +647,18 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   useEffect(() => {
     setInput(agent ? loadDetailReplyDraft(replyDraftScope) : '');
   }, [agent?.taskId, agent?.agentId]);
+
+  // Tell the server while the reply box holds unsent text, so it does not
+  // close this task under the operator.
+  const sendComposerDraftRef = useRef(sendComposerDraft);
+  sendComposerDraftRef.current = sendComposerDraft;
+  const composerDraftReporterRef = useRef<ReturnType<typeof createComposerDraftReporter> | null>(null);
+  composerDraftReporterRef.current ??= createComposerDraftReporter(
+    (msg) => sendComposerDraftRef.current?.(msg) ?? false,
+  );
+  useEffect(() => {
+    if (agent?.taskId) composerDraftReporterRef.current?.report(agent.taskId, input);
+  }, [agent?.taskId, input]);
 
   // Auto-grow the reply textarea with its content (1 row up to ~6 rows), then
   // scroll internally. Runs on every input change so drafts, typing, and voice
@@ -1373,6 +1392,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                       <Suspense fallback={null}>
                         <TerminalPanel
                           tmuxName={agent.agentId}
+                          taskId={agent.taskId ?? null}
                           agentType={agent.agentType}
                           visible={terminalVisible}
                           onEmptySubmit={terminalEmptyEnterAdvance ? handleEmptyEnterAdvance : undefined}

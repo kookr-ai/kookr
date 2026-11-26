@@ -19,6 +19,7 @@ import { TerminalInputSnapshotCache } from './terminal-input-snapshot-cache.js';
 import { TerminalHostUnavailableError, terminalHostPayloadSize,
   type TerminalHostChildMessage, type TerminalHostMethod, type TerminalHostOperations,
   type TerminalHostResponse, type TerminalHostUpgrade } from './terminal-host-contract.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 type StatsMessage = Extract<TerminalHostChildMessage, { kind: 'stats' }>;
 type InputSnapshot = NonNullable<ReturnType<TerminalInputCoordinatorPort['getSnapshot']>>;
@@ -300,6 +301,11 @@ export class TerminalHostBackend implements TerminalBackend {
         return;
       case 'activity':
         for (const listener of this.eventListeners) { try { listener(message); } catch {} }
+        return;
+      case 'operator-input':
+        if (typeof message.sessionId === 'string' && typeof message.text === 'string') {
+          operatorDraftRegistry.record(message.sessionId, { text: message.text, paste: message.paste === true });
+        }
         return;
       case 'stream-gap': this.invalidateStream(message.id); return;
       case 'stream-data': {

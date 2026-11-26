@@ -651,6 +651,11 @@ export type ClientMessage =
       selectedTaskId: string | null;
       selectedSessionId: string | null;
     }
+  /**
+   * The dashboard reply box of `taskId` holds (or no longer holds) unsent
+   * text. While it does, background close paths leave the task open.
+   */
+  | { type: 'composerDraft'; taskId: string; hasDraft: boolean }
   | EmptyEnterIntentRequest
   | { type: 'skip'; agentId: string }
   | { type: 'skipAll'; agentIds: string[] }
@@ -824,6 +829,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'navigate',
   'getNext',
   'selectionChanged',
+  'composerDraft',
   'emptyEnterIntent',
   'skip',
   'skipAll',

@@ -54,6 +54,7 @@ import {
   type PreparePlaybookLaunchInput,
   type PreparedPlaybookLaunch,
 } from './use-cases/playbook-launch.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 
 export const PLAYBOOK_CHAIN_SWEEP_INTERVAL_MS = 15_000;
 /** A chain whose next launch stays held for the same reason is logged at most this often. */
@@ -406,6 +407,8 @@ export class PlaybookChainService {
     const task = this.deps.taskStore.getTask(taskId);
     if (!task || task.status !== 'inProgress' || task.pendingSignal) return false;
     if (this.deps.isProviderPaused?.(task) === true) return false;
+    // An operator writing in the tip's terminal is not an idle agent.
+    if (operatorDraftRegistry.hasUnsentDraft(task)) return false;
     return isIdleWithoutQuestion(this.deps.monitor, task);
   }
 
@@ -451,8 +454,10 @@ export class PlaybookChainService {
     if (ageMs < CHAIN_SIGNAL_CLOSE_CEILING_MS && turnIsRunning(this.deps.monitor, tip)) return;
     const stillSignalled = (): boolean => {
       const current = this.deps.taskStore.getTask(tip.id);
-      return current?.status === 'inProgress' && current.pendingSignal?.kind === 'completion_ready';
+      return current?.status === 'inProgress' && current.pendingSignal?.kind === 'completion_ready'
+        && !operatorDraftRegistry.hasUnsentDraft(current);
     };
+    if (!stillSignalled()) return;
     this.deps.logger?.info?.(
       `[playbook-chain] chain ${tip.chain?.chainId}: iteration ${tip.chain?.iteration} (task ${tip.id}) signalled completion; closing it`,
     );

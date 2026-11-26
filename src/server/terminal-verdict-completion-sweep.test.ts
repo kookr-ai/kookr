@@ -11,6 +11,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly, AgentEvent } from '../core/types.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 import {
   autoCompleteTerminalVerdictTasks,
@@ -104,6 +105,29 @@ function deps(
 }
 
 describe('autoCompleteTerminalVerdictTasks', () => {
+  test('does not complete a parked task while the operator has an unsent draft in its terminal', async () => {
+    const taskStore = new TaskStore();
+    const [taskId, agentId] = makeRunningTask(taskStore);
+    const monitor = stubMonitor({
+      [agentId]: {
+        anomaly: needsInputAnomaly(agentId),
+        events: [stopEvent(agentId, 'deploy-convergence: converged · serving=194eda77 main=194eda77')],
+      },
+    });
+    operatorDraftRegistry.record(agentId, { text: 'en fait, vérifie aussi' });
+    try {
+      const held = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+      expect(held.completedTaskIds).toEqual([]);
+      expect(taskStore.getTask(taskId)?.status).toBe('inProgress');
+
+      operatorDraftRegistry.record(agentId, { text: '\r' });
+      const afterSubmit = await autoCompleteTerminalVerdictTasks(deps(taskStore, monitor));
+      expect(afterSubmit.completedTaskIds).toEqual([taskId]);
+    } finally {
+      operatorDraftRegistry.clear(agentId);
+    }
+  });
+
   test('completes a deploy-convergence task parked in needs_input with a converged verdict', async () => {
     const taskStore = new TaskStore();
     const [taskId, agentId] = makeRunningTask(taskStore);

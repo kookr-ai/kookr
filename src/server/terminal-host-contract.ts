@@ -57,6 +57,8 @@ export type TerminalHostChildMessage = TerminalHostResponse
   | { kind: 'backend-error'; generation: string; error: BackendError }
   | { kind: 'connection-closed'; generation: string; id: string }
   | { kind: 'activity'; generation: string; sessionId: string; activity: 'input' | 'keystroke' | 'opened' | 'replay' | 'live' | 'closed' }
+  /** Operator input text for the server's unsent-draft tracker (see `operator-draft-registry.ts`). */
+  | { kind: 'operator-input'; generation: string; sessionId: string; text: string; paste?: boolean }
   | { kind: 'stream-data'; generation: string; id: string; position: number; bytes: Uint8Array;
       source?: TerminalSessionDataSource; range?: TerminalSourceRange }
   | { kind: 'stream-gap'; generation: string; id: string };

@@ -103,6 +103,11 @@ function upgrade(packet: TerminalHostUpgrade, socket: Socket) {
           readOnly: packet.role === 'viewer',
           onBridgeOpened: (id) => activity(id, 'opened'), onBridgeReplay: (id) => activity(id, 'replay'),
           onBridgeLiveBytes: (id) => activity(id, 'live'), onBridgeClosed: (id) => activity(id, 'closed'),
+          // The draft registry the close paths read lives in the server process.
+          onOperatorInput: (id, input) => {
+            send({ kind: 'operator-input', generation, sessionId: id, text: input.text,
+              ...(input.paste ? { paste: true } : {}) });
+          },
         });
       const connection: Connection = { ws, bridge, role: packet.role, expiry: packet.grantExpiresAtMs,
         lease: packet.leaseUntilMs, alive: true, lastPing: Date.now() };
