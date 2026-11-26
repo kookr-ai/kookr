@@ -132,7 +132,29 @@ describe('DetailPanel reply draft persistence', () => {
     expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBeNull();
   });
 
-  test('preserves the draft when send fails', () => {
+  test('tells the server while the reply box holds unsent text, and when it is sent', () => {
+    const agent = makeAgent('agent-1');
+    const composer: ClientMessage[] = [];
+    act(() => {
+      root.render(React.createElement(DetailPanel, {
+        agent,
+        send: () => true,
+        sendComposerDraft: (msg: ClientMessage) => { composer.push(msg); return true; },
+        onLaunch: vi.fn(),
+        onRequestComplete: vi.fn(),
+      }));
+    });
+
+    act(() => setInputValue(responseInput(container), 'une réponse en cours'));
+    expect(composer).toEqual([{ type: 'composerDraft', taskId: agent.taskId, hasDraft: true }]);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="send-button"]')!.click();
+    });
+    expect(composer.at(-1)).toEqual({ type: 'composerDraft', taskId: agent.taskId, hasDraft: false });
+  });
+
+    test('preserves the draft when send fails', () => {
     const agent = makeAgent('agent-1');
     renderDetailPanel(root, agent, () => false);
 

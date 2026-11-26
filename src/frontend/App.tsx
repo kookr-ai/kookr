@@ -1583,6 +1583,7 @@ export function App() {
     <DetailPanel
       agent={selectedAgent}
       send={send}
+      sendComposerDraft={send}
       onLaunch={() => openBlankLaunch('empty_panel')}
       onLaunchSample={openLaunchWithSample}
       onLaunchPlaybooks={(playbookId) => openLaunchFromPalette('playbooks', 'overview_recent_playbook', playbookId)}
