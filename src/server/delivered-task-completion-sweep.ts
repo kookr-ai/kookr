@@ -53,6 +53,7 @@ import {
 } from '../core/completion/index.js';
 import type { GitHubStateStore } from '../core/github-state-store.js';
 import { deliveryBranchList, type DeliveryBranches } from './pr-delivery-tracker.js';
+import { operatorDraftRegistry } from './operator-draft-registry.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
@@ -378,6 +379,14 @@ export async function autoCompleteDeliveredTasks(
         console.warn(`[delivered-complete] deferred task ${task.id} — ${veto} (PR #${merged.prNumber} merged)`);
         continue;
       }
+    } else if (operatorDraftRegistry.hasUnsentDraft(task)) {
+      // The budget path keeps its age-only policy for a silent agent, but
+      // never closes a task the operator is writing a prompt in.
+      console.warn(
+        `[delivered-complete] deferred task ${task.id} — ${liveWorkVetoReasonText('operator_draft')} `
+          + `(PR #${merged.prNumber} merged)`,
+      );
+      continue;
     }
     completedThisTick += 1;
 
