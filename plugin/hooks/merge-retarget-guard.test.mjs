@@ -47,11 +47,14 @@ function checkout(name, { config = true, script = 'new' } = {}) {
 }
 
 /** Runs the hook; returns the denial reason, or null when allowed. */
-function hook(command, cwd, { base = 'main' } = {}) {
+function hook(command, cwd, { base = 'main', gate = '' } = {}) {
   const r = spawnSync('bash', [HOOK], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd }),
     encoding: 'utf-8',
-    env: { ...process.env, HOME: root, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_GH_BASE: base, FAKE_GH_LOG: ghLog },
+    env: {
+      ...process.env, HOME: root, PATH: `${fakeBin}:${process.env.PATH}`,
+      FAKE_GH_BASE: base, FAKE_GH_LOG: ghLog, FAKE_GH_GATE: gate,
+    },
   });
   expect(r.status).toBe(0);
   if (r.stdout.trim() === '') return null;
@@ -75,6 +78,13 @@ beforeAll(() => {
     '#!/usr/bin/env bash',
     'echo "$*" >> "$FAKE_GH_LOG"',
     'if [ "$1 $2" = "pr view" ] && [ -n "$FAKE_GH_BASE" ]; then echo "$FAKE_GH_BASE"; exit 0; fi',
+    // Another repository's delivery-gate.json: FAKE_GH_GATE=missing -> 404,
+    // =<branch> -> that integration branch, empty -> an unexplained failure.
+    'case "$1 $2" in "api repos/"*"/contents/.kookr/delivery-gate.json"*)',
+    '  if [ "$FAKE_GH_GATE" = missing ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi',
+    '  if [ -n "$FAKE_GH_GATE" ]; then printf \'{"integrationBranch":"%s"}\' "$FAKE_GH_GATE" | base64; exit 0; fi',
+    '  echo "error connecting to api.github.com" >&2; exit 1;;',
+    'esac',
     'exit 1',
     '',
   ].join('\n'));
@@ -152,6 +162,30 @@ describe('merge-retarget-guard', () => {
     writeFileSync(ghLog, '');
     expect(hook('gh pr merge <<< 7', fresh, { base: 'main' })).toMatch(/into main directly/);
     expect(readFileSync(ghLog, 'utf-8')).toBe('pr view --json baseRefName --jq .baseRefName\n');
+  });
+
+  it('follows the TARGET repository\'s config when --repo, a PR URL or a REST path names another repository', () => {
+    // From a configured checkout, merging into main of a repository that has no
+    // delivery-gate.json is that repository's normal flow, not a skipped train.
+    expect(hook('gh pr merge 139 -R other/repo --merge', fresh, { base: 'main', gate: 'missing' })).toBeNull();
+    expect(hook('gh pr merge --repo=other/repo 139', fresh, { base: 'main', gate: 'missing' })).toBeNull();
+    expect(hook('gh pr merge https://github.com/other/repo/pull/139', fresh, { base: 'main', gate: 'missing' })).toBeNull();
+    expect(hook('gh api -X PUT repos/other/repo/pulls/139/merge', fresh, { base: 'main', gate: 'missing' })).toBeNull();
+    // The other repository has its own integration branch: still enforced.
+    expect(hook('gh pr merge 139 -R other/repo', fresh, { base: 'main', gate: 'develop' })).toMatch(/merges into `develop`/);
+    // A repository without config, targeted from an unconfigured checkout, stays allowed.
+    expect(hook('gh pr merge 139 -R other/repo', plain, { base: 'main', gate: 'missing' })).toBeNull();
+  });
+
+  it('keeps the checkout\'s rule when the target repository\'s config cannot be read (fails closed)', () => {
+    expect(hook('gh pr merge 139 -R other/repo', fresh, { base: 'main', gate: '' })).toMatch(/into main directly/);
+  });
+
+  it('does not call the GitHub API when --repo names the checkout\'s own origin', () => {
+    const own = git(fresh, 'remote', 'get-url', 'origin').replace(/\.git$/, '').split('/').slice(-2).join('/');
+    writeFileSync(ghLog, '');
+    expect(hook(`gh pr merge 3802 --repo ${own}`, fresh, { base: 'main', gate: 'missing' })).toMatch(/into main directly/);
+    expect(readFileSync(ghLog, 'utf-8')).not.toMatch(/contents\/\.kookr/);
   });
 
   it('denies a gh merge whose base cannot be read in a configured repository (fails closed)', () => {

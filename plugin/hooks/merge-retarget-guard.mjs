@@ -23,7 +23,10 @@
 //     pull request's base is `main` or cannot be read.
 // Allowed: `kookr merge`, everything in a repository with no integration
 // branch, and every command that only mentions these words (inside quotes, a
-// commit message, a grep pattern).
+// commit message, a grep pattern). A `gh` merge aimed (`--repo`, a pull-request
+// URL, a REST path) at another repository than the checkout's origin follows
+// THAT repository's delivery-gate config, read from GitHub (see
+// integrationBranchFor).
 //
 // The working directory starts at the event's `cwd` and follows `cd`, `pushd`
 // and `pnpm -C/--dir` within the command. Best effort, not a sandbox: a merge
@@ -31,7 +34,7 @@
 //
 // Exit 0 always. A denial is the JSON PreToolUse decision on stdout. Any crash
 // allows the command (fail open) and is logged to ~/.kookr/hook-errors.log.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -200,9 +203,8 @@ function expandHome(p) {
   return p;
 }
 
-/** The integration branch configured for the repository at `dir`, or null. */
-export function integrationBranchAt(dir) {
-  const json = run('git', ['-C', dir, 'show', 'origin/main:.kookr/delivery-gate.json'], dir);
+/** The integration branch named in a delivery-gate.json text, or null. */
+function parseIntegrationBranch(json) {
   if (!json) return null;
   let branch;
   try {
@@ -214,6 +216,50 @@ export function integrationBranchAt(dir) {
   if (typeof branch !== 'string' || branch === '' || branch === 'main') return null;
   if (branch.startsWith('-') || branch.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(branch)) return null;
   return branch;
+}
+
+/** The integration branch configured for the repository at `dir`, or null. */
+export function integrationBranchAt(dir) {
+  return parseIntegrationBranch(run('git', ['-C', dir, 'show', 'origin/main:.kookr/delivery-gate.json'], dir));
+}
+
+const REPO_SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * The integration branch that governs a merge in `repo` (owner/name), run
+ * from `dir`. A merge aimed with `--repo`, a pull-request URL or a REST path
+ * at ANOTHER repository than the checkout's origin follows that repository's
+ * own `.kookr/delivery-gate.json` (read from GitHub), not the checkout's:
+ * running `gh pr merge 12 -R other/repo` from a Kookr checkout must not apply
+ * Kookr's integration branch to a repository that has none. When the other
+ * repository's file cannot be read for a reason other than "it does not exist"
+ * (network, auth), the checkout's answer is kept, which is the previous,
+ * cautious behaviour.
+ */
+export function integrationBranchFor(dir, repo) {
+  const local = integrationBranchAt(dir);
+  if (!repo || !REPO_SLUG.test(repo)) return local;
+  const here = originRepo(dir);
+  if (here && here.toLowerCase() === repo.toLowerCase()) return local;
+  let r;
+  try {
+    r = spawnSync('gh', ['api', `repos/${repo}/contents/.kookr/delivery-gate.json?ref=main`, '--jq', '.content'], {
+      cwd: dir, encoding: 'utf-8', timeout: GH_TIMEOUT_MS,
+    });
+  } catch {
+    return local;
+  }
+  if (r.status === 0 && r.stdout.trim()) {
+    return parseIntegrationBranch(Buffer.from(r.stdout.replace(/\s+/g, ''), 'base64').toString('utf-8'));
+  }
+  if (/HTTP 404/.test(r.stderr ?? '')) return null;
+  return local;
+}
+
+/** owner/name from a GitHub pull-request URL, or null. */
+function repoFromPrUrl(selector) {
+  const m = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/.exec(selector ?? '');
+  return m ? `${m[1]}/${m[2]}` : null;
 }
 
 /**
@@ -317,8 +363,6 @@ function examine(words, state) {
 
   // gh pr merge [<selector>] [flags]
   if (w[1] === 'pr' && w[2] === 'merge') {
-    const branch = integration();
-    if (!branch) return null;
     const rest = w.slice(3);
     let selector = null;
     for (let i = 0; i < rest.length; i++) {
@@ -327,7 +371,10 @@ function examine(words, state) {
       selector = rest[i];
       break;
     }
-    const base = prBase(state.dir, selector, flagValue(rest, ['--repo', '-R']));
+    const repo = flagValue(rest, ['--repo', '-R']) ?? repoFromPrUrl(selector);
+    const branch = integrationBranchFor(state.dir, repo);
+    if (!branch) return null;
+    const base = prBase(state.dir, selector, repo);
     if (base !== null && base !== 'main') return null;
     return base === 'main'
       ? `\`gh pr merge\` would merge this pull request into main directly; this repository merges into \`${branch}\` and the integration train promotes to main.`
@@ -340,11 +387,11 @@ function examine(words, state) {
     if (!method || method.toUpperCase() !== 'PUT') return null;
     const endpoint = w.find((a) => /pulls\/\d+\/merge\/?$/.test(a));
     if (!endpoint) return null;
-    const branch = integration();
-    if (!branch) return null;
     const m = /(?:^|\/)repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/merge/.exec(endpoint);
     let repo = null;
     if (m && !m[1].startsWith('{') && !m[2].startsWith('{')) repo = `${m[1]}/${m[2]}`;
+    const branch = integrationBranchFor(state.dir, repo);
+    if (!branch) return null;
     const pr = /pulls\/(\d+)\/merge/.exec(endpoint)[1];
     const base = prBase(state.dir, pr, repo);
     if (base !== null && base !== 'main') return null;
