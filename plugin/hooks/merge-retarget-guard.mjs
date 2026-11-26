@@ -238,22 +238,54 @@ const REPO_SLUG = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  */
 export function integrationBranchFor(dir, repo) {
   const local = integrationBranchAt(dir);
-  if (!repo || !REPO_SLUG.test(repo)) return local;
+  const slug = normalizeRepo(repo);
+  if (!slug || !REPO_SLUG.test(slug)) return local;
   const here = originRepo(dir);
-  if (here && here.toLowerCase() === repo.toLowerCase()) return local;
+  if (here && here.toLowerCase() === slug.toLowerCase()) return local;
+  const key = slug.toLowerCase();
+  if (!remoteGateCache.has(key)) remoteGateCache.set(key, readRemoteGate(dir, slug));
+  const remote = remoteGateCache.get(key);
+  return remote === UNREADABLE ? local : remote;
+}
+
+const UNREADABLE = Symbol('unreadable');
+// One lookup per repository per hook run: `decide` may examine the command
+// twice (bothSplits), and every gh call counts against the hook's time limit.
+const remoteGateCache = new Map();
+// Shorter than GH_TIMEOUT_MS so this lookup plus the pull-request base lookup
+// stay well inside the hook timeout on a network that hangs.
+const GATE_TIMEOUT_MS = 8_000;
+
+/** The integration branch of github.com/<slug> (null if it has none), or UNREADABLE. */
+function readRemoteGate(dir, slug) {
   let r;
   try {
-    r = spawnSync('gh', ['api', `repos/${repo}/contents/.kookr/delivery-gate.json?ref=main`, '--jq', '.content'], {
-      cwd: dir, encoding: 'utf-8', timeout: GH_TIMEOUT_MS,
+    r = spawnSync('gh', ['api', `repos/${slug}/contents/.kookr/delivery-gate.json?ref=main`, '--jq', '.content'], {
+      cwd: dir, encoding: 'utf-8', timeout: GATE_TIMEOUT_MS,
     });
   } catch {
-    return local;
+    return UNREADABLE;
   }
-  if (r.status === 0 && r.stdout.trim()) {
+  if (r.status === 0 && r.stdout && r.stdout.trim()) {
     return parseIntegrationBranch(Buffer.from(r.stdout.replace(/\s+/g, ''), 'base64').toString('utf-8'));
   }
   if (/HTTP 404/.test(r.stderr ?? '')) return null;
-  return local;
+  return UNREADABLE;
+}
+
+/**
+ * owner/name from the forms gh accepts for --repo: `owner/name`,
+ * `github.com/owner/name` and a github.com URL (optionally ending in .git).
+ * Any other host is returned as is and then fails the owner/name check, so
+ * the checkout's rule applies.
+ */
+function normalizeRepo(repo) {
+  if (!repo) return null;
+  return repo.trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^(www\.)?github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
 }
 
 /** owner/name from a GitHub pull-request URL, or null. */

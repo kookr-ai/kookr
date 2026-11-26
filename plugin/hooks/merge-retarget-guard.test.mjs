@@ -177,6 +177,29 @@ describe('merge-retarget-guard', () => {
     expect(hook('gh pr merge 139 -R other/repo', plain, { base: 'main', gate: 'missing' })).toBeNull();
   });
 
+  it('normalizes github.com/OWNER/NAME and URL --repo forms, and keeps the checkout\'s rule for other hosts', () => {
+    const own = git(fresh, 'remote', 'get-url', 'origin').replace(/\.git$/, '').split('/').slice(-2).join('/');
+    // The checkout's own repository written with a host prefix is still the checkout's repository.
+    expect(hook(`gh pr merge 3802 -R github.com/${own}`, fresh, { base: 'main', gate: 'missing' })).toMatch(/into main directly/);
+    expect(hook(`gh pr merge 3802 -R https://github.com/${own}.git`, fresh, { base: 'main', gate: 'missing' })).toMatch(/into main directly/);
+    // Another repository written with a host prefix follows its own (missing) config.
+    expect(hook('gh pr merge 139 -R github.com/other/repo', fresh, { base: 'main', gate: 'missing' })).toBeNull();
+    // A repository on another host is not an owner/name slug: the checkout's rule applies.
+    expect(hook('gh pr merge 139 -R ghe.example.com/other/repo', fresh, { base: 'main', gate: 'missing' })).toMatch(/into main directly/);
+  });
+
+  it('enforces a target repository\'s own integration branch from an unconfigured checkout, also for REST merges', () => {
+    expect(hook('gh pr merge 139 -R other/repo', plain, { base: 'main', gate: 'develop' })).toMatch(/merges into `develop`/);
+    expect(hook('gh api -X PUT repos/other/repo/pulls/139/merge', plain, { base: 'main', gate: 'develop' })).toMatch(/merges into `develop`/);
+  });
+
+  it('compares the checkout\'s origin case-insensitively', () => {
+    const own = git(fresh, 'remote', 'get-url', 'origin').replace(/\.git$/, '').split('/').slice(-2).join('/');
+    writeFileSync(ghLog, '');
+    expect(hook(`gh pr merge 3802 --repo ${own.toUpperCase()}`, fresh, { base: 'main', gate: 'missing' })).toMatch(/into main directly/);
+    expect(readFileSync(ghLog, 'utf-8')).not.toMatch(/contents\/\.kookr/);
+  });
+
   it('keeps the checkout\'s rule when the target repository\'s config cannot be read (fails closed)', () => {
     expect(hook('gh pr merge 139 -R other/repo', fresh, { base: 'main', gate: '' })).toMatch(/into main directly/);
   });
