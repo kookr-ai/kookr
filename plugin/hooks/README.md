@@ -135,6 +135,14 @@ else it allows everything. There it denies:
 - bare `gh pr merge` and `gh api --method PUT .../pulls/<n>/merge` when the pull
   request's base is `main`, or when its base cannot be read.
 
+A `gh` merge aimed at another repository than the checkout's origin (with
+`--repo`/`-R`, a pull-request URL, or a `repos/<owner>/<name>/...` REST path)
+follows that repository's own `.kookr/delivery-gate.json`, read from GitHub. So
+`gh pr merge 12 -R someone/other-repo` run from a Kookr checkout is allowed when
+`other-repo` has no integration branch. If that file cannot be read for a
+reason other than "not found" (network, auth), the checkout's rule still
+applies.
+
 The working directory starts at the event's `cwd` and follows `cd`, `pushd` and
 `pnpm -C`, so `cd /old/checkout && pnpm -s merge 42` is caught. Words inside
 quotes and heredocs are not commands, so a commit message that mentions
