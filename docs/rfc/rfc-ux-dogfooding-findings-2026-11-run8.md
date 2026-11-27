@@ -63,10 +63,10 @@ So there was never a habit to lose. The operator tried her about ten times in th
 got a useful answer about half the time, and stopped. The larger panel changed nothing in that,
 because the operator has spent seven seconds in the room and has not typed in the column.
 
-**Root cause.** Not a line of code. The four findings that follow (R8-F2 to R8-F5) are what the
+**Root cause.** Not a line of code. The findings that follow (R8-F2 to R8-F7, and R8-F10) are what the
 operator meets in the few seconds she is open: the one decision that was waiting is folded
-away, what she writes names nothing, the dashboard beside her says nothing is waiting, and she
-is mute.
+away, what she writes names nothing, the dashboard beside her says nothing is waiting, and her
+voice is switched off (R8-F4).
 
 **Suggested fix.** Stop treating her size as the problem. Measure every change of this run by
 one number: questions answered from her surface, out of questions asked (today 0 of 6).
@@ -120,23 +120,24 @@ asked without `--wait` leaves its task in the Working group, so nothing else mar
 waiting: "Needs you" counts them, the overview lists them above the findings with their task's
 name, and pressing one opens Lucy on that card. One count, used by the dashboard and by her.
 
-### R8-F4. After a restart she is mute, and the panel says speech "is not set up" when it is (voice) — severity: medium
+### R8-F4. Speech is switched off on this install, so everything she has to say must be readable (voice) — severity: low (a fact about the install, and a correction)
 
-**Evidence.** Speech is configured on this install (`KOOKR_TTS` is set in production's `.env`).
-After today's unclean restart `GET /api/lucy-live/status` answers `{"available":false,"reason":
-"Lucy live needs the speech service (enable KOOKR_TTS or set KOOKR_TTS_URL)."}`, no speech
-process is running, and she said nothing aloud all day: not the restart question (the same
-question was spoken on 18 November), not the task question. The panel's only sign is a button
-that reads "Talk is not set up", whose tooltip gives the sentence above: advice to enable a
-setting that is enabled.
+**Evidence.** Production's `.env` has `KOOKR_TTS=false`; the file was last saved at 17:21:31, twelve
+seconds before today's restart. The server log says "[tts] Text-to-speech disabled" and `GET
+/api/lucy-live/status` answers "Lucy live needs the speech service (enable KOOKR_TTS or set
+KOOKR_TTS_URL)", which is true. She said nothing aloud today: not the restart question (the same
+question was spoken on 18 November), not the task's question.
 
-**Root cause.** _(to confirm in Phase 4)_ the status reports "not configured" and "configured but
-not running" with the same sentence, and nothing restarts the speech service or says it is
-down.
+A first draft of this finding said the speech service had failed to start and that the panel's
+message was wrong. It was not: I had read the setting's presence in `.env` as "enabled" without
+reading its value. The six designers of round 1 were given that wrong sentence, and three of them
+proposed a "say truthfully why she is silent" line and a restart of the service; both are
+dropped.
 
-**Suggested fix.** Tell the two cases apart ("Speech is switched on and its service is not
-running"), say it once in her thread when a line that should have been spoken was not, and
-retry the service's start.
+**What stays true.** With speech off, the hands-free conversation and every spoken notice are
+gone, and what is left of "Jarvis" is what she writes and what the operator can press. That is
+the reason this run's clusters are all about the written surface. The one visible cost of the
+switched-off speech is the dead button of R8-F7.
 
 ### R8-F5. What she writes when her panel opens names no task and no amount (proactivity / value) — severity: high
 
@@ -197,7 +198,7 @@ unavailable text inside the composer row; `src/frontend/avatar/LucyTypedInput.ts
 the three out on one line.
 
 **Suggested fix.** The field takes the whole row and grows to several lines; Talk is an icon,
-shown only when hands-free can be used (R8-F4 says why not when it cannot).
+shown only when hands-free can be used; switched off, its place in Settings is enough.
 
 ### R8-F8. An expired question says "Expired with no answer" and not what happened (wording) — severity: medium
 
@@ -269,11 +270,98 @@ in `/api/health`.
 
 ## The design
 
-_(written after the brainstorm)_
+**Principle.** She comes to the operator with the decision ready; the operator never has to open
+her to find out what she wants. A bigger surface comes second and must be full. Mock-ups, with
+today's screenshots beside them: https://claude.ai/artifact/JndKL29DUNG8XsRhctqxx7 (owner-only).
+
+The design is judged by one number, with its limits said: **questions and permission prompts
+answered from her surface, out of those raised** (today 0 of 6). Six in nine days is a small
+sample and Telegram competes for the same answers, so the number is read together with how often
+the new card is dismissed ("Later"); both are logged by cluster D.
+
+| Slice | What the operator gets | Findings | This run |
+|---|---|---|---|
+| 0. She answers when her model does not | In place of "The model provider returned an error" after 28 s: within 8 s, one sentence naming the provider and its status, then what waits and what is in trouble, from the board, marked as not written by the model. A breaker stops calling a provider that just failed twice. Her model's health in `/api/health`. | R8-F10 | cluster A |
+| 1. One list of what waits | "Needs you" and the overview count questions and permission prompts, name their tasks, and never say "nothing waiting" or "All clear" while one waits; pressing the row opens Lucy on it. The same function feeds her badge. | R8-F3 | cluster B |
+| 2. The decision comes to the bubble | Minimised, she grows once into the question with its answers (or the permission prompt with Approve once and Deny), without taking focus, not while the operator types, not under Do Not Disturb; "Later" shrinks her for good for that item. Open, the column never folds a waiting question. | R8-F2 | cluster D |
+| 3. Lines that name and offer | The briefing names the task that asks and its time left; the budget line carries both amounts; no line says "A task"; no all-clear line. An expired question with a default says what was done. | R8-F5, R8-F8 | cluster C (wording and data), cluster F (the card) |
+| 3b. A text field worth typing in | The field takes the whole row and grows; the dead Talk button goes when hands-free cannot be used. | R8-F7 | cluster E |
+| 4. The desk | The full window in three columns: decisions, the fleet with one line of what each task last did, the conversation; her 3D view as a portrait, toasts off her. | R8-F6, R8-F9 | asked (see below); not started |
+| 5. Actions that replace clicks | "Close the finished ones" (one card listing each task and why), snooze a finding, relaunch, stop; each behind a card that re-checks on press. | run 6 J-F5, run 7's list | asked; not started |
+
+### What the Sonnet fleet changed
+
+Round 1, six designers blind to each other (the Jarvis loop, the surface, "more surface is the
+wrong fix", actions, proactivity, the conversation). Round 2, four critics on the synthesis (what
+to cut, failure modes, delivery, a walkthrough as the operator). Their reports are in the
+session's scratch directory and are summarised here because they will not outlive it.
+
+**Adopted.**
+
+- *From five of six designers independently:* one list of what waits; the question with its
+  answers where the operator already looks; lines that name the task and the amount. This
+  agreement is why slices 1 to 3 are built first.
+- *From the skeptic:* the baseline correction in R8-F1 (26 of 30 typed turns were earlier runs'
+  probes). It reverses the story from "the bigger panel killed usage" to "there was never usage".
+- *From the conversation designer:* R8-F10. Its three test questions failed; without that lens
+  this run would have redesigned a chat that does not answer.
+- *From the failure-mode critic, into the implementers' briefs as requirements:* a card that
+  appears by itself never takes keyboard focus; its buttons ignore presses for 600 ms after it
+  appears; a press re-checks the question and says "already answered on Telegram" rather than
+  vanishing; a permission prompt's command is shown whole or Approve is disabled; one count per
+  task and kind; one breaker for her model; a reply from the board is always labelled.
+- *From the walkthrough critic:* the card waits until two seconds after the last keystroke and
+  never appears over someone typing in a terminal (scenario 2 was "worse than today" without
+  it); the fallback reply does not pretend to have understood a command.
+- *From the delivery critic:* the cut into clusters by file ownership, and two facts that changed
+  the briefs: the budget amounts exist only inside a sentence (`src/core/budget-checker.ts`), and
+  a question carries no default (`src/shared/contracts/asks.ts`).
+- *From the minimalist:* no retry that overrides the operator's routing rule; no re-growing card
+  near expiry; cut the "wants review, groundwork done" and "gone quiet, last terminal line"
+  lines from this run.
+
+**Rejected, with the reason.**
+
+- *"Quote the question in her briefing"* (three designers). Her briefing deliberately never
+  carries a question's text, so that a task cannot shape her sentence
+  (`src/core/lucy-operator/operator-briefing.ts`, header). The briefing names the task; the card
+  beside it shows the text as data.
+- *"Tell the operator why she is silent, restart the speech service"* (three designers). Built on
+  my wrong sentence; see R8-F4.
+- *"Delete the room", "make her Telegram-only", "remove the 3D view"* (the skeptic, the
+  minimalist). The operator asked for a window three times; whether it earns its place is the
+  operator's call, and it is asked with a mock-up rather than decided here.
+- *"Open the column by default on a wide window"* (the surface designer). Nothing in the history
+  says an uninvited panel is wanted; today's visit lasted nine seconds.
+- *Browser notifications, a tab title that changes, a sound.* Telegram already reaches the
+  operator away from the screen, and 2 of 2 answered questions came from it.
+
+**Left open by the critics, and true.** The walkthrough's verdict on the brief's own words: "nice
+chat: no", "too small: no". Slices 0 to 3 do not make the conversation more rewarding (they make
+it answer), and they do not make her bigger. The desk and the actions are where those two words
+would be met, and the minimalist's objection to both stands until somebody uses them. That
+disagreement is the question put to the operator.
+
+### Asked of the operator during the run (`kookr ask`, not waited on)
+
+- `7d6f17c077c9`, her model: fix the routing rule on OpenRouter, switch her model, or let Kookr
+  retry other providers. Cluster A does not depend on the answer.
+- `3f64fe78f3ba`, the full window: desk after the four fixes (recommended), desk first, no desk,
+  or batch actions too. With the mock-up page.
 
 ## Suggested priority order
 
-_(written after the brainstorm)_
+1. **She answers** (R8-F10): cluster A, and the operator's routing rule. Nothing else about the
+   conversation matters while every turn fails.
+2. **The dashboard stops saying "nothing waiting"** (R8-F3): cluster B. The only change that
+   works with her closed and costs the operator nothing.
+3. **The decision at the bubble, the question unfolded** (R8-F2): cluster D.
+4. **Lines that name the task and the amount; expired questions that say what was done**
+   (R8-F5, R8-F8): clusters C and F.
+5. **The text field and the dead button** (R8-F7): cluster E.
+6. **The desk** (R8-F6, R8-F9) and **batch actions**: the operator's call; not started.
+7. Carried over and still open: R7-F5 (a permission card's buttons die after five minutes), R7-F8
+   (the top bar at 1000 px), approving through Lucy (the last slice of #3632), #4149, #4183.
 
 ## Session log
 
@@ -294,5 +382,11 @@ _(written after the brainstorm)_
   Research).
 - 17:50 Round 2: four Sonnet critics attack the synthesis (what to cut, failure modes, delivery,
   a walkthrough as the operator).
+- 17:52 Mock-up page published; two questions put to the operator with `kookr ask` (no wait).
+- 17:55 Four cluster worktrees from `origin/main` (`kookr-r8-a-model-fallback`,
+  `kookr-r8-b-one-waiting-list`, `kookr-r8-c-named-lines`, `kookr-r8-d-decision-bubble`), one
+  implementer each. Host load 52 before they started (the fleet's own work).
+- 18:05 Correction: speech is switched off in `.env`, it did not fail to start. R8-F4 rewritten;
+  the mock-up page corrected.
 - Scope choice: this run does not re-drive the launch dialog, the live terminal or the rating
   flow (runs 1 to 4 did, and the brief is Lucy), and launches no task of its own.
