@@ -1,9 +1,9 @@
 # RFC: UX Dogfooding Findings — November 2026 (run 8: Lucy is closed)
 
-- **Status**: Findings recorded and acted on. Eight changes are merged into `staging` (#4271, #4272, #4273, #4274, #4275, #4277, #4280, #4281). None is on `main` or in production: the integration train is not running (R8-F13) and the operator has been asked whether to start it. What was not built is in #4279.
+- **Status**: Findings recorded and acted on. Eight changes (#4271, #4272, #4273, #4274, #4275, #4277, #4280, #4281) and this document (#4270) are on `main` and in production since 27 November 20:37 (build `fb3e99219`): the operator answered "Start the train now", the train verified `staging` green and moved `main`, and production redeployed itself. What was not built is in #4279.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
 - **Date**: 2026-11-27 (all clock times below are UTC)
-- **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production runs
+- **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production ran during the run
 - **Focus** (operator's brief, the same as runs 6 and 7 plus one sentence): "Lucy's panel needs a
   full overhaul. End goal is Lucy being as helpful as Jarvis: being proactive, when she
   speaks/interacts with the user it is always to ask for added value, the chat is nice, the
@@ -64,13 +64,18 @@ own first version of the checklist fix) and about forty small ones, all fixed be
 | The desk: the full window in three columns (decisions, fleet, conversation) | #4280 | merged |
 | A server test no longer calls a real model with the shell's keys | #4281 | merged |
 
-**What the operator has to know.** None of this is on the dashboard yet: the integration train,
-which moves `main` and so production, has been halted since 26 November and stopped since the
-restart (R8-F13). The question
-"Start the train now?" (ask `a9dc08691266`) was still unanswered when this document was closed;
-this run did not start it, because the train pushes to `main` and production then restarts
-itself among the operator's running tasks. Two other questions were answered during the run:
-"Switch her to another model" and "Build the desk after the 4 fixes".
+**What the operator has to know.** When the last change merged, none of this was on the
+dashboard: the integration train, which moves `main` and so production, had been halted since
+26 November and stopped since the restart (R8-F13). This run did not start it by itself, because
+the train pushes to `main` and production then restarts itself among the operator's running
+tasks; it asked (ask `a9dc08691266`), and the operator answered "Start the train now" at 20:19.
+The train was started at 20:19, verified `staging` green in ten minutes and moved `main` at
+20:29; production redeployed itself at 20:37. Checked there, read-only: Lucy answers "What needs
+me right now?" in 0.9 seconds through Baseten, naming the tasks and the amount, and the desk
+shows its three columns with live data. One gap seen on the live page is in #4279: with two or
+more tasks in trouble her briefing still counts them without naming them. Two other questions
+were answered during the run: "Switch her to another model" and "Build the desk after the 4
+fixes".
 
 ## Findings
 
@@ -78,8 +83,8 @@ itself among the operator's running tasks. Two other questions were answered dur
 
 **Evidence.** `~/.kookr/lucy-interactions.jsonl`, from 18 November 12:00 (the day #4148 and #4153
 reached production) to 27 November 17:30. The log has no row between 23 November 20:46 and
-27 November 17:26, but the server was running on 24, 26 and 27 November (questions were asked and
-answered on Telegram then); the only stop its log shows in that gap is from about 27 November
+27 November 17:26, but the server was running on 24, 26 and 27 November (questions were asked then,
+and those of 24 and 26 November answered on Telegram); the only stop its log shows in that gap is from about 27 November
 07:00 to 17:21. The silence is the operator's, not the host's.
 
 | Measure | 18 to 27 November |
@@ -158,7 +163,7 @@ console. Can you sign in on this PC so I can run the browser fleet?", 117 minute
 
 Minimised is the state she is in almost all the time (R8-F1). In that state the only sign of a
 task's question on the whole dashboard is a digit on a circle. Ten seconds later, once a budget
-finding raised (`column-1920.png`), the two lists both said "1" and meant different things: the
+finding had been raised (`column-1920.png`), the two lists both said "1" and meant different things: the
 dashboard's "Waiting on you" held the budget finding and not the question, Lucy's "1 waiting on
 you" held the question and not the budget finding.
 
@@ -361,7 +366,7 @@ this was the only test of those directories that reached a real model on this ho
 
 **Evidence.** At 19:07 the five pull requests this run had merged were on `staging` and nowhere
 else. `origin/main` is still `e33d8654d`, the commit of 23 November, and production follows
-`main`. `pnpm train:status`: `running: false`, `halted: base-red` since 26 November 22:38, last
+`main` (`main` moved at 20:29, once the operator had the train started; see the Summary). `pnpm train:status`: `running: false`, `halted: base-red` since 26 November 22:38, last
 cycle 27 November 06:59; its process id belongs to a process that died with the host's restart.
 Three pull requests from other tasks (#4267, #4269 and a plugin bump) have been waiting on
 `staging` as well. `GET /api/health` reports `integrationTrain.alerting: true`; nothing on the
@@ -475,7 +480,7 @@ disagreement is the question put to the operator.
   (recommended), desk first, no desk, or batch actions too. Answered at 17:57: "Build the desk
   after the 4 fixes".
 - `a9dc08691266`, 19:10, the integration train: start it now (recommended), "I will start it
-  myself", or leave it stopped. Not answered when this document was closed.
+  myself", or leave it stopped. Answered on Telegram at 20:19: "Start the train now".
 
 ## Suggested priority order
 
@@ -510,7 +515,8 @@ request. All were merged with `kookr merge`, into `staging`.
 | J. The wiring test no longer calls a real model (R8-F12) | #4281 | 1 round, pass | Nothing blocking. It listed the suite-wide scrub that lets the same thing happen to another test. |
 | I. The checklist reads `.tsx` tests (R8-F11) | #4274 | 3 rounds | One critical finding, against my own first version: it would have hidden 94 server test files behind the checklist's 16 MiB limit. Reworked into a lookup with no total limit. |
 
-**What the operator sees once `main` moves** (it has not: R8-F13).
+**What the operator sees now that `main` has moved** (20:29; in production since 20:37, see the
+Summary).
 
 - With Lucy minimised, a task's question appears in "Needs you" and in the overview, and her
   circle grows once into the question with its answers. The dashboard no longer says "All clear"
@@ -532,10 +538,15 @@ halted the train on 26 November are in those runs and pass. Not run: `pnpm test:
 `test:smoke`, `test:hooks`, `test:stt` and Playwright beyond the desk's four tests; the train
 runs the first four.
 
-**Starting the train.** As it was last started (`start-args.json`), from the production
-checkout: `pnpm train:start --worktree ~/git/kookr-train --workers 6`. It will verify `staging`
-(twelve commits ahead of `main`, eight of them this run's), move `main`, and production will then
-update and restart itself.
+**Starting the train.** On the operator's answer it was started as it was last started
+(`start-args.json`), from the production checkout: `pnpm train:start --worktree ~/git/kookr-train
+--workers 6`. It cleared its halt at once ("a ref moved"), verified `staging` (thirteen commits
+ahead of `main`, nine of them this run's, this document included) green, and promoted
+`fb3e99219` to `main` at 20:29. The server's own deploy-convergence check then asked for a redeploy
+(`[deploy-convergence] redeploy requested … age=17m grace=15m action=redeploy` in its log; the
+schedule of the same name is skipped while the project's automation is paused), and production
+restarted on the new build at 20:37. The train is a detached process and keeps running; nothing restarts it after a reboot
+(R8-F13, #4279).
 
 **Not built, and where it went.** Issue #4279: the expiry outcome on the card (the server half
 is in #4275), the column's text field and dead Talk button (R8-F7), batch actions, the train's
@@ -608,10 +619,13 @@ times git's; the others are to the nearest few minutes.
 - 19:45 On the head of `staging` with all seven changes: `check:cycles`, the three type checks
   and the documentation validators pass. `origin/main` is still `e33d8654d`; eleven commits wait
   on `staging`, seven of them this run's (twelve and eight after cluster J). The train question
-  is unanswered.
+  was unanswered at that time.
 - 19:50 to 20:30 Checks on the combined result (see "Checked together"). A train started from a
   shell with model keys would have met R8-F12 on `main`: fixed as cluster J, reviewed, #4281
   merged.
-- Playbook updated with this run's process lessons (Phase 5), in this pull request.
+- 20:19 This pull request (#4270) merged. On the operator's answer the train was started; 20:29
+  `main` promoted to `fb3e99219`; 20:37 production redeployed; 20:40 checked on production (see
+  the Summary).
+- Playbook updated with this run's process lessons (Phase 5), in #4270.
 - Scope choice: this run does not re-drive the launch dialog, the live terminal or the rating
   flow (runs 1 to 4 did, and the brief is Lucy), and launches no task of its own.
