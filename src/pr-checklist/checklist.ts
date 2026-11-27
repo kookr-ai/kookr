@@ -404,9 +404,14 @@ export function findMissingEnv(addedSourceLines: string[], declaredKeys: string[
 /** New source files whose basename is referenced nowhere in the given test corpus. Pure. */
 export function findUntested(newSourceFiles: string[], testCorpus: string): string[] {
   return newSourceFiles.filter((p) => {
-    const base = p.replace(/^.*\//, '').replace(/\.[jt]s$/, '');
+    const base = sourceBaseName(p);
     return base.length > 0 && !testCorpus.includes(base);
   });
+}
+
+/** The name a test must mention for a source file to count as tested: its file name without `.ts` or `.js`. */
+export function sourceBaseName(path: string): string {
+  return path.replace(/^.*\//, '').replace(/\.[jt]s$/, '');
 }
 
 /**
