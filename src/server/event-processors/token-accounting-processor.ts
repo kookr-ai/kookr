@@ -1,5 +1,6 @@
 import type { Task } from '../../core/tasks.js';
 import type { AgentEvent } from '../../core/types.js';
+import { deriveSubagentTranscriptPath } from '../../core/subagent-transcript-path.js';
 
 type TokenOwnerTask = Pick<Task, 'id' | 'agentType'>;
 
@@ -9,7 +10,15 @@ interface TaskSessionLookup {
 
 interface TranscriptRegistry {
   register(transcriptPath: string, taskId: string): void;
+  /** Stop tracking one transcript. Optional so narrow test doubles keep working. */
+  unregister?(transcriptPath: string): void;
 }
+
+/**
+ * Running subagents whose transcript path was guessed at SubagentStart. Bounded:
+ * an entry leaves at SubagentStop, and a lost stop is evicted oldest-first.
+ */
+const MAX_GUESSED_SUBAGENT_PATHS = 2_000;
 
 export interface TokenAccountingProcessorDeps {
   taskLookup: TaskSessionLookup;
@@ -46,6 +55,10 @@ export function createTokenAccountingProcessor({
     transcriptRegistry.register(transcriptPath, task.id);
   };
 
+  // `${tmuxName}\u0000${agentId}` -> the transcript path guessed at SubagentStart.
+  const guessedSubagentPaths = new Map<string, string>();
+  const subagentKey = (tmuxName: string, agentId: string): string => `${tmuxName}\u0000${agentId}`;
+
   return {
     process({ tmuxName, event }) {
       // Token tracking runs for ALL parentages: a cross-session child writing to
@@ -63,14 +76,46 @@ export function createTokenAccountingProcessor({
         }
       }
 
+      // Follow a subagent from its start, so its tokens are counted while it
+      // runs. SubagentStop is the only hook that reports the subagent's own
+      // transcript path, and waiting for it added a whole subagent's tokens to
+      // the parent task in one step when it finished (one measured stop: 41,925
+      // output tokens at once), which made the live token rate and the task's
+      // live cost jump. The path is worked out from the parent session's
+      // transcript; the file may not exist yet, or ever (see
+      // `deriveSubagentTranscriptPath`), and the tracker treats that as empty.
+      if (event.type === 'subagent_start') {
+        const guessed = deriveSubagentTranscriptPath(event.transcriptPath, event.agentId);
+        const parentTask = guessed ? taskLookup.findTaskBySession(tmuxName) : null;
+        if (guessed && parentTask) {
+          registerClaudeTranscript(parentTask, guessed);
+          if (guessedSubagentPaths.size >= MAX_GUESSED_SUBAGENT_PATHS) {
+            const oldest = guessedSubagentPaths.keys().next().value;
+            if (oldest !== undefined) guessedSubagentPaths.delete(oldest);
+          }
+          guessedSubagentPaths.set(subagentKey(tmuxName, event.agentId), guessed);
+        }
+      }
+
       // Register subagent transcripts so their tokens are summed into the parent
       // task (rfc-cost-comparison-panel.md R13). `tokenTracker.register` is
       // idempotent on path, so multiple SubagentStop events for the same
-      // isSidechain transcript do not double-count.
-      if (event.type === 'subagent_stop' && event.agentTranscriptPath) {
-        const parentTask = taskLookup.findTaskBySession(tmuxName);
-        if (parentTask) {
-          registerClaudeTranscript(parentTask, event.agentTranscriptPath);
+      // isSidechain transcript, or a path already registered at SubagentStart,
+      // do not double-count.
+      if (event.type === 'subagent_stop') {
+        const key = subagentKey(tmuxName, event.agentId);
+        const guessed = guessedSubagentPaths.get(key);
+        guessedSubagentPaths.delete(key);
+        if (event.agentTranscriptPath) {
+          // The guess was wrong (for example a workflow agent, stored one level
+          // deeper): stop watching a file that will never exist.
+          if (guessed && guessed !== event.agentTranscriptPath) {
+            transcriptRegistry.unregister?.(guessed);
+          }
+          const parentTask = taskLookup.findTaskBySession(tmuxName);
+          if (parentTask) {
+            registerClaudeTranscript(parentTask, event.agentTranscriptPath);
+          }
         }
       }
 

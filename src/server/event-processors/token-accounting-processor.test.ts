@@ -75,6 +75,84 @@ describe('TokenAccountingProcessor', () => {
     expect(tokenTracker.register).toHaveBeenCalledWith('/tmp/sidechain.jsonl', 'parent-task');
   });
 
+  describe('following a subagent from its start', () => {
+    const PARENT = '/home/op/.claude/projects/-repo/5e55.jsonl';
+    const GUESSED = '/home/op/.claude/projects/-repo/5e55/subagents/agent-a1b2.jsonl';
+
+    function build(task: Task | null = mockTask('parent-task')) {
+      const tokenTracker = { register: vi.fn(), unregister: vi.fn() };
+      const processor = createTokenAccountingProcessor({
+        taskLookup: { findTaskBySession: vi.fn().mockReturnValue(task) },
+        transcriptRegistry: tokenTracker,
+      });
+      const start = (overrides: { agentId?: string; transcriptPath?: string } = {}) => processor.process({
+        tmuxName: 'kookr-agent',
+        event: {
+          type: 'subagent_start',
+          sessionId: 's1',
+          agentId: 'a1b2',
+          agentType: 'general-purpose',
+          transcriptPath: PARENT,
+          ...overrides,
+        },
+      });
+      const stop = (agentTranscriptPath: string | undefined, agentId = 'a1b2') => processor.process({
+        tmuxName: 'kookr-agent',
+        event: { type: 'subagent_stop', sessionId: 's1', agentId, agentType: 'general-purpose', lastMessage: '', agentTranscriptPath },
+      });
+      return { tokenTracker, start, stop };
+    }
+
+    test('registers the subagent transcript when the subagent starts', () => {
+      const { tokenTracker, start } = build();
+      start();
+      expect(tokenTracker.register).toHaveBeenCalledWith(GUESSED, 'parent-task');
+    });
+
+    test('the stop report for the same path changes nothing', () => {
+      const { tokenTracker, start, stop } = build();
+      start();
+      stop(GUESSED);
+      expect(tokenTracker.unregister).not.toHaveBeenCalled();
+      // Registered again with the same path: the tracker ignores a path it already has.
+      expect(tokenTracker.register.mock.calls).toEqual([[GUESSED, 'parent-task'], [GUESSED, 'parent-task']]);
+    });
+
+    test('a wrong guess is dropped once the real path is reported', () => {
+      const { tokenTracker, start, stop } = build();
+      const real = '/home/op/.claude/projects/-repo/5e55/subagents/workflows/wf_1/agent-a1b2.jsonl';
+      start();
+      stop(real);
+      expect(tokenTracker.unregister).toHaveBeenCalledWith(GUESSED);
+      expect(tokenTracker.register).toHaveBeenLastCalledWith(real, 'parent-task');
+    });
+
+    test('a start without a parent transcript, or with an unsafe id, registers nothing', () => {
+      const { tokenTracker, start } = build();
+      start({ transcriptPath: undefined });
+      start({ agentId: '../../etc/passwd' });
+      expect(tokenTracker.register).not.toHaveBeenCalled();
+    });
+
+    test('does nothing for an agent whose task is unknown, or a Grok Build task', () => {
+      const unknown = build(null);
+      unknown.start();
+      expect(unknown.tokenTracker.register).not.toHaveBeenCalled();
+
+      const grok = build(mockTask('grok-task', 'grok-build'));
+      grok.start();
+      expect(grok.tokenTracker.register).not.toHaveBeenCalled();
+    });
+
+    test('a stop with no path report leaves the guessed registration in place', () => {
+      const { tokenTracker, start, stop } = build();
+      start();
+      stop(undefined);
+      expect(tokenTracker.unregister).not.toHaveBeenCalled();
+      expect(tokenTracker.register).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test('does not register Grok Build transcripts with the Claude-format TokenTracker', () => {
     // Grok writes a different transcript schema and is metered by its own
     // adapter at stop (issue #1581); registering here yields phantom all-zero

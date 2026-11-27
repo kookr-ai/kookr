@@ -8,6 +8,7 @@ import { createKookrServerInternal, notifyBootReconciledTaskOutcomes } from './i
 import type { KookrServerInternal } from './server-test-helpers.js';
 import type { ResourceStatusSampler } from './resource-status-service.js';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
+import { ServerMessageSchema } from '../shared/contracts/server-message-schema.js';
 import {
   readDataDirectoryDiskUsageWithStatfs,
   SystemResourceSampler,
@@ -2629,6 +2630,44 @@ Review daily work.
           memoryUsedPercent: expect.any(Number),
         }),
       }));
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
+    test('sends the latest fleet vitals and their history when a dashboard connects', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      type VitalsMessage = {
+        type: string;
+        sample?: { sampledAtMs: number; machine: Record<string, unknown>; fleet: Record<string, unknown> };
+        history?: Array<{ t: number }>;
+      };
+      const burst = await new Promise<VitalsMessage>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+        ws.on('message', (data) => {
+          const parsed = JSON.parse(data.toString()) as VitalsMessage;
+          // Only the connection burst carries `history`; later ticks do not.
+          if (parsed.type === 'fleetVitals' && parsed.history) {
+            clearTimeout(timer);
+            resolve(parsed);
+          }
+        });
+        ws.on('error', reject);
+      });
+
+      expect(ServerMessageSchema.safeParse(burst).success).toBe(true);
+      expect(burst.sample?.machine).toEqual(expect.objectContaining({
+        memoryUsedPercent: expect.any(Number),
+      }));
+      expect(burst.sample?.fleet).toEqual(expect.objectContaining({
+        agents: expect.any(Number),
+        subagents: expect.any(Number),
+        toolCallsPerMin: 0,
+      }));
+      // The history ends with the sample that came with it.
+      expect(burst.history!.length).toBeGreaterThan(0);
+      expect(burst.history![burst.history!.length - 1].t).toBe(burst.sample!.sampledAtMs);
 
       ws.close();
       await new Promise<void>((r) => ws.on('close', () => r()));

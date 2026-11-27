@@ -370,6 +370,8 @@ describe('Hook Event Parser', () => {
       agentId: 'a9af72eb6cf1b8c97',
       agentType: 'Explore',
       cwd: '/workspace/kookr',
+      // The parent session's transcript, so the subagent's own can be located while it runs.
+      transcriptPath: '~/.claude/projects/-home-jean-git-kookr/ef2bb325-8a22-4eec-a5df-708b6a00a609.jsonl',
     });
   });
 
