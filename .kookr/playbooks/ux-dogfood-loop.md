@@ -83,6 +83,12 @@ the first run of this loop) — match its format and depth.
    pull request that carried it is named as merged) is not unpushed work: leave it
    alone.
 
+5. **Check that merges reach production**: `pnpm train:status` (the integration train moves
+   `main`, and production follows `main`) and `git log -1 origin/main`. A train that is not
+   running, or halted, means nothing this run merges will be seen: say so to the operator at the
+   start, through `kookr ask` (no `--wait`), not in the final report. Run 8 merged five pull
+   requests before noticing the train had not run for a day.
+
 ## Phase 2 — Dogfood with a running RFC
 
 Drive classic workflows end to end. Focus area for this run (empty means a
@@ -217,6 +223,37 @@ Screenshot/automation notes that save an hour:
 - **This repository has no ESLint.** `pnpm exec eslint` fails with `spawn eslint EACCES`
   because there is nothing to run; conventions are checked by `pnpm typecheck` and the
   design-token tests. Do not record "lint not run" as a gap.
+- **Read a setting's value, not its name.** Run 8 reported "speech failed to start" because
+  `KOOKR_TTS` was present in `.env`; its value was `false`. Six designers were briefed with the
+  wrong sentence. Check the server's own log line or status route for what it concluded.
+- **Lucy's interaction log holds earlier runs' probes.** Of 30 typed turns before run 8, 26 were
+  this playbook's own (`conversationId` starting `dogfood-`; run 8's start `r8-`). Filter them
+  out before counting what the operator did, and give this run's probes an id of the same kind.
+  A gap in that log is not the host being off: check the server log and the ask store before
+  writing that it was.
+- **When the brief asks for a fleet of designers**, run two rounds: several blind to each other,
+  each with one lens and the same evidence file, then critics on the written synthesis (what to
+  cut, failure modes, delivery, a walkthrough as the operator). Give them screenshots and file
+  paths, not conclusions, and record in the RFC what was adopted and what was rejected.
+- **Stacked and sibling clusters.** Rebase a cluster as soon as the one under it merges, then ask
+  its reviewer for a delta check (`git range-diff` shows what the rebase changed). Rows of the
+  shared reference documents (`docs/reference/api.md`, `lucy-operator.md`) conflict between
+  siblings: keep each change's own row. After a rebase onto a merged sibling, look for readers
+  of anything this cluster changed: run 8's "named lines" cluster emptied a briefing that the
+  already merged "board reply" quoted.
+- **The push gate inherits the task's model keys.** A task's shell carries production's `.env`,
+  and a server test that starts a real server without a stand-in model then calls the real
+  helper model. When that provider hangs, the gate fails on unchanged `main`. Run 8 fixed the
+  one test it met; the suite-wide scrub (`test/scrub-agent-env.ts`) still lets through keys that
+  do not start with `KOOKR_`, `CLAUDE_` or `ANTHROPIC_`. The sign: a gate failure that also
+  fails on `origin/main` and passes with the keys unset
+  (`env -u OPENROUTER_API_KEY -u GROQ_API_KEY -u GEMINI_API_KEY pnpm exec vitest run <file>`).
+  Then push with those unset, say so in the pull request, and fix the test.
+- **One reviewer per cluster, kept for every round.** Write the requirements to a file, give a
+  fresh agent the diff, the requirements and nothing from the implementer, and resume the same
+  reviewer for fix checks. Post every round's verdict on the pull request, the blocks too.
+- **No `&` inside a background command.** The harness then reports it finished at once and
+  never notifies; let the harness do the backgrounding.
 - **The playbook text a task receives comes from the checkout it was launched in.** A
   task launched in a parked `~/git/kookr` gets that checkout's older copy of this file.
   Read the current one with `git show origin/main:.kookr/playbooks/ux-dogfood-loop.md`
