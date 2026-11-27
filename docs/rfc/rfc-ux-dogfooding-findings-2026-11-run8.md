@@ -1,6 +1,6 @@
 # RFC: UX Dogfooding Findings — November 2026 (run 8: Lucy is closed)
 
-- **Status**: Findings recorded and acted on; see the table in the Summary for each change's state.
+- **Status**: Findings recorded and acted on. Seven changes are merged into `staging` (#4271, #4272, #4273, #4274, #4275, #4277, #4280). None is on `main` or in production: the integration train is not running (R8-F13) and the operator has been asked whether to start it. What was not built is in #4279.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
 - **Date**: 2026-11-27 (all clock times below are UTC)
 - **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production runs
@@ -53,20 +53,22 @@ into the briefs. Seven changes were built in separate worktrees, each reviewed b
 reviewer with a fresh context before merging; the reviews found one critical defect and about
 forty small ones, all fixed before merge.
 
-| Change | Pull request | State at the time of writing |
+| Change | Pull request | State |
 |---|---|---|
 | The dashboard counts task questions and permission prompts; no "All clear" while one waits | #4271 | merged |
 | She answers from the board when her model fails, in 12 s at most, naming the provider | #4272 | merged |
 | The minimised bubble grows into the question with its answers; the column no longer folds it | #4273 | merged |
 | Her lines name the task and the amounts; expired questions record what was done | #4275 | merged |
 | The pull-request checklist finds tests in `.tsx` files and past its first 16 MiB | #4274 | merged |
-| Her typed conversation runs on Baseten (the operator's choice: "switch her to another model") | see Implementation | review passed, being delivered |
-| The desk: the full window in three columns (decisions, fleet, conversation) | see Implementation | in review |
+| Her typed conversation runs on Baseten (the operator's choice: "switch her to another model") | #4277 | merged |
+| The desk: the full window in three columns (decisions, fleet, conversation) | #4280 | merged |
 
 **What the operator has to know.** None of this is on the dashboard yet: the integration train,
-which moves `main` and so production, has not run since 26 November (R8-F13). And two decisions
-taken during the run by `kookr ask`: "Switch her to another model", "Build the desk after the 4
-fixes".
+which moves `main` and so production, has not run since 26 November (R8-F13). The question
+"Start the train now?" (ask `a9dc08691266`) was still unanswered when this document was closed;
+this run did not start it, because the train pushes to `main` and production then restarts
+itself among the operator's running tasks. Two other questions were answered during the run:
+"Switch her to another model" and "Build the desk after the 4 fixes".
 
 ## Findings
 
@@ -471,6 +473,46 @@ disagreement is the question put to the operator.
 7. Carried over and still open: R7-F5 (a permission card's buttons die after five minutes), R7-F8
    (the top bar at 1000 px), approving through Lucy (the last slice of #3632), #4149, #4183.
 
+## Implementation (Phase 4)
+
+One worktree per cluster, one implementer each, then for each cluster a reviewer with a fresh
+context who saw the diff and the requirements and nothing the implementer wrote. The same
+reviewer checked each fix round. Every verdict, blocks included, is a comment on its pull
+request. All were merged with `kookr merge`, into `staging`.
+
+| Cluster | Pull request | Review | What the review changed |
+|---|---|---|---|
+| A. She answers when her model fails (R8-F10) | #4272 | 2 rounds, no correctness defect | Before review I sent it back myself: its 8-second deadline would have cut healthy turns (the slowest healthy first text in the operator's history was 9.4 s) and could not see reasoning arrive. The reviewer added the wiring test that fails when the breaker is not connected. |
+| B. One list of what waits (R8-F3) | #4271 | 2 rounds | The bubble's accessible label did not mention permission prompts that its number counted; four behaviours had no test. |
+| C. Lines that name the task and the amount (R8-F5, R8-F8) | #4275 | 5 rounds and a delta check | Twelve small defects: "twice its $25 alert" at $180, "iOS build" re-cased to "IOS build", a chip with no text, titles cut on "for the". The delta check after rebasing onto A found that the two together would answer "From the board:" followed by nothing. |
+| D. The decision at the bubble (R8-F2) | #4273 | 3 rounds | One critical defect: a second question arriving inserted "+1 more waiting" above the live answer buttons and moved them under the pointer. Also: an outcome shown to a hidden tab, focus thrown to the page, a task's URL as a live link on a card that appears by itself. |
+| G. Her typed conversation on Baseten (R8-F10) | #4277 | 3 rounds and a delta check | No correctness defect. It asked for the upgrade rule (an install that already names an OpenRouter model stays on OpenRouter) and for the retry without `reasoning_effort`. |
+| H. The desk (R8-F6, R8-F9) | #4280 | 2 rounds | Every Fleet row was drawn again on every change of any agent; the entry animation no longer matched; the Playwright spec still asserted the old room. |
+| I. The checklist reads `.tsx` tests (R8-F11) | #4274 | 3 rounds | My first version would have hidden 94 server test files behind the checklist's 16 MiB limit. Reworked into a lookup with no total limit. |
+
+**What the operator sees once `main` moves** (it has not: R8-F13).
+
+- With Lucy minimised, a task's question appears in "Needs you" and in the overview, and her
+  circle grows once into the question with its answers. The dashboard no longer says "All clear"
+  while it waits.
+- Her column shows the question whole. Her briefing reads "Earnings Watch UX review is stopped on
+  a question, 117 minutes left." and the budget line "Test Inkling 2 Mini is at $51.25, at least
+  twice its $25.00 alert."
+- A typed question gets an answer: from her model on Baseten (a tool call came back in 0.3 s in a
+  live call), or, if the model fails, from the board within 12 seconds, saying so.
+- "Desk" in her column, or Alt+Shift+L, opens three columns: what waits, what the fleet is doing,
+  the conversation.
+
+**Not built, and where it went.** Issue #4279: the expiry outcome on the card (the server half
+is in #4275), the column's text field and dead Talk button (R8-F7), batch actions, the train's
+supervision (R8-F13), the test that calls the real model (R8-F12), and the reviewers' larger
+follow-ups.
+
+**What to measure in the next run.** `~/.kookr/lucy-interactions.jsonl` now records
+`bubble_card_shown`, `bubble_card_answered`, `bubble_card_dismissed` and `bubble_card_opened`.
+The number this run is judged by is questions and permission prompts answered from her surface
+out of those raised (0 of 6 before), read together with how often the card is dismissed.
+
 ## Session log
 
 - 17:28 Setup. The task received the playbook text of a checkout 779 commits behind
@@ -521,5 +563,11 @@ disagreement is the question put to the operator.
   followed by nothing; fixed in C with a test. 20:25 #4275 merged.
 - 20:06 `origin/main` has not moved: the integration train is not running (R8-F13). Asked.
 - 20:15 The desk built and photographed; in review.
+- 20:40 #4277 merged (Baseten). Follow-up issue #4279 filed.
+- 20:45 The desk's review: functionally right, five small defects and a stale Playwright spec;
+  fixed, the spec rewritten and run (4 passed). 21:05 fix check passed.
+- 21:20 #4280 merged (the desk). `origin/main` is still `e33d8654d`; eleven commits wait on
+  `staging`, seven of them this run's. The train question is unanswered.
+- 21:25 Playbook updated with this run's process lessons (Phase 5), in this pull request.
 - Scope choice: this run does not re-drive the launch dialog, the live terminal or the rating
   flow (runs 1 to 4 did, and the brief is Lucy), and launches no task of its own.
