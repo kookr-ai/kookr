@@ -160,7 +160,7 @@ answered after 20 s.
   the OpenRouter account.
 - **Seeing it without asking her.** `GET /api/health` has a `lucyOperator` object: `configured`,
   `model`, `lastSuccessAt`, `lastFailureAt`, `lastFailure` (the same safe sentence) and `breakerOpen`.
-  It is in memory and starts empty after a restart.
+  It is in memory and starts empty after a restart. When nothing waits and no task is in trouble, the reply says that in one sentence ("Nothing is waiting on you and no task is in trouble."), since the briefing itself then has no text.
 
 ## Launching a task by voice or text
 
