@@ -33,6 +33,7 @@ import {
   type TimerDeps,
 } from './lifecycle-timers.js';
 import { ServerLogRotationHealth } from './server-log-rotation.js';
+import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import {
   HungTaskReaperMetrics,
   HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS,
@@ -3808,6 +3809,54 @@ describe('startLifecycleTimers systemd watchdog wiring (issue #2491)', () => {
     } finally {
       clearAllTimers(handles);
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('startLifecycleTimers FAA close ownership at the 5-minute mark (issue #4266)', () => {
+  test('one liveness tick under capacity pressure warns via the ack reaper and the soft TTL leaves the task open', async () => {
+    vi.useFakeTimers();
+    // The reapers read the wall clock, so the fixture is built from it too.
+    const now = new Date();
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'finished work', cwd: '/repo' });
+    taskStore.startTask(task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-faa-tick',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(now.getTime() - 30 * 60_000),
+    });
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      // 30 ms past both 5-minute gates, as in the issue's evidence table.
+      raisedAt: new Date(now.getTime() - 5 * 60_000 - 30).toISOString(),
+    });
+    const coordinator = new ReapWarningCoordinator();
+    // The TTL sweep runs right after the ack reaper on the same tick and always
+    // reports its reclaim count at the end, so this call marks "both passes ran".
+    const ttlMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
+    const sweepDone = vi.spyOn(ttlMetrics, 'recordReclaimed');
+    const handles = startLifecycleTimers(wiringDeps({
+      taskStore,
+      // The session is alive, so reconcile leaves the finished task in progress.
+      terminalBackend: { listSessions: vi.fn(async () => ['kookr-faa-tick']) } as TimerDeps['terminalBackend'],
+      faaAckReapWarningCoordinator: coordinator,
+      getFinishedAwaitingAckAckReaperEnabled: () => true,
+      getFinishedAwaitingAckAckReapMs: () => 5 * 60_000,
+      getFinishedAwaitingAckAckReapGraceMs: () => 60_000,
+      getFinishedAwaitingAckSoftTtlMs: () => 5 * 60_000,
+      getCapacityAllowsFinishedAwaitingAckEarlyReclaim: () => true,
+      isTaskHoldingOpenPr: () => false,
+      finishedAwaitingAckTtlReclaimMetrics: ttlMetrics,
+    }));
+    try {
+      await vi.waitFor(() => expect(sweepDone).toHaveBeenCalled());
+      expect(coordinator.getWarning(task.id)).toBeDefined();
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+      expect(taskStore.getTask(task.id)?.pendingSignal?.kind).toBe('completion_ready');
+    } finally {
+      clearAllTimers(handles);
     }
   });
 });

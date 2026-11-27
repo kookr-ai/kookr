@@ -2106,6 +2106,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           auditLogPath: deps.auditLogPath,
           broadcastToAll: deps.broadcastToAll,
           isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+          // Issue #4266: the ack reaper above may just have warned "close in
+          // 60s unless kept"; its unexpired warning (or keep-alive) holds the
+          // task here, so the soft/hard TTL never closes it inside the grace.
+          ...(deps.faaAckReapWarningCoordinator
+            ? { ackReapWarnings: deps.faaAckReapWarningCoordinator }
+            : {}),
           metrics: deps.finishedAwaitingAckTtlReclaimMetrics,
           ...(deps.taskTailStore
             ? {

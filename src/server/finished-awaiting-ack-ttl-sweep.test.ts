@@ -9,6 +9,8 @@ import {
   FinishedAwaitingAckTtlReclaimMetrics,
 } from './finished-awaiting-ack-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
+import { reapAwaitingPollFinishedAwaitingAckTasks } from './finished-awaiting-ack-ack-reaper.js';
+import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 
 // Mock cleanupTaskWorktrees (fire-and-forget in completeTask)
 const mockCleanupTaskWorktrees = vi.fn().mockResolvedValue(undefined);
@@ -829,5 +831,236 @@ describe('paneHasHumanInteractiveMarkers', () => {
     expect(paneHasHumanInteractiveMarkers('')).toBe(false);
     expect(paneHasHumanInteractiveMarkers(undefined)).toBe(false);
     expect(paneHasHumanInteractiveMarkers('just some agent output')).toBe(false);
+  });
+});
+
+// Issue #4266: under capacity pressure the soft TTL (5m) and the ack-path
+// reaper's deadline (5m) fall due on the same liveness tick. The ack reaper
+// runs first and warns "close in 60s unless acked/kept"; the soft TTL used to
+// close the task ~30 ms later, so the countdown was false and "Keep it alive"
+// could not keep anything. These tests drive both passes in tick order over
+// one store and one coordinator, as `lifecycle-timers.ts` does.
+describe('soft/hard TTL honours the ack-path reaper grace and keep-alive (issue #4266)', () => {
+  const SOFT_TTL_MS = 5 * 60_000;
+  const ACK_DEADLINE_MS = 5 * 60_000;
+  const ACK_GRACE_MS = 60_000;
+  // The first tick that sees the task past both 5-minute gates.
+  const T0 = NOW.getTime();
+  let auditDir: string;
+  let auditLogPath: string;
+
+  beforeEach(async () => {
+    auditDir = await mkdtemp(join(tmpdir(), 'faa-ack-grace-'));
+    auditLogPath = join(auditDir, 'audit.jsonl');
+  });
+
+  afterEach(async () => {
+    await rm(auditDir, { recursive: true, force: true });
+  });
+
+  /** Mock store whose completeTask / clearPendingSignal actually change the task, so a close is visible to the next pass. */
+  function makeLiveStore(tasks: Task[]) {
+    const store = makeMockTaskStore(tasks);
+    store.completeTask = vi.fn((id: string) => {
+      const t = tasks.find((x) => x.id === id);
+      if (t) t.status = 'completed';
+    });
+    store.clearPendingSignal = vi.fn((id: string) => {
+      const t = tasks.find((x) => x.id === id);
+      if (t) delete t.pendingSignal;
+    });
+    return store;
+  }
+
+  function pressureTask(overrides: Partial<Task> = {}): Task {
+    return makeFaaTask({
+      id: 'faa-1',
+      sessions: [aSession({ tmuxSession: 'kookr-faa', lastStatus: 'inProgress', lastTurnState: 'completed_turn' })],
+      pendingSignal: {
+        kind: 'completion_ready',
+        // 30 ms past both 5-minute gates, as in the issue's evidence table.
+        raisedAt: new Date(T0 - SOFT_TTL_MS - 30).toISOString(),
+      },
+      ...overrides,
+    });
+  }
+
+  /** One liveness tick: ack reaper first, then the soft/hard TTL sweep (lifecycle-timers order). */
+  async function tick(
+    taskStore: any,
+    coordinator: ReapWarningCoordinator,
+    atMs: number,
+    sweepExtra: Record<string, unknown> = {},
+  ) {
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const now = new Date(atMs);
+    const ack = await reapAwaitingPollFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        coordinator,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => false,
+        getEnabled: () => true,
+        getDeadlineMs: () => ACK_DEADLINE_MS,
+        getGraceMs: () => ACK_GRACE_MS,
+      },
+      { now },
+    );
+    const sweep = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => false,
+        ackReapWarnings: coordinator,
+        ...sweepExtra,
+      },
+      { now, ttlMs: TTL_MS, softTtlMs: SOFT_TTL_MS, capacityAllowsEarlyReclaim: true },
+    );
+    return { ack, sweep };
+  }
+
+  async function auditTypes(): Promise<string[]> {
+    const raw = await readFile(auditLogPath, 'utf-8').catch(() => '');
+    return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l).type);
+  }
+
+  it('same tick: the ack reaper warns and the soft TTL does not close the task inside the 60 s grace', async () => {
+    const task = pressureTask();
+    const taskStore = makeLiveStore([task]);
+    const coordinator = new ReapWarningCoordinator();
+
+    const first = await tick(taskStore, coordinator, T0);
+    expect(first.ack.warnedTaskIds).toEqual(['faa-1']);
+    expect(first.sweep.capacityPressureEarlyReclaimedTaskIds).toEqual([]);
+    expect(first.sweep.reclaimedTaskIds).toEqual([]);
+    expect(first.sweep.ackGraceHeldTaskIds).toEqual(['faa-1']);
+    // A hold is not a live-work deferral.
+    expect(first.sweep.deferredTaskIds).toEqual([]);
+    expect(task.status).toBe('inProgress');
+
+    // Mid-grace: still held.
+    const mid = await tick(taskStore, coordinator, T0 + 30_000);
+    expect(mid.sweep.ackGraceHeldTaskIds).toEqual(['faa-1']);
+    expect(task.status).toBe('inProgress');
+
+    // Grace over: the ack reaper owns the close; the soft TTL finds nothing left.
+    const last = await tick(taskStore, coordinator, T0 + ACK_GRACE_MS);
+    expect(last.ack.reapedTaskIds).toEqual(['faa-1']);
+    expect(last.sweep.reclaimedTaskIds).toEqual([]);
+    expect(task.status).toBe('completed');
+    expect(taskStore.completeTask).toHaveBeenCalledTimes(1);
+
+    expect(await auditTypes()).toEqual([
+      'task.finishedAwaitingAckReapWarned',
+      'task.finishedAwaitingAckReaped',
+    ]);
+  });
+
+  it('Keep it alive holds the task past the original deadline and past the 15m hard TTL', async () => {
+    const task = pressureTask();
+    const taskStore = makeLiveStore([task]);
+    const coordinator = new ReapWarningCoordinator();
+
+    await tick(taskStore, coordinator, T0);
+    // Operator clicks "Keep it alive" 20 s into the countdown (+10 min).
+    const keptAt = T0 + 20_000;
+    expect(coordinator.veto('faa-1', keptAt).accepted).toBe(true);
+    const keptDeadline = coordinator.getWarning('faa-1')!.deadlineAt;
+
+    // Past the original 60 s grace: still alive.
+    const afterGrace = await tick(taskStore, coordinator, T0 + ACK_GRACE_MS + 1_000);
+    expect(afterGrace.ack.reapedTaskIds).toEqual([]);
+    expect(afterGrace.sweep.ackGraceHeldTaskIds).toEqual(['faa-1']);
+    expect(task.status).toBe('inProgress');
+
+    // Past the 15m hard TTL (age 15m + 10 s) but inside the keep-alive: still alive.
+    const pastHardTtl = T0 + (TTL_MS - SOFT_TTL_MS) + 10_000;
+    expect(pastHardTtl).toBeLessThan(keptDeadline);
+    const hard = await tick(taskStore, coordinator, pastHardTtl);
+    expect(hard.sweep.selection?.selectedCount).toBe(1);
+    expect(hard.sweep.reclaimedTaskIds).toEqual([]);
+    expect(hard.sweep.ackGraceHeldTaskIds).toEqual(['faa-1']);
+    expect(task.status).toBe('inProgress');
+
+    // Keep-alive over: the ack reaper closes it, not the TTL sweep.
+    const end = await tick(taskStore, coordinator, keptDeadline);
+    expect(end.ack.reapedTaskIds).toEqual(['faa-1']);
+    expect(task.status).toBe('completed');
+    expect(await auditTypes()).not.toContain('task.finishedAwaitingAckCapacityPressureReclaimed');
+    expect(await auditTypes()).not.toContain('task.finishedAwaitingAckTtlReclaimed');
+  });
+
+  it('a warning already past its deadline does not shield the task from the TTL backstop', async () => {
+    const task = pressureTask();
+    const taskStore = makeLiveStore([task]);
+    const coordinator = new ReapWarningCoordinator();
+    // A countdown that ran out without a reap (e.g. the ack reaper kept deferring it).
+    coordinator.advance({
+      taskId: 'faa-1', agentId: 'kookr-faa', silentForMs: 0, now: T0 - 2 * ACK_GRACE_MS, graceMs: ACK_GRACE_MS, present: false,
+    });
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), auditLogPath, isHoldingOpenPr: () => false, ackReapWarnings: coordinator },
+      { now: NOW, ttlMs: TTL_MS, softTtlMs: SOFT_TTL_MS, capacityAllowsEarlyReclaim: true },
+    );
+
+    expect(result.ackGraceHeldTaskIds).toEqual([]);
+    expect(result.capacityPressureEarlyReclaimedTaskIds).toEqual(['faa-1']);
+    expect(task.status).toBe('completed');
+  });
+
+  it('without the ack-reaper coordinator wired, the soft TTL closes at 5m as before', async () => {
+    const task = pressureTask();
+    const taskStore = makeLiveStore([task]);
+    const coordinator = new ReapWarningCoordinator();
+    coordinator.advance({
+      taskId: 'faa-1', agentId: 'kookr-faa', silentForMs: 0, now: T0, graceMs: ACK_GRACE_MS, present: false,
+    });
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps: makeLifecycleDeps(taskStore), auditLogPath, isHoldingOpenPr: () => false },
+      { now: NOW, ttlMs: TTL_MS, softTtlMs: SOFT_TTL_MS, capacityAllowsEarlyReclaim: true },
+    );
+
+    expect(result.capacityPressureEarlyReclaimedTaskIds).toEqual(['faa-1']);
+    expect(result.ackGraceHeldTaskIds).toEqual([]);
+  });
+
+  it('the meta auto-complete path also leaves a task under an unexpired ack-reaper warning alone', async () => {
+    const META_TTL = 12 * 60_000;
+    const task = makeFaaTask({
+      id: 'meta-1',
+      playbookId: 'cross-repo-orchestrator.md',
+      name: 'Cross-Repo Autonomous Orchestrator',
+      sessions: [aSession({ tmuxSession: 'kookr-meta', lastStatus: 'inProgress', lastTurnState: 'completed_turn' })],
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(T0 - META_TTL - 60_000).toISOString(),
+        source: 'http',
+      },
+    });
+    const taskStore = makeLiveStore([task]);
+    const coordinator = new ReapWarningCoordinator();
+    coordinator.advance({
+      taskId: 'meta-1', agentId: 'kookr-meta', silentForMs: 0, now: T0, graceMs: ACK_GRACE_MS, present: false,
+    });
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps: makeLifecycleDeps(taskStore),
+        auditLogPath,
+        // Unknown PR state: the strict path skips it; only the meta path could close it.
+        isHoldingOpenPr: () => undefined,
+        ackReapWarnings: coordinator,
+      },
+      { now: NOW, ttlMs: TTL_MS, metaAutoCompleteTtlMs: META_TTL },
+    );
+
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(result.ackGraceHeldTaskIds).toEqual(['meta-1']);
+    expect(task.status).toBe('inProgress');
   });
 });
