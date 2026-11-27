@@ -14,7 +14,14 @@
  *
  * Limits keep one question from running away: at most four model calls, a time limit
  * and a token limit. When one is reached she says so in one fixed sentence, so the
- * operator never waits on a turn that will not end.
+ * operator never waits on a turn that will not end. A model that sends nothing for
+ * `firstTokenMs` is given up on, as if it had failed.
+ *
+ * When the model fails on the first call (an error from the provider, nothing sent in time, or the
+ * circuit breaker of `model-health.ts` refusing the call), the turn still answers: with a sentence
+ * saying the model is not answering, then what the opening briefing says, written without the model
+ * from the board. That reply is marked `source: 'board'` on the closing event. A failure after look-ups
+ * ran ends the turn with `error` and the same sentence.
  *
  * The loop has no I/O of its own. The model and the look-ups are ports, so it runs the
  * same against OpenRouter and against a script in tests.
@@ -24,7 +31,9 @@ import type { LucyTurnDoneEvent, LucyTurnEnd, LucyTurnEvent } from '../../shared
 import { redactSpeechSecrets } from '../task-speech-summary.js';
 import { boardText, buildLucyBoard, MAX_BOARD_CHARS } from './board.js';
 import { buildUnpromptedNote, type LucyUnpromptedSaid } from './unprompted.js';
-import { LucyModelError, type LucyChatMessage, type LucyModelPort, type LucyToolCall } from './model-port.js';
+import { LucyModelError, type LucyChatMessage, type LucyModelEvent, type LucyModelPort, type LucyToolCall } from './model-port.js';
+import { plainFailureReason } from './model-failure.js';
+import { buildOperatorBriefing, type OperatorBriefingInput } from './operator-briefing.js';
 import { buildLucyOperatorPrompt, LUCY_CAP_SENTENCES } from './prompt.js';
 import { dispatchLucyTool, displayToolArgs, LUCY_LOOK_TOOLS, type LucyLookSource, type LucyToolOutcome } from './tools.js';
 import { LUCY_PROPOSE_LAUNCH, type LucyLaunchPort } from './launch-tool.js';
@@ -36,6 +45,11 @@ export interface LucyTurnLimits {
   maxSteps: number;
   /** Longest a turn may run, in milliseconds. */
   maxMs: number;
+  /**
+   * How long one model call may send nothing (no text and no look-up) before it is abandoned and treated
+   * as a failure, in milliseconds. `0` switches it off.
+   */
+  firstTokenMs: number;
   /** Most tokens (read plus written, summed over the model calls) before no further call is made. */
   maxTokens: number;
   /** Most tokens the model may write in one call, reasoning included. */
@@ -47,6 +61,7 @@ export interface LucyTurnLimits {
 export const DEFAULT_LUCY_TURN_LIMITS: LucyTurnLimits = {
   maxSteps: 4,
   maxMs: 30_000,
+  firstTokenMs: 8_000,
   maxTokens: 40_000,
   maxOutputTokensPerStep: 1500,
   maxToolCallsPerStep: 4,
@@ -77,6 +92,16 @@ export interface LucyTurnDeps {
   /** Present when she may act on existing tasks: she then has `propose_answer`, `propose_reply` and `propose_close`. */
   actions?: LucyActionPort;
   limits?: Partial<LucyTurnLimits>;
+  /**
+   * The same facts the opening briefing is built from. When present, a turn whose first model call fails
+   * is answered from them, without the model. When absent, such a turn ends with `error`.
+   */
+  briefing?: () => OperatorBriefingInput;
+  /**
+   * Told of a model call the turn abandoned itself (nothing arrived within `firstTokenMs`), which the
+   * model port cannot see: its own request was simply cancelled. Failures the port raises are the port's to record.
+   */
+  onModelFailure?: (err: LucyModelError) => void;
   now?: () => number;
   /** Receives the detail of a model failure for the server log. It may quote the provider, so it is never sent to a client. */
   warn?: (message: string) => void;
@@ -119,23 +144,20 @@ export interface LucyTurnSummary {
   done: LucyTurnDoneEvent;
 }
 
-/** What to tell the operator when the model call failed. Never includes the provider's own error text. */
-function plainReason(err: unknown): string {
-  if (!(err instanceof LucyModelError)) return 'Something went wrong while preparing the answer.';
-  switch (err.kind) {
-    case 'http':
-      if (err.status === 401 || err.status === 402 || err.status === 403) return 'The model provider refused the request. Check the OpenRouter key and its credit.';
-      if (err.status === 429) return 'The model provider is limiting requests right now.';
-      return 'The model provider returned an error.';
-    case 'network':
-      return 'The model provider could not be reached.';
-    case 'timeout':
-      return 'The model stopped responding.';
-    case 'aborted':
-      return 'The request was cancelled.';
-    case 'bad-response':
-    case 'provider':
-      return 'The model provider returned an error.';
+/** What she cannot do while her model is away. Said only when the operator's words look like a request to act. */
+const CANNOT_ACT_SENTENCE = 'I cannot launch, answer, reply or close anything until my language model is back.';
+const ACTION_WORDS_RE = /\b(launch|start|spawn|run|answer|reply|respond|close|stop|kill|cancel|approve|deny|send|merge)\b/i;
+
+/**
+ * The reply written without the model: the failure sentence, then the briefing from the board. Null when
+ * the briefing could not be built, so the turn then ends with `error` as it did before.
+ */
+function boardReply(reason: string, asked: string, briefing: () => OperatorBriefingInput, nowMs: number): string | null {
+  try {
+    const board = buildOperatorBriefing(briefing(), nowMs).text;
+    return [reason, `From the board: ${board}`, ...(ACTION_WORDS_RE.test(asked) ? [CANNOT_ACT_SENTENCE] : [])].join(' ');
+  } catch {
+    return null;
   }
 }
 
@@ -176,13 +198,14 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
   };
   /** A new stretch of text (a later model call, or a cap sentence) must not run into the previous one. */
   const joined = (delta: string): string => (answer && !/\s$/.test(answer) ? ` ${delta}` : delta);
-  const summary = (end: LucyTurnEnd, reason?: string): LucyTurnSummary => ({
+  const summary = (end: LucyTurnEnd, reason?: string, source?: 'board'): LucyTurnSummary => ({
     answer,
     tools,
     done: {
       type: 'done',
       end,
       ...(reason ? { reason } : {}),
+      ...(source ? { source } : {}),
       firstTextMs,
       totalMs: Math.max(0, now() - startedAt),
       steps,
@@ -196,7 +219,7 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
 
   /** The summary the turn ended with; unset while it runs, and when the caller stops reading early. */
   let settled: LucyTurnSummary | undefined;
-  const end = (kind: LucyTurnEnd, reason?: string): LucyTurnSummary => (settled = summary(kind, reason));
+  const end = (kind: LucyTurnEnd, reason?: string, source?: 'board'): LucyTurnSummary => (settled = summary(kind, reason, source));
   /** Resolves when the turn is cancelled (the caller left, or the time limit passed), so a slow look-up cannot hold it. */
   const cancelled = new Promise<null>((resolve) => {
     if (controller.signal.aborted) resolve(null);
@@ -253,18 +276,45 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
       steps += 1;
       let stepText = '';
       const calls: LucyToolCall[] = [];
+      // This call has its own signal so the first-token deadline can cancel it without ending the turn.
+      const stepController = new AbortController();
+      const onTurnAbort = (): void => stepController.abort();
+      if (controller.signal.aborted) stepController.abort();
+      else controller.signal.addEventListener('abort', onTurnAbort, { once: true });
+      let firstTokenSeen = false;
+      let firstTokenExpired = false;
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<'deadline'>((resolve) => {
+        if (limits.firstTokenMs <= 0) return;
+        deadlineTimer = setTimeout(() => {
+          if (firstTokenSeen) return;
+          firstTokenExpired = true;
+          stepController.abort();
+          resolve('deadline');
+        }, limits.firstTokenMs);
+      });
+      let iterator: AsyncIterator<LucyModelEvent> | undefined;
       try {
-        for await (const event of deps.model({
+        iterator = deps.model({
           messages,
           tools: offered,
           maxOutputTokens: limits.maxOutputTokensPerStep,
-          signal: controller.signal,
-        })) {
+          signal: stepController.signal,
+        })[Symbol.asyncIterator]();
+        for (;;) {
+          const pending = iterator.next();
+          pending.catch(() => {}); // when the deadline wins the race, a later failure of this read is not news
+          const next = firstTokenSeen ? await pending : await Promise.race([pending, deadline]);
+          if (next === 'deadline') throw new LucyModelError('timeout', `no first token within ${limits.firstTokenMs}ms`, undefined, { firstTokenAfterMs: limits.firstTokenMs });
+          if (next.done) break;
+          const event = next.value;
           if (event.type === 'text') {
             if (!event.delta) continue;
+            firstTokenSeen = true;
             yield textEvent(stepText ? event.delta : joined(event.delta));
             stepText += event.delta;
           } else if (event.type === 'tool_call') {
+            firstTokenSeen = true;
             calls.push(event.call);
           } else {
             inputTokens += event.usage.inputTokens;
@@ -280,11 +330,29 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
           yield result.done;
           return result;
         }
+        // When the deadline fired, the failure is ours whatever the cancelled request then threw.
+        const failure = firstTokenExpired ? new LucyModelError('timeout', `no first token within ${limits.firstTokenMs}ms`, undefined, { firstTokenAfterMs: limits.firstTokenMs }) : err;
+        if (firstTokenExpired) deps.onModelFailure?.(failure as LucyModelError);
         // The provider's own words may echo part of the request, so secrets are hidden before they are logged.
-        deps.warn?.(redactSpeechSecrets(`model call failed at step ${steps}: ${err instanceof Error ? err.message : String(err)}`));
-        const result = end('error', plainReason(err));
+        deps.warn?.(redactSpeechSecrets(`model call failed at step ${steps}: ${failure instanceof Error ? failure.message : String(failure)}`));
+        const reason = plainFailureReason(failure);
+        // On the first call, with nothing said yet, she still answers from the board. Later, or after
+        // some words were already said, an error cannot be papered over, so the turn ends with it.
+        const fromBoard = steps === 1 && !answer && deps.briefing ? boardReply(reason, input.text, deps.briefing, now()) : null;
+        if (fromBoard) {
+          yield textEvent(fromBoard);
+          const result = end('answered', reason, 'board');
+          yield result.done;
+          return result;
+        }
+        const result = end('error', reason);
         yield result.done;
         return result;
+      } finally {
+        clearTimeout(deadlineTimer);
+        controller.signal.removeEventListener('abort', onTurnAbort);
+        // Stops a call that is still running (the deadline, or the caller leaving); an already finished one ignores it.
+        iterator?.return?.()?.catch(() => {});
       }
 
       if (calls.length === 0) {

@@ -14,7 +14,9 @@ import type { LucyOperatorRouteDeps } from '../routes/lucy-operator-routes.js';
 import type { RouteDeps } from '../routes/shared.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { renderTerminalScreenTextIsolated } from '../terminal-snapshot-worker.js';
+import { createLucyModelHealth } from '../../core/lucy-operator/model-health.js';
 import { createLucyLookSource } from './look-source.js';
+import { operatorBriefingInput } from './briefing-source.js';
 import { createLucyOperator } from './service.js';
 import { buildLucyLaunchController, selectLaunchableProjects } from './launch-wiring.js';
 import { buildLucyActionController, type LucyActionWiring } from './action-wiring.js';
@@ -70,7 +72,10 @@ export function buildLucyOperator(deps: RouteDeps, wiring: LucyActionWiring = {}
   if (!config || !config.enabled) return undefined;
   if (!config.ok) return { unavailableReason: config.reason };
 
-  const model = createOpenRouterChatStream(config.model);
+  // One breaker and one health record for every call to her model: the conversation and the writers of a
+  // launch, a reply and an answer reach the same provider, so a dead one is noticed once for all of them.
+  const modelHealth = deps.lucyModelHealth ?? createLucyModelHealth();
+  const model = modelHealth.guard(createOpenRouterChatStream(config.model));
   // Launching is a second switch: she can answer questions without ever being able to propose a task.
   // The same switch lets her act on existing tasks (answer a question, reply, close). One card is on
   // screen for all of her proposals, so each holder clears the other's card when it makes a new one.
@@ -84,6 +89,13 @@ export function buildLucyOperator(deps: RouteDeps, wiring: LucyActionWiring = {}
     model,
     modelName: config.model.model,
     source: buildLucyLookSource(deps, { launching: Boolean(config.launch) }),
+    // The facts of the opening briefing (the same ones its route reads): her answer when the model is not.
+    briefing: () => operatorBriefingInput(
+      deps.taskStore.viewTasks(),
+      deps.queue.inspectActive(),
+      deps.asks?.service ? listOperatorAsks(deps.asks.service.all(), Date.now(), (taskId) => deps.taskStore.getTask(taskId)?.name, (taskId) => deps.taskStore.getTask(taskId)?.status) : [],
+    ),
+    onModelFailure: (err) => modelHealth.recordFailure(err),
     ...(launch ? { launch } : {}),
     ...(actions ? { actions } : {}),
     log: deps.lucyInteractionLog,

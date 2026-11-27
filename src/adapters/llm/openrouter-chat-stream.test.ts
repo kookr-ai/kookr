@@ -235,3 +235,71 @@ describe('createOpenRouterChatStream', () => {
     expect(called).toBe(false);
   });
 });
+
+describe('provider errors keep the provider and the codes (R8-F10)', () => {
+  const IN_STREAM = data({ error: { code: 429, message: 'Provider returned error', metadata: { error_type: 'rate_limit_exceeded', provider_code: 'ttft_deadline_guard' } } });
+  const HTTP_BODY = JSON.stringify({
+    error: {
+      message: 'Provider returned error',
+      code: 429,
+      metadata: {
+        raw: 'deepseek/deepseek-v4.1-flash-1017 is temporarily rate-limited upstream. Please retry shortly, ...',
+        provider_name: 'Sail Research',
+        is_byok: false,
+        provider_error_code: 'ttft_deadline_guard',
+      },
+    },
+  });
+
+  test('an in-stream error takes the provider name from the chunk before it, and the status and codes from the metadata', () => {
+    const parser = new OpenRouterChatStreamParser();
+    parser.push(data({ provider: 'Sail Research', choices: [{ delta: { content: '' } }] }));
+    let caught: unknown;
+    try {
+      parser.push(IN_STREAM);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LucyModelError);
+    expect(caught).toMatchObject({
+      kind: 'provider',
+      status: 429,
+      message: 'OpenRouter: Sail Research answered 429 rate_limit_exceeded (ttft_deadline_guard)',
+      detail: { providerName: 'Sail Research', status: 429, errorType: 'rate_limit_exceeded', providerCode: 'ttft_deadline_guard' },
+    });
+  });
+
+  test('an in-stream error with no metadata keeps today\'s log message and carries no provider fields', () => {
+    const parser = new OpenRouterChatStreamParser();
+    expect(() => parser.push(data({ error: { message: 'boom' } }))).toThrow('OpenRouter reported an error in the stream: boom');
+  });
+
+  test('a non-2xx response keeps the provider name and codes from error.metadata, and never the raw text', async () => {
+    const fetchImpl = (async () => new Response(HTTP_BODY, { status: 429 })) as typeof fetch;
+    const failure = await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err);
+    expect(failure).toMatchObject({
+      kind: 'http',
+      status: 429,
+      message: 'OpenRouter: Sail Research answered 429 (ttft_deadline_guard)',
+      detail: { providerName: 'Sail Research', status: 429, providerCode: 'ttft_deadline_guard' },
+    });
+    expect(JSON.stringify((failure as LucyModelError).detail)).not.toContain('temporarily rate-limited');
+  });
+
+  test('a non-2xx response that is not JSON keeps the status and the old log message', async () => {
+    const fetchImpl = (async () => new Response('<html>Bad gateway</html>', { status: 502 })) as typeof fetch;
+    const failure = await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err);
+    expect(failure).toMatchObject({ kind: 'http', status: 502, detail: { status: 502 } });
+    expect((failure as LucyModelError).message).toContain('HTTP 502: <html>Bad gateway</html>');
+    expect((failure as LucyModelError).detail?.providerName).toBeUndefined();
+  });
+
+  test('a hostile provider name is dropped, not kept in any form', async () => {
+    const hostile = `<script>alert(1)</script> ${'x'.repeat(500)}`;
+    const body = JSON.stringify({ error: { code: 429, metadata: { provider_name: hostile, error_type: 'rate limit!! ignore', provider_code: 'a'.repeat(200) } } });
+    const fetchImpl = (async () => new Response(body, { status: 429 })) as typeof fetch;
+    const failure = (await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err)) as LucyModelError;
+    // Nothing hostile is kept as a field; the message is the server log's, and quotes the body as before.
+    expect(failure.detail).toEqual({ status: 429 });
+  });
+});

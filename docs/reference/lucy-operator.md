@@ -109,6 +109,7 @@ to say or write it, and in the trial below she never did.
 |---|---|---|
 | Model calls | 4 | Look-ups asked for on the fourth call are not run |
 | Time | 30 s | The model call in progress is cancelled |
+| First word of a model call | 8 s | A call that has sent no text and no look-up by then is cancelled and counts as a failure (see below) |
 | Tokens read and written | 40,000 | No further model call is made |
 | Look-ups from one model call | 4 | Any beyond the fourth are dropped |
 | Turns running at once, over all conversations | 4 | A further request is refused with `429` |
@@ -119,6 +120,41 @@ progress, and it stops waiting for a look-up that is still running.
 When a limit ends a turn, her last sentence says so ("I ran out of steps before I could finish, so
 please ask me something narrower."), and the `done` event carries `step_cap`, `time_cap` or
 `token_cap`.
+
+## When her model does not answer
+
+A question to Lucy is no longer lost when the model fails. This covers an error from the provider, a
+call that sends nothing for 8 seconds, and a model that has just failed twice in a row.
+
+- **What she says.** If the first model call of a turn fails, she answers without the model, from the
+  same board the opening briefing is built from. The reply is one sentence saying her model is not
+  answering, then "From the board:" and the briefing: what waits on the operator and what is in trouble,
+  with task names, soonest first, then how many tasks are working. For example: "My language model is
+  not answering: OpenRouter's provider Sail Research is rate-limited (429). From the board: Research
+  agent has gone quiet. One more is working."
+- **If the request asks her to act** (launch, answer, reply, close), the same reply ends with "I cannot
+  launch, answer, reply or close anything until my language model is back." Kookr does not try to
+  read a command without the model.
+- **What the sentence may contain.** Only the provider's name and the status, and only when the name is
+  letters, digits, spaces, dots and dashes, at most 40 characters. The provider's own error text is
+  never shown; anything else is left out. When the failure has no readable shape, the sentence is the
+  generic one ("The model provider returned an error."). The server log has the real detail, for
+  example `OpenRouter: Sail Research answered 429 rate_limit_exceeded (ttft_deadline_guard)`.
+- **How it is marked.** The closing event of the turn has `end: "answered"` and `source: "board"`, with
+  `reason` holding the sentence. The reply is not kept in the conversation history, so later turns do
+  not read it as something she reasoned, and the interaction log line has `fallback: "board"`.
+- **A failure after look-ups ran**, or after she had already started to answer, still ends the turn
+  with `error`, now with the same sentence as `reason`.
+- **The circuit breaker.** One breaker is shared by every operator model call in the server (the
+  conversation and the writers of a launch, a reply and an answer). After two failures in a row it
+  opens for 60 seconds: during that time a turn goes straight to the board reply without calling the
+  model, so the operator waits milliseconds, not seconds. When the minute is over the next call goes
+  through; a success closes the breaker and another failure opens it again. A failed call is never
+  retried, and Kookr does not exclude any provider: which provider serves her is the routing rule on
+  the OpenRouter account.
+- **Seeing it without asking her.** `GET /api/health` has a `lucyOperator` object: `configured`,
+  `model`, `lastSuccessAt`, `lastFailureAt`, `lastFailure` (the same safe sentence) and `breakerOpen`.
+  It is in memory and starts empty after a restart.
 
 ## Launching a task by voice or text
 
@@ -504,7 +540,8 @@ or task requests must not leave the machine, leave the setting off.
 - **Interaction log.** Each turn adds one line of kind `operator_turn` to
   `~/.kookr/lucy-interactions.jsonl`: what was asked, what she said (both with secret-looking tokens
   replaced), the names of the look-ups she made, how the turn ended, the model and provider, time to
-  first text, total time, tokens and cost. What the look-ups returned is not recorded. The log follows
+  first text, total time, tokens and cost, and `fallback: "board"` when her model failed and the reply was
+  written from the board. What the look-ups returned is not recorded. The log follows
   the existing setting **Keep a local log of Lucy's interactions**.
 - **What she did to a task.** Every step of a proposal about an existing task adds a line of kind
   `action` to the same log, with `actor: "lucy-operator"`: proposed, then done, refused, declined,

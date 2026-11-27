@@ -56,6 +56,7 @@ import { registerLucyOperatorRoutes } from './routes/lucy-operator-routes.js';
 import { registerLucyPermissionRoutes } from './routes/lucy-permission-routes.js';
 import { registerLucyBriefingRoutes } from './routes/lucy-briefing-routes.js';
 import { operatorBriefingInput } from './lucy-operator/briefing-source.js';
+import { createLucyModelHealth } from '../core/lucy-operator/model-health.js';
 import { listOperatorAsks } from '../core/operator-asks.js';
 import { buildLucyOperator } from './lucy-operator/create-lucy-operator.js';
 import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
@@ -135,6 +136,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     ...(deps.issueClaims ? { issueClaimRegistry: deps.issueClaims.registry } : {}),
     requestDurationMetrics,
     controlPlaneLatencyMetrics,
+    lucyModelHealth: deps.lucyModelHealth ?? createLucyModelHealth(),
     coordinatorSuppressions:
       deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),
     // Shared lesson-yield cache so /api/health and /metrics see the same

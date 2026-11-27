@@ -28,6 +28,7 @@ import {
   type LucyModelUsage,
   type LucyToolCall,
 } from '../../core/lucy-operator/model-port.js';
+import { modelErrorDetailFrom, modelErrorLogLine } from '../../core/lucy-operator/model-failure.js';
 
 export const LUCY_OPERATOR_REASONING_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 export type LucyOperatorReasoning = (typeof LUCY_OPERATOR_REASONING_LEVELS)[number];
@@ -143,7 +144,7 @@ export class OpenRouterChatStreamParser {
     }
     if (typeof json !== 'object' || json === null) return;
     const chunk = json as {
-      error?: { message?: unknown; code?: unknown };
+      error?: { message?: unknown; code?: unknown; metadata?: unknown };
       provider?: unknown;
       usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown };
       choices?: Array<{
@@ -155,11 +156,15 @@ export class OpenRouterChatStreamParser {
       }>;
     };
 
-    if (chunk.error) {
-      const detail = typeof chunk.error.message === 'string' ? chunk.error.message : 'unknown error';
-      throw new LucyModelError('provider', `OpenRouter reported an error in the stream: ${detail.slice(0, MAX_LOGGED_ERROR_CHARS)}`);
-    }
     if (typeof chunk.provider === 'string' && chunk.provider) this.provider = chunk.provider;
+    if (chunk.error) {
+      // The provider's name and status are kept as short checked fields (what the operator may be told);
+      // its message is only ever quoted in the server log, and only when no field could be read.
+      const errorDetail = modelErrorDetailFrom({ status: chunk.error.code, provider: this.provider, metadata: chunk.error.metadata });
+      const text = typeof chunk.error.message === 'string' ? chunk.error.message : 'unknown error';
+      const line = modelErrorLogLine(errorDetail) ?? `OpenRouter reported an error in the stream: ${text.slice(0, MAX_LOGGED_ERROR_CHARS)}`;
+      throw new LucyModelError('provider', line, errorDetail.status, errorDetail);
+    }
     if (chunk.usage) {
       this.usage = {
         inputTokens: finiteNumber(chunk.usage.prompt_tokens) ?? this.usage.inputTokens,
@@ -248,8 +253,17 @@ async function* streamOnce(
     }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      // For the server log only (the loop never forwards this message). The key is in a header, never the body.
-      throw new LucyModelError('http', `OpenRouter returned HTTP ${res.status}: ${body.slice(0, MAX_LOGGED_ERROR_CHARS)}`, res.status);
+      // The message is for the server log only (the loop never forwards it). The key is in a header, never the body.
+      // The body's `error.metadata` gives the provider's name and codes, kept as short checked fields.
+      let metadata: unknown;
+      try {
+        metadata = (JSON.parse(body) as { error?: { metadata?: unknown } } | null)?.error?.metadata;
+      } catch {
+        // Not JSON (a proxy's page): there is nothing to read.
+      }
+      const errorDetail = modelErrorDetailFrom({ status: res.status, metadata });
+      const line = errorDetail.providerName || errorDetail.errorType || errorDetail.providerCode ? modelErrorLogLine(errorDetail) : null;
+      throw new LucyModelError('http', line ?? `OpenRouter returned HTTP ${res.status}: ${body.slice(0, MAX_LOGGED_ERROR_CHARS)}`, res.status, errorDetail);
     }
     if (!res.body) throw new LucyModelError('bad-response', 'OpenRouter response has no body');
 
