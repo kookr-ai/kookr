@@ -250,6 +250,15 @@ describe('buildLucyLiveBriefing: questions from tasks (kookr ask)', () => {
     expect(text).toContain('Outcome: it expired with no answer 4 minutes ago.');
   });
 
+  it('names Kookr as the asker of its own question, and says what was done when nobody answered', () => {
+    const text = buildLucyLiveBriefing(tasks, NOW, [
+      ask({ id: 's', taskId: 'system:interrupted-tasks', taskName: undefined, system: 'interrupted-tasks', question: 'Kookr restarted and found 4 interrupted tasks. Resume them?', state: 'expired', resolvedAt: NOW - 60_000, defaultOption: 'Resume', expiryOutcome: 'No answer, so the 4 tasks were resumed.' }),
+    ]);
+    expect(text).toContain('- Kookr asked');
+    expect(text).not.toContain('A task asked');
+    expect(text).toContain('Outcome: it expired with no answer 1 minute ago; No answer, so the 4 tasks were resumed.');
+  });
+
   it('keeps the questions when a long task list is cut, and still works with no tasks', () => {
     const many: BriefingTask[] = Array.from({ length: 200 }, (_, i) => ({ name: `Task number ${i} with a fairly long name`, status: 'inProgress' as const, updatedAt: ago(i) }));
     const text = buildLucyLiveBriefing(many, NOW, [ask()]);

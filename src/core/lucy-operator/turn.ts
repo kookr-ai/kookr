@@ -154,13 +154,18 @@ const ACTION_VERBS = 'launch|start|spawn|run|answer|reply|respond|close|stop|kil
 /** An action word counts only as the first word, or right after a polite lead-in: "close the finished ones", "can you launch a task". */
 const ACTION_REQUEST_RE = new RegExp(`^\\W*(?:(?:lucy|can you|could you|would you|will you|please|go ahead and|i want you to)[\\s,]+)*(?:${ACTION_VERBS})\\b`, 'i');
 
+/** What the board reply says when the briefing has nothing to report. */
+const NOTHING_ON_THE_BOARD = 'Nothing is waiting on you and no task is in trouble.';
+
 /**
  * The reply written without the model: the failure sentence, then the briefing from the board. Null when
  * the briefing could not be built, so the turn then ends with `error` as it did before.
  */
 function boardReply(reason: string, asked: string, briefing: () => OperatorBriefingInput, nowMs: number): string | null {
   try {
-    const board = buildOperatorBriefing(briefing(), nowMs).text;
+    // The briefing has no text when nothing waits and nothing is in trouble (it writes nothing rather than
+    // an all-clear line). A reply to a question the operator typed still has to say so.
+    const board = buildOperatorBriefing(briefing(), nowMs).text.trim() || NOTHING_ON_THE_BOARD;
     return [reason, `From the board: ${board}`, ...(ACTION_REQUEST_RE.test(asked) ? [CANNOT_ACT_SENTENCE] : [])].join(' ');
   } catch {
     return null;

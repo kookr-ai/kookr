@@ -12,11 +12,15 @@
  *     that stalled or lost contact, tasks that say they are finished and want a review;
  *  2. questions left by tasks that have already ended (an opinion is wanted, nothing waits on it);
  *  3. how many tasks are working.
- * When nothing needs them it is one all-clear line.
+ * When nothing needs them she writes nothing: the text is empty, and the panel adds no entry.
  *
- * A task is named only when its title may be said aloud (short, complete, no path, id or secret:
- * the rules of `spokenLabel`); otherwise it is counted. Ids, paths, prompts and the text of a
- * question never appear. The text is at most {@link MAX_OPERATOR_BRIEFING_WORDS} words: when
+ * Every sentence names its task when it can: a question reads "<task> is stopped on a question, 117
+ * minutes left." (the one that closes soonest is named, the others counted), and a question Kookr asks
+ * itself reads "Kookr is waiting for your answer about the interrupted tasks." A task is named only
+ * when its title may be said aloud (no path, id or secret: the rules of `spokenLabel`), cut to its
+ * first words when it is only too long ({@link sayableTaskName}); otherwise it is counted. Ids, paths,
+ * prompts and the text of a question never appear: an agent cannot shape her sentence, and the card
+ * has the question. The text is at most {@link MAX_OPERATOR_BRIEFING_WORDS} words: when
  * there is more to say than fits, the least urgent needs are counted in one closing sentence.
  */
 
@@ -24,7 +28,10 @@ import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { OperatorAttentionKind } from './attention.js';
+import { isGenericTaskName, spokenTaskName } from '../spoken-task-name.js';
+import { redactedTaskName, redactSpeechSecrets } from '../task-speech-summary.js';
 import { orderPendingAsks, spokenLabel } from './board.js';
+import { cleanTaskText } from './task-text.js';
 
 /** The task fields the briefing reads. The server maps its task record and the findings onto this. */
 export interface OperatorBriefingTask {
@@ -76,10 +83,53 @@ function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
-/** The task's title when it may be said aloud, otherwise undefined. The same rules as the board's names. */
+/** A title too long to be said whole is shortened to at most this many of its first words. */
+export const SHORTENED_NAME_WORDS = 4;
+/**
+ * Only a title up to this long is shortened. Beyond it the title is a request pasted in as a name
+ * ("can you check which of the tasks is terminated unexpectedly..."), and its first words would read
+ * as a broken sentence, so the task is counted instead.
+ */
+const MAX_SHORTENABLE_WORDS = 9;
+const MAX_SHORTENABLE_CHARS = 64;
+/** A cut shorter than this names too little to be worth writing. */
+const MIN_CUT_CHARS = 10;
+/** Words dropped from the end of a shortened title, unless too little would be left: they begin a phrase that the cut removed. */
+const DANGLING_WORDS: ReadonlySet<string> = new Set(['a', 'an', 'the', 'of', 'for', 'to', 'in', 'on', 'with', 'and', 'or']);
+
+/**
+ * The task's title as she may write it, otherwise undefined. A title that may be said whole (the rules
+ * of `spokenLabel`) is returned as it is. A title that is only too long ("Test Inkling 2 Mini Unsloth
+ * Context Throughput") is cut to at most its first {@link SHORTENED_NAME_WORDS} words (a request pasted
+ * in as a title is not: see {@link MAX_SHORTENABLE_WORDS}), because a line that names nothing is worse
+ * than one that names the start of the title. The cut drops trailing words such as "for" and "the"
+ * ({@link DANGLING_WORDS}), unless that would leave fewer than two other words or fewer than
+ * {@link MIN_CUT_CHARS} characters ("Port it to an ARM build box" would become "Port it"); then the
+ * first four words are kept as they are. Four words that are all such words name nothing: undefined. The cut text goes through the same
+ * cleaning and the same checks again, since a cut can leave a half-token or a cut-off phrase; a title
+ * that still fails (an identifier, a path, a secret, a word of 40 letters) gives undefined.
+ */
 export function sayableTaskName(name: string | undefined): string | undefined {
   const label = spokenLabel({ name });
-  return label.startsWith('"') && label.length > 2 ? label.slice(1, -1) : undefined;
+  if (label.startsWith('"') && label.length > 2) return label.slice(1, -1);
+  const cleaned = redactedTaskName(name === undefined ? undefined : cleanTaskText(name));
+  if (!cleaned) return undefined;
+  // Markup characters are not words: a title made of them is not shortened into a name.
+  if (/[<>`]/.test(cleaned)) return undefined;
+  const words = cleaned.split(' ');
+  // A title already this short that still failed is cut off, unpronounceable or too long in letters: not shortened.
+  if (words.length <= SHORTENED_NAME_WORDS || words.length > MAX_SHORTENABLE_WORDS || cleaned.length > MAX_SHORTENABLE_CHARS) return undefined;
+  // Trailing words that lead into the next one are dropped ("Add support for"), unless too little would be left.
+  const dangling = (word: string): boolean => DANGLING_WORDS.has(word.replace(/[,;:.…]+$/u, '').toLowerCase());
+  const firstWords = words.slice(0, SHORTENED_NAME_WORDS);
+  if (firstWords.every(dangling)) return undefined;
+  const kept = [...firstWords];
+  while (kept.length > 0 && dangling(kept[kept.length - 1]!)) kept.pop();
+  const tooLittle = kept.filter((word) => !dangling(word)).length < 2 || kept.join(' ').length < MIN_CUT_CHARS;
+  const cut = redactSpeechSecrets((tooLittle ? firstWords : kept).join(' ').replace(/[\s,;:\-–—.…]+$/u, ''));
+  if (!cut) return undefined;
+  const spoken = spokenTaskName(cut);
+  return isGenericTaskName(spoken) ? undefined : spoken;
 }
 
 /** The groups of tasks that wait on the operator, in the order they are told. */
@@ -128,12 +178,15 @@ interface Need {
   taskId: string;
   name?: string;
   kind: OperatorAttentionKind;
+  /** For a question: when it closes, and the Kookr component that asks it when no task does. */
+  expiresAt?: number;
+  system?: string;
 }
 
 interface BriefingState {
   needs: Record<NeedGroup, Need[]>;
-  /** The name of the task whose question closes first, when it may be said. */
-  firstToClose?: string;
+  /** The time the briefing is for, for the time left on a question. */
+  nowMs: number;
   /** The pending questions a task is still waiting on. */
   blockingAskIds: string[];
   /** Pending questions whose task has ended. */
@@ -154,9 +207,14 @@ function readState(input: OperatorBriefingInput, nowMs: number): BriefingState {
   for (const ask of blocking) {
     if (asking.has(ask.taskId)) continue;
     asking.add(ask.taskId);
-    needs.question.push({ taskId: ask.taskId, name: sayableTaskName(ask.taskName ?? taskById.get(ask.taskId)?.name), kind: 'asked_question' });
+    needs.question.push({
+      taskId: ask.taskId,
+      // The text of the question is never read here, only who asks it and when it closes.
+      ...(ask.system === undefined ? { name: sayableTaskName(ask.taskName ?? taskById.get(ask.taskId)?.name) } : { system: ask.system }),
+      kind: 'asked_question',
+      expiresAt: ask.expiresAt,
+    });
   }
-  const firstToClose = blocking.length > 0 ? needs.question[0]?.name : undefined;
 
   let working = 0;
   let recentlyEnded = 0;
@@ -172,11 +230,44 @@ function readState(input: OperatorBriefingInput, nowMs: number): BriefingState {
       working += 1;
     }
   }
-  return { needs, ...(firstToClose ? { firstToClose } : {}), blockingAskIds: blocking.map((ask) => ask.id), opinions, working, recentlyEnded };
+  return { needs, nowMs, blockingAskIds: blocking.map((ask) => ask.id), opinions, working, recentlyEnded };
+}
+
+/** What Kookr is asking about, for each component that asks. A component not listed is asked about without a subject. */
+const SYSTEM_SUBJECTS: Readonly<Record<string, string>> = { 'interrupted-tasks': 'the interrupted tasks' };
+
+/** "117 minutes left": the time a question has before it closes, in the unit that reads naturally. */
+export function timeLeftWords(msLeft: number): string {
+  const minutes = Math.ceil(msLeft / 60_000);
+  if (minutes < 1) return 'less than a minute left';
+  if (minutes === 1) return '1 minute left';
+  if (minutes <= 180) return `${minutes} minutes left`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `about ${hours} hours left`;
+  return `about ${Math.round(hours / 24)} days left`;
+}
+
+/** The questions: the one that closes soonest is named with its time left, the others are counted. */
+function questionSentence(questions: readonly Need[], nowMs: number): string {
+  const [soonest, ...others] = questions;
+  const left = soonest!.expiresAt !== undefined ? `, ${timeLeftWords(soonest!.expiresAt - nowMs)}` : '';
+  let head: string;
+  if (soonest!.system !== undefined) {
+    const subject = SYSTEM_SUBJECTS[soonest!.system];
+    head = `Kookr is waiting for your answer${subject ? ` about ${subject}` : ''}${left}.`;
+  } else if (soonest!.name) {
+    head = `${soonest!.name} is stopped on a question${left}.`;
+  } else {
+    head = `One task is stopped on a question${left}.`;
+  }
+  if (others.length === 0) return head;
+  const what = others.some((need) => need.system !== undefined) ? 'waiting for your answer' : 'stopped on a question';
+  return `${head} ${others.length === 1 ? 'One more is' : `${capital(countWord(others.length))} more are`} ${what}.`;
 }
 
 /** One sentence for a group. `first` is false once an earlier sentence has already spoken of tasks. */
-function groupSentence(group: NeedGroup, tasks: readonly Need[], first: boolean, firstToClose: string | undefined): string {
+function groupSentence(group: NeedGroup, tasks: readonly Need[], first: boolean, nowMs: number): string {
+  if (group === 'question') return questionSentence(tasks, nowMs);
   const words = GROUP_WORDS[group];
   if (tasks.length === 1) {
     const only = tasks[0]!;
@@ -185,8 +276,7 @@ function groupSentence(group: NeedGroup, tasks: readonly Need[], first: boolean,
     return `${first ? 'One task' : 'Another'} ${does}.`;
   }
   const subject = first ? `${capital(countWord(tasks.length))} tasks` : `${capital(countWord(tasks.length))} others`;
-  const tail = group === 'question' && firstToClose ? `; ${firstToClose}'s closes first` : '';
-  return `${subject} ${words.many}${tail}.`;
+  return `${subject} ${words.many}.`;
 }
 
 function opinionSentence(count: number): string {
@@ -207,15 +297,16 @@ function buildText(state: BriefingState): string {
   const opinions = state.opinions.length;
 
   if (needCount === 0) {
-    const lead = opinions > 0 ? 'Nothing is stopped waiting for you.' : 'All clear: nothing needs you.';
-    return [lead, ...(opinions > 0 ? [opinionSentence(opinions)] : []), workingSentence(state.working, false)].join(' ');
+    // Nothing waits and nothing is in trouble: she has nothing to say, and writes nothing.
+    if (opinions === 0) return '';
+    return ['Nothing is stopped waiting for you.', opinionSentence(opinions), workingSentence(state.working, false)].join(' ');
   }
 
   const sentences: string[] = [];
   let used = 0;
   let untold = 0;
   for (const [index, group] of groups.entries()) {
-    const sentence = groupSentence(group, state.needs[group], index === 0, state.firstToClose);
+    const sentence = groupSentence(group, state.needs[group], index === 0, state.nowMs);
     // Room is kept for the sentence that counts what did not fit, unless this is the last group.
     const reserve = index < groups.length - 1 ? 5 : 0;
     if (untold === 0 && used + wordCount(sentence) + reserve <= MAX_OPERATOR_BRIEFING_WORDS) {
@@ -238,6 +329,7 @@ function buildText(state: BriefingState): string {
   return sentences.join(' ');
 }
 
+/** The chips are next moves, never a restatement of the briefing, and at most {@link MAX_OPERATOR_BRIEFING_CHIPS}. */
 function buildChips(state: BriefingState): string[] {
   const { needs } = state;
   const needCount = NEED_ORDER.reduce((n, group) => n + needs[group].length, 0);
@@ -245,11 +337,13 @@ function buildChips(state: BriefingState): string[] {
   if (needs.question.length > 1) chips.push('Walk me through the questions');
   else if (needs.question.length === 1) chips.push('Walk me through the question');
   if (needCount > 1) chips.push('What should I do first?');
-  if (needs.review.length > 0) chips.push('What wants my review?');
-  else if (state.opinions.length > 0) chips.push('Which opinions are wanted?');
-  if (needs.trouble.length > 0) chips.push('What went wrong?');
+  // One named task is already told in the sentence, so only the unnamed or several are worth asking about.
+  const oneReview = needs.review.length === 1 && needs.review[0]!.name !== undefined;
+  if (needs.review.length > 0 && !oneReview) chips.push('What wants my review?');
+  else if (needs.review.length === 0 && state.opinions.length > 0) chips.push('Which opinions are wanted?');
+  const trouble = needs.trouble.length === 1 ? needs.trouble[0]!.name : undefined;
+  if (needs.trouble.length > 0) chips.push(trouble ? `What went wrong with ${trouble}?` : 'What went wrong?');
   if (state.recentlyEnded > 0) chips.push('What finished while I was away?');
-  if (state.working > 0) chips.push('What is everyone working on?');
   return chips.slice(0, MAX_OPERATOR_BRIEFING_CHIPS);
 }
 
@@ -276,5 +370,6 @@ function buildSignature(state: BriefingState): string {
 /** The briefing for the state of the work at `nowMs`. Pure: the same input gives the same result. */
 export function buildOperatorBriefing(input: OperatorBriefingInput, nowMs: number): OperatorBriefing {
   const state = readState(input, nowMs);
-  return { text: buildText(state), chips: buildChips(state), signature: buildSignature(state) };
+  const text = buildText(state);
+  return { text, chips: text ? buildChips(state) : [], signature: buildSignature(state) };
 }

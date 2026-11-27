@@ -26,8 +26,9 @@
  *   that asked for it.
  * - Going over budget is one line per task. The budget checker raises its finding at the project's
  *   warning threshold and again at twice it; the second, inside the ten minutes, is the same kind
- *   for the same task and adds nothing. The line never says an amount: the briefing and the findings
- *   panel carry the numbers. A snoozed task's finding never reaches the attention queue, so it gets
+ *   for the same task and adds nothing. The line says the two amounts the finding carries ("is at
+ *   $51.25, over its $50.00 alert"), and drops them, keeping the name, when either is missing or
+ *   not a positive number: it never writes $0 or NaN. A snoozed task's finding never reaches the attention queue, so it gets
  *   no line. The budget checker's memory, like this one, is lost on a server restart: a running task
  *   already over budget is reported once more on the first token scan after start (one line, or one
  *   grouped line for several), which is still true and is kept on purpose rather than hidden by a
@@ -36,11 +37,14 @@
  *   that connects or reloads afterwards is sent nothing, and a line that reached nobody is dropped
  *   without opening a window (the briefing she writes when the panel opens covers that case).
  *
- * The sentences are fixed patterns. A task is named only when its title may be said aloud (the
- * rules of the board's names); otherwise it is "a task". State lives in process memory.
+ * The sentences are fixed patterns. A task is named when its title may be said aloud (the rules of
+ * the board's names), cut to its first words when it is only too long; a task whose title cannot be
+ * said at all is named by its project and the first characters of its id, so no line names nothing.
+ * State lives in process memory.
  */
 import { randomUUID } from 'node:crypto';
 
+import { boardText } from '../core/lucy-operator/board.js';
 import { countWord, sayableTaskName } from '../core/lucy-operator/operator-briefing.js';
 import {
   LUCY_SAYS_GROUP_WINDOW_MS,
@@ -54,10 +58,32 @@ import type { Actor } from './auth.js';
 /** What happened to a task. */
 export type LucyTaskEventKind = 'failed' | 'lost_contact' | 'stalled' | 'over_budget' | 'wants_review';
 
+/** What a budget finding says, as numbers: what the task had cost and the alert it passed. */
+export interface LucyBudgetDetail {
+  costUsd?: number;
+  alertUsd?: number;
+  /** The second firing, at twice the alert. */
+  twice?: boolean;
+}
+
 export interface LucyTaskEvent {
   taskId: string;
   taskName?: string;
+  /** The display name of the task's project, for a line about a task whose title cannot be said. */
+  projectName?: string;
   kind: LucyTaskEventKind;
+  /** Only for `over_budget`, from the finding. */
+  budget?: LucyBudgetDetail;
+}
+
+/** The budget figures of a finding, for the event about it; undefined for any other finding. */
+export function budgetDetailOfFinding(anomaly: { type: string; severity?: string; costUsd?: number; alertUsd?: number }): LucyBudgetDetail | undefined {
+  if (anomaly.type !== 'budget_exceeded') return undefined;
+  return {
+    ...(anomaly.costUsd !== undefined ? { costUsd: anomaly.costUsd } : {}),
+    ...(anomaly.alertUsd !== undefined ? { alertUsd: anomaly.alertUsd } : {}),
+    ...(anomaly.severity === 'critical' ? { twice: true } : {}),
+  };
 }
 
 /**
@@ -151,20 +177,54 @@ function capital(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** The sentence for one event. */
-export function singleEventSentence(event: Pick<LucyTaskEvent, 'taskName' | 'kind'>): string {
+/** US dollars as written in a sentence: "$51.25", "$1,234.50". */
+function dollars(amount: number): string {
+  return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function isAmount(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && Number(value.toFixed(2)) > 0;
+}
+
+/**
+ * Who the sentence is about: the task's title when it may be said, otherwise its project and the first
+ * characters of its id, and only when the event carries neither, "a task".
+ */
+function subjectOf(event: Partial<Pick<LucyTaskEvent, 'taskName' | 'taskId' | 'projectName'>>): { text: string; title: boolean } {
   const name = sayableTaskName(event.taskName);
+  if (name !== undefined) return { text: name, title: true };
+  return { text: fallbackSubject(event), title: false };
+}
+
+function fallbackSubject(event: Partial<Pick<LucyTaskEvent, 'taskId' | 'projectName'>>): string {
+  // A project name with markup characters is not used, like a title with them.
+  const project = /[<>`]/.test(event.projectName ?? '') ? '' : boardText(event.projectName, 40);
+  const shortId = (event.taskId ?? '').replace(/[^A-Za-z0-9-]/g, '').slice(0, 8);
+  if (project && shortId) return `a task in ${project} (${shortId})`;
+  if (project) return `a task in ${project}`;
+  if (shortId) return `task ${shortId}`;
+  return 'a task';
+}
+
+/** The sentence for one event. */
+export function singleEventSentence(event: Pick<LucyTaskEvent, 'kind'> & Partial<Pick<LucyTaskEvent, 'taskName' | 'taskId' | 'projectName' | 'budget'>>): string {
+  const { text: subject, title } = subjectOf(event);
+  // A real title is written as it is ("iOS build"); only the fallback phrase starts a sentence.
+  const head = title ? subject : capital(subject);
   switch (event.kind) {
     case 'failed':
-      return `${name ?? 'A task'} failed.`;
+      return `${head} failed.`;
     case 'stalled':
-      return `${name ?? 'A task'} has gone quiet.`;
+      return `${head} has gone quiet.`;
     case 'lost_contact':
-      return `Kookr lost contact with ${name ?? 'a task'}.`;
-    case 'over_budget':
-      return `${name ?? 'A task'} has gone over its budget.`;
+      return `Kookr lost contact with ${subject}.`;
+    case 'over_budget': {
+      const { costUsd, alertUsd, twice } = event.budget ?? {};
+      if (!isAmount(costUsd) || !isAmount(alertUsd)) return `${head} has gone over its budget.`;
+      return `${head} is at ${dollars(costUsd)}, ${twice ? 'at least twice' : 'over'} its ${dollars(alertUsd)} alert.`;
+    }
     case 'wants_review':
-      return `${name ?? 'A task'} says it is finished and wants your review.`;
+      return `${head} says it is finished and wants your review.`;
   }
 }
 

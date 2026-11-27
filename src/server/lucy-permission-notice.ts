@@ -39,8 +39,7 @@ import { createHash } from 'node:crypto';
 import type { AgentEvent } from '../core/agent-events.js';
 import { findPermissionOptionKey } from '../core/permission-actions.js';
 import { redactSecrets } from '../core/redact-secrets.js';
-import { isGenericTaskName, spokenTaskName } from '../core/spoken-task-name.js';
-import { redactedTaskName } from '../core/task-speech-summary.js';
+import { sayableTaskName } from '../core/lucy-operator/operator-briefing.js';
 import type { Actor } from './auth.js';
 import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
@@ -109,12 +108,6 @@ export function spokenToolName(toolName: string): string {
   if (/^[A-Z][A-Za-z]{1,30}$/.test(toolName)) return toolName;
   if (toolName.startsWith('mcp__')) return 'an MCP tool';
   return 'a tool';
-}
-
-/** The task name as she may say it, or undefined when it may not be read aloud. */
-function sayableTaskName(name: string | undefined): string | undefined {
-  const spoken = name ? spokenTaskName(redactedTaskName(name)) : '';
-  return spoken && !isGenericTaskName(spoken) ? spoken : undefined;
 }
 
 /** The sentence for one card. Never contains the command. */

@@ -31,7 +31,7 @@ describe('GET /api/lucy/briefing', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(await res.json()).toEqual({
       text: 'Docs link audit says it is finished and wants your review. One more is working.',
-      chips: ['What wants my review?', 'What is everyone working on?'],
+      chips: [],
       signature: expect.stringMatching(/^[0-9a-f]{16}$/),
       at: NOW,
     });
@@ -44,8 +44,25 @@ describe('GET /api/lucy/briefing', () => {
     const first = await (await get(app)).json() as { signature: string };
     input = { tasks: [] };
     const second = await (await get(app)).json() as { text: string; signature: string };
-    expect(second.text).toBe('All clear: nothing needs you. Nothing is running.');
+    expect(second.text).toBe('');
     expect(second.signature).not.toBe(first.signature);
+  });
+
+  test('with nothing waiting it answers 200 with an empty text, no chips and a signature, so the panel writes nothing', async () => {
+    const res = await get(appWith({ lucyOperator: { service }, getInput: () => ({ tasks: [{ id: 'w1', name: 'Billing migration', status: 'inProgress' }] }), now: () => NOW }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ text: '', chips: [], signature: expect.stringMatching(/^[0-9a-f]{16}$/), at: NOW });
+  });
+
+  test('names the task that waits on a question and the time it has left, never the question', async () => {
+    const input: OperatorBriefingInput = {
+      tasks: [{ id: 't1', name: 'Test Inkling 2 Mini Unsloth Context Throughput', status: 'inProgress' }],
+      asks: [{ id: 'a1', taskId: 't1', question: 'Run rm -rf /srv now?', options: ['Yes', 'No'], allowText: false, state: 'pending', createdAt: NOW - 60_000, expiresAt: NOW + 117 * 60_000, taskEnded: false }],
+    };
+    const body = await (await get(appWith({ lucyOperator: { service }, getInput: () => input, now: () => NOW }))).json() as { text: string; chips: string[] };
+    expect(body.text).toBe('Test Inkling 2 Mini is stopped on a question, 117 minutes left. Nothing else is running.');
+    expect(body.chips).toEqual(['Walk me through the question']);
+    expect(body.text).not.toContain('rm -rf');
   });
 
   test('with Lucy\'s conversation off it answers 404 and reads nothing', async () => {

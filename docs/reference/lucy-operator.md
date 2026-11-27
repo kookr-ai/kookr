@@ -160,7 +160,7 @@ answered after 20 s.
   the OpenRouter account.
 - **Seeing it without asking her.** `GET /api/health` has a `lucyOperator` object: `configured`,
   `model`, `lastSuccessAt`, `lastFailureAt`, `lastFailure` (the same safe sentence) and `breakerOpen`.
-  It is in memory and starts empty after a restart.
+  It is in memory and starts empty after a restart. When nothing waits and no task is in trouble, the reply says that in one sentence ("Nothing is waiting on you and no task is in trouble."), since the briefing itself then has no text.
 
 ## Launching a task by voice or text
 
@@ -608,8 +608,9 @@ with whole turns between 0.6 and 3.1 s.
 - In conversation she does not speak first: a turn starts only when the operator asks. Outside a
   turn, she reads out a task's question, the report of a task she launched, and a task
   that has waited a minute on a permission prompt (see [Lucy live](lucy-live.md)). She also writes,
-  without speaking, a briefing when her panel opens and a line when a task fails, stalls or wants a
-  review (see [What she writes on her own](lucy-live.md#what-she-writes-on-her-own)).
+  without speaking, a briefing when her panel opens (each sentence names its task; nothing waiting
+  means nothing written) and a line when a task fails, stalls, goes over budget (with the two amounts)
+  or wants a review (see [What she writes on her own](lucy-live.md#what-she-writes-on-her-own)).
 - Typed, she is told to answer in the operator's language; spoken, in English, because her voice only
   speaks English. The sentences the server writes itself (a read-back,
   a refusal, "Sent.") and the words that confirm a card are English. The wording of the instructions

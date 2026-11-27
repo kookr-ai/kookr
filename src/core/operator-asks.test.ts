@@ -35,6 +35,14 @@ describe('toOperatorAskView', () => {
     expect(JSON.stringify(view)).not.toMatch(/nonce|delivery|chatId|idempotency/);
   });
 
+  it('carries the default option and what was done when nobody answered, only when they exist', () => {
+    const closed = ask({ taskId: 'system:interrupted-tasks', system: 'interrupted-tasks', state: 'expired', resolution: 'expired', defaultOption: 'Resume', expiryOutcome: 'No answer, so the 4 tasks were resumed.', resolvedAt: NOW });
+    expect(toOperatorAskView(closed, names, statuses)).toMatchObject({ defaultOption: 'Resume', expiryOutcome: 'No answer, so the 4 tasks were resumed.' });
+    const older = toOperatorAskView(ask({ state: 'expired', resolvedAt: NOW }), names, statuses);
+    expect(older).not.toHaveProperty('defaultOption');
+    expect(older).not.toHaveProperty('expiryOutcome');
+  });
+
   it.each([
     ['a running task', 't1', false],
     ['a finished task', 't-done', true],

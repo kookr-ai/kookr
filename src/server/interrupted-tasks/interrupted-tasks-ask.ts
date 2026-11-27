@@ -19,6 +19,8 @@ export const INTERRUPTED_CHOICE_LABELS: Record<InterruptedBatchChoice, string> =
 export interface InterruptedTasksAskService {
   createSystem(input: CreateSystemAskInput): Promise<CreateAskResult>;
   cancel(id: string, note?: string): Promise<unknown>;
+  /** Close the question as expired, recording what Kookr did when nobody answered. */
+  expireWithOutcome(id: string, outcome: string): Promise<unknown>;
   all(): AskRecord[];
 }
 
@@ -40,12 +42,15 @@ export function createInterruptedTasksAskPort(
         options,
         allowText: false,
         timeoutSec,
+        // When nobody answers, the batch's deadline resumes the tasks that have a conversation; the card says so.
+        ...(batch.tasks.some((t) => t.mode === 'resume') ? { defaultOption: INTERRUPTED_CHOICE_LABELS.resume } : {}),
       });
       if (result.ok) return { askId: result.ask.id };
       return { error: 'message' in result.error && result.error.message ? `${result.error.code}: ${result.error.message}` : result.error.code };
     },
-    async close(askId, outcomeText) {
-      await asks.cancel(askId, outcomeText);
+    async close(askId, outcomeText, expiryOutcome) {
+      if (expiryOutcome !== undefined) await asks.expireWithOutcome(askId, expiryOutcome);
+      else await asks.cancel(askId, outcomeText);
     },
     answerOf(askId) {
       const ask = asks.all().find((a) => a.id === askId);

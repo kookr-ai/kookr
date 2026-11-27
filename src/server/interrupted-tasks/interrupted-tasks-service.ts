@@ -85,8 +85,12 @@ const KEEP_DECIDED_BATCHES = 20;
 export interface InterruptedTasksAskPort {
   /** Raise the question for a pending batch; returns its id, or why it could not be raised. */
   raise(batch: InterruptedBatch): Promise<{ askId: string } | { error: string }>;
-  /** Close a still-open question once the batch was decided another way. */
-  close(askId: string, outcomeText: string): Promise<void>;
+  /**
+   * Close a still-open question once the batch was decided another way. `expiryOutcome` is given when
+   * nobody answered and the default was applied: the question then ends as expired, with that sentence
+   * for its card, instead of being withdrawn.
+   */
+  close(askId: string, outcomeText: string, expiryOutcome?: string): Promise<void>;
   /**
    * The choice an already-answered question stands for, else undefined. Used at start-up for an
    * answer given while this service could not yet hear it (during a restart).
@@ -263,9 +267,9 @@ export class InterruptedTasksService {
       // Decided any way but by answering the question (the deadline, the CLI): close the question,
       // so Telegram, the dashboard and Lucy stop asking something already settled.
       if (batch.askId && !opts.fromAsk) {
-        await this.closeAsk(batch.askId, by === 'timeout'
-          ? `No answer in time: ${summarizeOutcomes(batch)}.`
-          : `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`);
+        await (by === 'timeout'
+          ? this.closeAsk(batch.askId, `No answer in time: ${summarizeOutcomes(batch)}.`, expiryOutcomeOf(batch))
+          : this.closeAsk(batch.askId, `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`));
       }
       this.log(`[interrupted-tasks] batch ${batch.id} decided (${choice}, by ${by}): ${summarizeOutcomes(batch)}`);
       try {
@@ -349,9 +353,9 @@ export class InterruptedTasksService {
     }
   }
 
-  private async closeAsk(askId: string, text: string): Promise<void> {
+  private async closeAsk(askId: string, text: string, expiryOutcome?: string): Promise<void> {
     try {
-      await this.deps.ask?.close(askId, text);
+      await this.deps.ask?.close(askId, text, expiryOutcome);
     } catch (err) {
       this.log(`[interrupted-tasks] could not close question ${askId}: ${errorText(err)}`);
     }
@@ -405,6 +409,21 @@ export function summarizeOutcomes(batch: InterruptedBatch): string {
   for (const o of batch.decision?.outcomes ?? []) counts.set(o.outcome, (counts.get(o.outcome) ?? 0) + 1);
   if (counts.size === 0) return 'nothing to do';
   return [...counts].map(([outcome, n]) => `${n} ${outcome.replace('_', ' ')}`).join(', ');
+}
+
+/**
+ * What the question's card says when nobody answered and the default was applied: what really
+ * happened to the tasks, not what was meant to happen. Kookr's own words; no task name or text.
+ */
+export function expiryOutcomeOf(batch: InterruptedBatch): string {
+  const outcomes = batch.decision?.outcomes ?? [];
+  const total = outcomes.length;
+  const done = outcomes.filter((o) => o.outcome === 'resumed' || o.outcome === 'restarted').length;
+  const tasks = (n: number): string => (n === 1 ? 'the task' : `the ${n} tasks`);
+  if (total === 0) return 'No answer, and no task was left to resume.';
+  if (done === total) return `No answer, so ${tasks(total)} ${total === 1 ? 'was' : 'were'} resumed.`;
+  if (done === 0) return (total === 1 ? 'No answer, but the task was not resumed.' : `No answer, but none of the ${total} tasks were resumed.`);
+  return `No answer, so ${done} of the ${total} tasks ${done === 1 ? 'was' : 'were'} resumed and the rest stayed stopped.`;
 }
 
 function errorText(err: unknown): string {

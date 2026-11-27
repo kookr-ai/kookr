@@ -418,6 +418,9 @@ describe('sentences', () => {
   test('an unsayable task name and an MCP tool are not read out', () => {
     expect(singleNoticeSentence({ taskName: 'Implement GitHub issue #3932 in kookr-ai/kookr', toolName: 'mcp__evil__drop_tables' }))
       .toBe('A task is waiting for your permission to use an MCP tool. The command is on my card.');
+    // A title that is only too long is shortened, as in her other lines, not dropped.
+    expect(singleNoticeSentence({ taskName: 'Test Inkling 2 Mini Unsloth Context Throughput', toolName: 'Bash' }))
+      .toBe('The task "Test Inkling 2 Mini" is waiting for your permission to use Bash. The command is on my card.');
     expect(singleNoticeSentence({ toolName: 'Bash' })).toBe('A task is waiting for your permission to use Bash. The command is on my card.');
   });
 

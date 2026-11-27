@@ -631,6 +631,16 @@ describe('when the model fails (R8-F10)', () => {
     expect(model.requests).toHaveLength(1);
   });
 
+  test('with nothing waiting and nothing in trouble the board reply says so, instead of ending on "From the board:"', async () => {
+    // The briefing writes no text in that case (no all-clear line); a typed question still gets a whole answer.
+    const quiet = (): OperatorBriefingInput => ({ tasks: [], asks: [] });
+    const model = scriptedModel([{ fail: rateLimited() }]);
+    const { events, summary } = await run({ model: model.port, source: fakeSource(), briefing: quiet }, { text: 'What needs me?' });
+
+    expect(said(events)).toBe(`${REASON} From the board: Nothing is waiting on you and no task is in trouble.`);
+    expect(summary.done).toMatchObject({ end: 'answered', source: 'board' });
+  });
+
   test.each(['launch a task to fix the build', 'Reply to the report task', 'close Cleanup', 'answer the question'])('"%s" gets the board and one sentence saying she cannot act', async (text) => {
     const model = scriptedModel([{ fail: rateLimited() }]);
     const { events } = await run({ model: model.port, source: fakeSource(), briefing }, { text, conversationId: 'c1' });

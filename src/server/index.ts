@@ -61,7 +61,7 @@ import { LucyPermissionNotifier, pushLucyPermissionCards } from './lucy-permissi
 import { createLucyUnpromptedLog } from './lucy-unprompted.js';
 import { DEFAULT_LUCY_PERMISSION_NOTICE_AFTER_SECONDS } from '../shared/contracts/lucy-permission.js';
 import { LUCY_OPERATOR_ACTOR_ID } from '../shared/contracts/lucy-launch.js';
-import { LucySaysNotifier, pushLucySays, taskEventForFinding, taskEventForOutcome, taskEventStillTrue } from './lucy-says.js';
+import { LucySaysNotifier, budgetDetailOfFinding, pushLucySays, taskEventForFinding, taskEventForOutcome, taskEventStillTrue } from './lucy-says.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
@@ -322,7 +322,7 @@ import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js
 import { readOperatorInbox } from './operator-inbox.js';
 import { createLucyOperatorHolder } from './lucy-operator/holder.js';
 import { needsReasonOf } from './lucy-operator/launch-controller.js';
-import { operatorNeeds } from './lucy-operator/look-source.js';
+import { operatorNeeds, projectOf } from './lucy-operator/look-source.js';
 import { createAskTaskPorts, createTelegramTaskBridge, type TelegramTaskBridge } from './telegram-task-bridge.js';
 import { AskStore } from './asks/ask-store.js';
 import { AskService } from './asks/ask-service.js';
@@ -2620,7 +2620,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       try {
         const task = taskStore.findTaskBySession(event.agentId);
         const kind = task && !isTerminalStatus(task.status) ? taskEventForFinding(event.anomaly.type, task.pendingSignal?.kind) : undefined;
-        if (task && kind) lucySaysNotifier.note({ taskId: task.id, taskName: task.name, kind });
+        const budget = budgetDetailOfFinding(event.anomaly);
+        if (task && kind) lucySaysNotifier.note({ taskId: task.id, taskName: task.name, projectName: projectOf(task), kind, ...(budget ? { budget } : {}) });
       } catch (err) {
         console.warn('[lucy-says] finding note failed:', err);
       }
@@ -4828,7 +4829,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // A task that failed, or says it is finished and wants a review: a word in Lucy's thread.
       const task = lucySaysOutcomesLive ? taskStore.getTask(taskId) : undefined;
       const kind = task ? taskEventForOutcome(outcome.kind, task.terminationReason) : undefined;
-      if (task && kind) lucySaysNotifier.note({ taskId, taskName: task.name, kind });
+      if (task && kind) lucySaysNotifier.note({ taskId, taskName: task.name, projectName: projectOf(task), kind });
     } catch (err) {
       console.warn('[lucy-says] outcome note failed:', err);
     }
