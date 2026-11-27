@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectAndVerify, collectScaffold, verifyChecklist } from './engine.js';
+import { collectAndVerify, collectScaffold, TEST_CORPUS_PATHSPECS, verifyChecklist } from './engine.js';
 import { ChecklistInputError } from './errors.js';
 import type { GitRunner } from './git.js';
 import type { DiffFacts } from './types.js';
@@ -455,5 +455,45 @@ describe('test files in the tests and env rules (#4226)', () => {
     const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: read });
     expect(report.results.find((r) => r.id === 'env')?.summary).toMatch(/KOOKR_PROBE_ONLY_IN_TEST/);
     expect(report.ok).toBe(false);
+  });
+});
+
+describe('the test corpus a new source module is looked up in', () => {
+  const range = 'BASE...HEAD';
+  const lsTests = `ls-files -- ${TEST_CORPUS_PATHSPECS.join(' ')}`;
+
+  function gitWithTests(testFiles: string) {
+    return fakeGit({
+      'merge-base origin/main HEAD': { stdout: 'BASE' },
+      [`diff --name-status ${range}`]: { stdout: 'A\tsrc/frontend/avatar/zz-bubble-probe.ts' },
+      [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/frontend/avatar/zz-bubble-probe.ts\n+export const probe = 1;' },
+      [lsTests]: { stdout: testFiles },
+      // The repository opts in to the checklist by having a template with a marked row.
+      ...OPT_IN_GIT,
+    });
+  }
+  const readTests = async (p: string) => {
+    if (p.endsWith('AvatarDock.zz.test.tsx')) return "import { probe } from './zz-bubble-probe.js';";
+    if (p.endsWith('other.test.ts')) return 'nothing relevant';
+    if (p.endsWith('PULL_REQUEST_TEMPLATE.md')) return MARKER_TEMPLATE;
+    return '';
+  };
+
+  it('lists .tsx, .jsx and .spec test files as well as .test.ts and .test.js', () => {
+    expect(TEST_CORPUS_PATHSPECS).toEqual(expect.arrayContaining([
+      '*.test.ts', '*.test.tsx', '*.test.js', '*.test.jsx', '*.spec.ts', '*.spec.tsx', '*.spec.js', '*.spec.jsx',
+    ]));
+  });
+
+  it('a new module referenced only from a .test.tsx file is not reported as untested', async () => {
+    const git = gitWithTests('src/frontend/avatar/AvatarDock.zz.test.tsx\nsrc/core/other.test.ts');
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readTests });
+    expect(report.results.some((r) => r.id === 'new-tests' && r.status === 'fail')).toBe(false);
+  });
+
+  it('a new module no test file mentions is still reported', async () => {
+    const git = gitWithTests('src/core/other.test.ts');
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readTests });
+    expect(report.results.find((r) => r.id === 'new-tests')?.summary).toMatch(/zz-bubble-probe\.ts/);
   });
 });

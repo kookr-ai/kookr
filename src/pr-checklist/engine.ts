@@ -301,12 +301,24 @@ async function readTracked(
   return read(resolve(cwd, path), cap).catch(() => '');
 }
 
+/**
+ * The files whose text counts as "the tests" when a new source module must be referenced by one.
+ * They follow `TEST_FILE_PATTERNS` in checklist.ts (`.test.` or `.spec.`, in `.ts`, `.tsx`, `.js` or `.jsx`).
+ * The list once had only `*.test.ts` and `*.test.js`, so a new frontend module tested from a `.test.tsx`
+ * file was reported as having no test.
+ */
+export const TEST_CORPUS_PATHSPECS: readonly string[] = [
+  '*.test.ts', '*.test.tsx', '*.test.js', '*.test.jsx',
+  '*.spec.ts', '*.spec.tsx', '*.spec.js', '*.spec.jsx',
+  '*/__tests__/*', 'test/*',
+];
+
 async function readTestCorpus(
   runner: GitRunner,
   read: (absPath: string, cap: number) => Promise<string>,
   cwd: string,
 ): Promise<string> {
-  const listed = await runner(['ls-files', '--', '*.test.ts', '*.test.js', '*/__tests__/*', 'test/*']);
+  const listed = await runner(['ls-files', '--', ...TEST_CORPUS_PATHSPECS]);
   if (listed.exitCode !== 0) return '';
   const files = listed.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
   const parts: string[] = [];
