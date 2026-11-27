@@ -62,7 +62,15 @@ export async function resolveBase(runner: GitRunner, base: string): Promise<stri
 }
 
 /** Collect the diff facts the engine needs for the range `<baseSha>...HEAD`. */
-export async function collectDiffFacts(runner: GitRunner, base: string): Promise<DiffFacts> {
+/**
+ * `extraTestPatterns` are the repo's declared test globs (compiled): files they
+ * match are skipped by the env-var scan like built-in test files.
+ */
+export async function collectDiffFacts(
+  runner: GitRunner,
+  base: string,
+  extraTestPatterns: readonly RegExp[] = [],
+): Promise<DiffFacts> {
   const baseSha = await resolveBase(runner, base);
   if (!baseSha) {
     return {
@@ -99,7 +107,7 @@ export async function collectDiffFacts(runner: GitRunner, base: string): Promise
       const text = line.slice(1);
       // Test files are not product source: an env var only a test reads or
       // sets is not one `.env.example` must document (#4226).
-      if (/^src\/.*\.[jt]s$/.test(currentFile) && !isTestFile(currentFile)) addedSourceLines.push(text);
+      if (/^src\/.*\.[jt]s$/.test(currentFile) && !isTestFile(currentFile, extraTestPatterns)) addedSourceLines.push(text);
       if (!/^\.env(\.|$)/.test(currentFile) && !/\.md$/.test(currentFile)) {
         addedScannableLines.push({ file: currentFile, text });
       }

@@ -14,6 +14,7 @@ import {
   parseTemplateRows,
   renderRow,
   scanSecrets,
+  testGlobToRegExp,
   WAIVER_REASON_PLACEHOLDER,
 } from './checklist.js';
 import type { DiffFacts } from './types.js';
@@ -387,5 +388,66 @@ describe('isTestFile / tests evidence (#4226)', () => {
     expect(isTestFile('scripts/run-tests.sh')).toBe(false);
     expect(hasEvidence('tests', ['.claude/hooks-tests/x.test.sh'])).toBe(true);
     expect(hasEvidence('new-tests', ['.claude/hooks-tests/x.test.sh'])).toBe(true);
+  });
+});
+
+describe('testGlobToRegExp / declared test globs (#4257)', () => {
+  const m = (glob: string, path: string) => testGlobToRegExp(glob).test(path);
+
+  it('a glob with no slash matches the file name in any directory; * stays inside one segment', () => {
+    expect(m('*.check.ts', 'src/a/b.check.ts')).toBe(true);
+    expect(m('*.check.ts', 'b.check.ts')).toBe(true);
+    expect(m('*.check.ts', 'src/a/b.check.tsx')).toBe(false);
+    expect(m('*.check.ts', 'src/a.check.ts/x.ts')).toBe(false);
+  });
+
+  it('a glob with a slash is anchored at the repo root', () => {
+    expect(m('checks/*.sh', 'checks/run.sh')).toBe(true);
+    expect(m('checks/*.sh', 'sub/checks/run.sh')).toBe(false);
+    expect(m('checks/*.sh', 'checks/deep/run.sh')).toBe(false);
+  });
+
+  it('** spans any number of segments, including none; a trailing / means the whole directory', () => {
+    expect(m('src/**/fixtures/*.sh', 'src/fixtures/a.sh')).toBe(true);
+    expect(m('src/**/fixtures/*.sh', 'src/x/y/fixtures/a.sh')).toBe(true);
+    expect(m('qa/**', 'qa/a/b/c.ts')).toBe(true);
+    expect(m('qa/', 'qa/a/b/c.ts')).toBe(true);
+    expect(m('qa/', 'qaz/c.ts')).toBe(false);
+  });
+
+  it('? is one character other than /, and regex metacharacters are literal', () => {
+    expect(m('t?.sh', 'dir/t1.sh')).toBe(true);
+    expect(m('t?.sh', 'dir/t12.sh')).toBe(false);
+    expect(m('a.b+(c)', 'a.b+(c)')).toBe(true);
+    expect(m('a.b+(c)', 'aXb+(c)')).toBe(false);
+    expect(m('a.b+(c)', 'a.bb(c)')).toBe(false);
+    expect(m('$x^', 'd/$x^')).toBe(true);
+  });
+
+  it('declared patterns add to the built-in test detection, never replace it', () => {
+    const extra = [testGlobToRegExp('*.check.ts')];
+    expect(isTestFile('src/a.check.ts', extra)).toBe(true);
+    expect(isTestFile('src/a.check.ts')).toBe(false);
+    expect(isTestFile('src/a.test.ts', extra)).toBe(true);
+    expect(isTestFile('src/a.ts', extra)).toBe(false);
+  });
+
+  it('only the tests / new-tests rows take declared globs as evidence', () => {
+    const extra = [testGlobToRegExp('checks/')];
+    expect(hasEvidence('tests', ['checks/run.sh'], extra)).toBe(true);
+    expect(hasEvidence('new-tests', ['checks/run.sh'], extra)).toBe(true);
+    expect(hasEvidence('tests', ['checks/run.sh'])).toBe(false);
+    expect(hasEvidence('integration-tests', ['checks/run.sh'], extra)).toBe(false);
+    expect(hasEvidence('docs', ['checks/run.sh'], extra)).toBe(false);
+    const rows = parseChecklist('- [x] <!-- kookr:check:tests --> tests');
+    expect(evaluateAttestation(rows, ['checks/run.sh'], '', extra).results[0].status).toBe('pass');
+    expect(evaluateAttestation(rows, ['checks/run.sh']).results[0].status).toBe('fail');
+  });
+
+  it('a file a declared glob names as a test is not a source file', () => {
+    const extra = [testGlobToRegExp('*.check.ts')];
+    expect(isSourceFile('src/a.check.ts')).toBe(true);
+    expect(isSourceFile('src/a.check.ts', extra)).toBe(false);
+    expect(isSourceFile('src/a.ts', extra)).toBe(true);
   });
 });

@@ -524,3 +524,79 @@ describe('the test corpus a new source module is looked up in', () => {
     expect(readPaths.some((p) => p.endsWith('never-read.test.ts'))).toBe(false);
   });
 });
+
+// #4257: test globs a repository declares in .kookr/pr-checklist.json count as
+// tests for the tests / new-tests rows, the env-var scan and the new-tests
+// structural rule, end-to-end through collectAndVerify / collectScaffold.
+describe('declared test globs (testGlobs, #4257)', () => {
+  const range = 'BASE...HEAD';
+  const TESTS_TEMPLATE = '- [ ] <!-- kookr:check:tests --> Tests were added or updated\n';
+  const CONFIG = '{ "testGlobs": ["*.check.ts", "checks/"] }';
+  const lsTests = `ls-files -- ${TEST_CORPUS_PATHSPECS.join(' ')}`;
+  // Split so this very file does not read as an env reference.
+  const envRef = 'process' + '.env.KOOKR_PROBE_ONLY_IN_CHECK';
+
+  function gitFor(changes: { path: string; status: 'A' | 'M'; added: string }[], withConfig: boolean, allFiles = '') {
+    return fakeGit({
+      'merge-base origin/main HEAD': { stdout: 'BASE' },
+      [`diff --name-status ${range}`]: { stdout: changes.map((c) => `${c.status}\t${c.path}`).join('\n') },
+      [`diff --unified=0 ${range}`]: { stdout: changes.map((c) => `+++ b/${c.path}\n+${c.added}`).join('\n') },
+      'ls-files -- .env.example': { stdout: '.env.example' },
+      'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+      ...(withConfig ? { 'ls-files -- .kookr/pr-checklist.json': { stdout: '.kookr/pr-checklist.json' } } : {}),
+      [lsTests]: { stdout: 'src/core/unrelated.test.ts' },
+      'ls-files': { stdout: allFiles },
+    });
+  }
+  const read = async (p: string) => {
+    if (p.endsWith('.env.example')) return 'EXISTING=1\n';
+    if (p.endsWith('.kookr/pr-checklist.json')) return CONFIG;
+    if (p.endsWith('checks/zz-mod.sh')) return 'run zz-mod';
+    if (p.endsWith('PULL_REQUEST_TEMPLATE.md')) return TESTS_TEMPLATE;
+    return '';
+  };
+
+  it('a diff touching only a declared test path: scaffold ticks tests and verify passes; without the glob it is struck', async () => {
+    const changes = [{ path: 'checks/run-all.sh', status: 'M' as const, added: 'echo ok' }];
+    const outcome = await collectScaffold({ cwd: '/repo', base: 'main', gitRunner: gitFor(changes, true), readFileText: read });
+    if (outcome.kind !== 'ok') throw new Error(`unexpected scaffold outcome ${outcome.kind}`);
+    expect(outcome.scaffold.checked).toEqual(['tests']);
+    const report = await collectAndVerify({
+      cwd: '/repo', base: 'main', body: outcome.scaffold.body, gitRunner: gitFor(changes, true), readFileText: read,
+    });
+    expect(report.results.find((r) => r.id === 'tests')?.status).toBe('pass');
+    expect(report.ok).toBe(true);
+
+    const without = await collectScaffold({ cwd: '/repo', base: 'main', gitRunner: gitFor(changes, false), readFileText: read });
+    if (without.kind !== 'ok') throw new Error(`unexpected scaffold outcome ${without.kind}`);
+    expect(without.scaffold.struck).toEqual(['tests']);
+    const ticked = '- [x] <!-- kookr:check:tests --> Tests were added or updated\n';
+    const failing = await collectAndVerify({ cwd: '/repo', base: 'main', body: ticked, gitRunner: gitFor(changes, false), readFileText: read });
+    expect(failing.results.find((r) => r.id === 'tests')?.status).toBe('fail');
+  });
+
+  it('an env var read only in a declared test file under src/ is not reported; without the glob it is', async () => {
+    const changes = [{ path: 'src/core/zz-probe.check.ts', status: 'M' as const, added: `const v = ${envRef};` }];
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: gitFor(changes, true), readFileText: read });
+    expect(report.results.some((r) => r.id === 'env')).toBe(false);
+    const without = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: gitFor(changes, false), readFileText: read });
+    expect(without.results.find((r) => r.id === 'env')?.summary).toMatch(/KOOKR_PROBE_ONLY_IN_CHECK/);
+  });
+
+  it('a new module referenced only from a declared test file is not reported as untested; without the glob it is', async () => {
+    const changes = [{ path: 'src/core/zz-mod.ts', status: 'A' as const, added: 'export const m = 1;' }];
+    const all = 'checks/zz-mod.sh\nsrc/core/zz-mod.ts\nsrc/core/unrelated.test.ts';
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: gitFor(changes, true, all), readFileText: read });
+    expect(report.results.some((r) => r.id === 'new-tests')).toBe(false);
+    const without = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: gitFor(changes, false, all), readFileText: read });
+    expect(without.results.find((r) => r.id === 'new-tests')?.summary).toMatch(/zz-mod\.ts/);
+  });
+
+  it('a new file under src/ that a declared glob names as a test is not itself demanded a test', async () => {
+    const changes = [{ path: 'src/core/zz-new.check.ts', status: 'A' as const, added: 'export {};' }];
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: gitFor(changes, true), readFileText: read });
+    expect(report.results.some((r) => r.id === 'new-tests')).toBe(false);
+    const without = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: gitFor(changes, false), readFileText: read });
+    expect(without.results.find((r) => r.id === 'new-tests')?.summary).toMatch(/zz-new\.check\.ts/);
+  });
+});

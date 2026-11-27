@@ -9,6 +9,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import {
+  compileTestGlobs,
   evaluateAttestation,
   evaluateStructural,
   evaluateTemplatePresence,
@@ -47,6 +48,8 @@ export interface VerifyInput {
   templateText: string;
   /** Rule ids the repo disabled via .kookr/pr-checklist.json (P4a). Only removes checks. */
   disabled?: ReadonlySet<string>;
+  /** The repo's declared test globs (`testGlobs`), compiled; they add to the built-in test patterns. */
+  testPatterns?: readonly RegExp[];
   /** Non-fatal notes from parsing the repo config, surfaced in the report. */
   configNotes?: readonly string[];
   /**
@@ -78,10 +81,11 @@ export function verifyChecklist(input: VerifyInput): VerifyReport {
       ? evaluateTemplateRequiredButMissing(input.templateText, input.templateRequiredReason)
       : [];
 
-  const attest = evaluateAttestation(rows, input.facts.changedPaths, input.templateText);
+  const testPatterns = input.testPatterns ?? [];
+  const attest = evaluateAttestation(rows, input.facts.changedPaths, input.templateText, testPatterns);
   notes.push(...attest.notes);
 
-  const structural = evaluateStructural(input.facts, input.envFileText, input.testCorpus, attest.waived);
+  const structural = evaluateStructural(input.facts, input.envFileText, input.testCorpus, attest.waived, testPatterns);
 
   // The title check is REPORTED, never enforced, in verify (#3651): verify is
   // the local gh-pr-create gate, and a text-only re-implementation of
@@ -151,15 +155,17 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
     };
   }
   const config = parseChecklistConfig(configText);
+  const testPatterns = compileTestGlobs(config.testGlobs);
 
-  const facts = await collectDiffFacts(runner, deps.base);
+  const facts = await collectDiffFacts(runner, deps.base, testPatterns);
 
   // Only gather env/test inputs when the diff actually needs them.
+  const newSourceFiles = facts.addedFiles.filter((p) => isSourceFile(p, testPatterns));
   const needsEnv = !facts.baseUnresolved && facts.addedSourceLines.length > 0;
-  const needsTests = !facts.baseUnresolved && facts.addedFiles.some(isSourceFile);
+  const needsTests = !facts.baseUnresolved && newSourceFiles.length > 0;
 
   const envFileText = needsEnv ? await readTracked(runner, read, deps.cwd, '.env.example', MAX_ENV_FILE_BYTES) : '';
-  const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd, facts.addedFiles.filter(isSourceFile)) : '';
+  const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd, newSourceFiles, testPatterns) : '';
 
   // A repo that disables `pr-title` gets no title check at all — no warning
   // note either (the disable filter below only removes results).
@@ -175,6 +181,7 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
     testCorpus,
     templateText,
     disabled: config.disable,
+    testPatterns,
     configNotes: config.notes,
     templateRequiredReason: deps.body === null ? deps.templateRequiredReason : undefined,
     title: deps.title,
@@ -212,7 +219,7 @@ export async function collectScaffold(deps: Omit<CollectDeps, 'body' | 'template
   const title = evaluateTitle(deps.title, commitlint);
   return {
     kind: 'ok',
-    scaffold: scaffoldBody(templateText, facts?.changedPaths ?? [], config.disable),
+    scaffold: scaffoldBody(templateText, facts?.changedPaths ?? [], config.disable, compileTestGlobs(config.testGlobs)),
     noMarkers,
     title: { results: title.results, notes: [...title.notes, ...config.notes] },
   };
@@ -329,12 +336,25 @@ async function readTestCorpus(
   read: (absPath: string, cap: number) => Promise<string>,
   cwd: string,
   newSourceFiles: readonly string[],
+  testPatterns: readonly RegExp[] = [],
 ): Promise<string> {
   const wanted = new Set(newSourceFiles.map(sourceBaseName).filter((name) => name.length > 0));
   if (wanted.size === 0) return '';
   const listed = await runner(['ls-files', '--', ...TEST_CORPUS_PATHSPECS]);
   if (listed.exitCode !== 0) return '';
   const files = listed.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (testPatterns.length > 0) {
+    // The repo's declared test globs (#4257) are matched in-process, with the
+    // same regexes the evidence rule uses, rather than handed to git as
+    // pathspecs, whose `*` semantics differ. Added after the default files.
+    const all = await runner(['ls-files']);
+    if (all.exitCode === 0) {
+      const seen = new Set(files);
+      for (const rel of all.stdout.split('\n').map((s) => s.trim())) {
+        if (rel && !seen.has(rel) && testPatterns.some((re) => re.test(rel))) files.push(rel);
+      }
+    }
+  }
   const found: string[] = [];
   for (const rel of files) {
     if (wanted.size === 0) break;
