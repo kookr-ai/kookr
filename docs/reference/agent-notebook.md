@@ -204,7 +204,9 @@ that runs its `.mjs`) run for every session:
   whose `background_tasks` lists a subagent still `running` is the lead waiting on
   delegated work: it is let through without claiming the sentinel, so the nudge
   lands at a later stop, after the work has come back (a running shell or monitor
-  does not defer it). A `SubagentStop` never nudges (issue #4231): blocking a
+  does not defer it). The deferral lasts at most 30 minutes from the first deferred
+  stop (issue #4261), so a hung or abandoned subagent cannot withhold the nudge for
+  the rest of the session. A `SubagentStop` never nudges (issue #4231): blocking a
   subagent turns its answer to the nudge into its last message and displaces the
   report its caller needed. The nudge shows the maintenance checklist — vote up what helped and vote down
   what misled (several ids per call), **`nb rm --reason wrong|obsolete`** what proved

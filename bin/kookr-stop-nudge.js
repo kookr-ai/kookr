@@ -19,13 +19,17 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const STDIN_TIMEOUT_MS = 2000;
 const API_TIMEOUT_MS = 2500;
 const DEFAULT_MIN_TASK_AGE_MS = 45_000;
 const KILL_MARKER = '/dev/shm/.kookr-nudge-disabled';
+// How long a task may keep deferring the reminder because a background subagent is
+// still `running`, counted from its first deferred stop (issue #4261). Same value as
+// plugin/hooks/nb-retro.mjs (kept in step by hand; a test pins the two together).
+const SUBAGENT_WAIT_BOUND_MS = 30 * 60_000;
 
 // Keep in sync with LESSON_DECISION_TEMPLATE in src/core/lesson-decision.ts
 // (issue #3695). This script runs as plain node without the TS build, so the
@@ -165,11 +169,6 @@ async function main(env = process.env) {
   }
   if (payload && payload.stop_hook_active === true) return done(false);
 
-  // 2b. The agent is waiting on delegated work, not finishing (issue #4231): a
-  // background subagent is still running. Stay silent WITHOUT writing the marker,
-  // so the once-per-task reminder lands at a later stop, after the work is back.
-  if (waitingOnSubagent(payload && payload.background_tasks)) return done(false);
-
   // 3. Must be a managed task.
   const taskId = env.KOOKR_TASK_ID && env.KOOKR_TASK_ID.trim();
   if (!taskId) return done(false);
@@ -180,6 +179,20 @@ async function main(env = process.env) {
     if (existsSync(mark)) return done(false);
   } catch {
     return done(false);
+  }
+
+  // 4b. The agent is waiting on delegated work, not finishing (issue #4231): a
+  // background subagent is still running. Stay silent WITHOUT writing the marker,
+  // so the once-per-task reminder lands at a later stop, after the work is back.
+  // Bounded (issue #4261): once the first deferred stop is SUBAGENT_WAIT_BOUND_MS
+  // old, a hung or abandoned subagent no longer defers it; the stop then goes
+  // through the usual gates below. A stop with no running subagent clears the
+  // stamp, so a later, genuine wait starts its own clock.
+  const waitStamp = waitStampPath(taskId);
+  if (waitingOnSubagent(payload && payload.background_tasks)) {
+    if (withinWaitBound(waitStamp)) return done(false);
+  } else {
+    removeQuietly(waitStamp);
   }
 
   // 5. Verify state via the API. If we can't verify, never nudge blind.
@@ -210,6 +223,7 @@ async function main(env = process.env) {
         // Best-effort: already-present marker (wx) or unwritable dir — stay
         // silent for this stop regardless.
       }
+      removeQuietly(waitStamp);
     }
     return done(false);
   }
@@ -229,14 +243,48 @@ async function main(env = process.env) {
   } catch {
     return done(false);
   }
+  removeQuietly(waitStamp);
 
   return done(true);
+}
+
+/** The task's wait stamp. Sanitized task ids hold no `.`, so it never names a marker. */
+function waitStampPath(taskId) {
+  return `${markerPath(taskId)}.waiting`;
+}
+
+/**
+ * True while this stop should still defer: the first deferred stop writes the stamp
+ * (`wx`, so racing stops agree on one start time) and later ones read its age. If
+ * the stamp cannot be written or read, keep deferring (the #4231 behaviour).
+ */
+function withinWaitBound(stamp) {
+  try {
+    mkdirSync(markerDir(), { recursive: true });
+    writeFileSync(stamp, new Date().toISOString(), { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if (!e || e.code !== 'EEXIST') return true;
+  }
+  try {
+    return Date.now() - statSync(stamp).mtimeMs < SUBAGENT_WAIT_BOUND_MS;
+  } catch {
+    return true;
+  }
+}
+
+function removeQuietly(path) {
+  try {
+    unlinkSync(path);
+  } catch {
+    // absent or unremovable: nothing to do
+  }
 }
 
 /**
  * True when a Stop payload's `background_tasks` lists a subagent still running.
  * Only subagents count: a running shell or monitor can outlive the task, and
- * waiting on it would withhold the reminder for good. Same rule as
+ * waiting on it would hold the reminder back for no reason. Same rule as
  * plugin/hooks/nb-retro.mjs (the plugin ships without this file, so the two are
  * kept in step by hand).
  */
@@ -268,4 +316,4 @@ if (isInvokedDirectly()) {
   main().catch(() => done(false));
 }
 
-export { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, waitingOnSubagent, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };
+export { resolveBaseUrl, markerPath, waitStampPath, isTerminalStatus, parseMinAge, waitingOnSubagent, SUBAGENT_WAIT_BOUND_MS, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };
