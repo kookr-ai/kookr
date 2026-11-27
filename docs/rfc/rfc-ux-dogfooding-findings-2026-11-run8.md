@@ -1,6 +1,6 @@
 # RFC: UX Dogfooding Findings — November 2026 (run 8: Lucy is closed)
 
-- **Status**: Draft (running log)
+- **Status**: Findings recorded and acted on; see the table in the Summary for each change's state.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
 - **Date**: 2026-11-27 (all clock times below are UTC)
 - **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production runs
@@ -28,7 +28,45 @@
 
 ## Summary
 
-_(written at the end of the run)_
+The operator asked a third time for an overhaul of Lucy's panel, because it is "too small". The
+column and the full-window room that runs 5 to 7 built have been in production since 18
+November. What the operator did with them, read from Lucy's own interaction log: nothing was
+typed or said to her, none of six questions that tasks asked was answered from her panel, and
+the room was used for seven seconds. So this run did not start from her size.
+
+**What was wrong, in the order it mattered.**
+
+1. Her chat was down: every question ended, after 28 seconds, in "The model provider returned an
+   error" (R8-F10). The operator's OpenRouter workspace allows one provider, which is
+   rate-limited, and blocks every other model.
+2. With her minimised, which is where she lives, the dashboard said "nothing waiting" and "All
+   clear" while a task's question was waiting (R8-F3).
+3. Opened, she hid that question behind a folded 31 px strip: today the operator looked at her
+   for nine seconds while "Resume the 4 interrupted tasks?" was live, and it expired (R8-F2).
+4. What she wrote first named no task and no amount (R8-F5).
+5. Her full window was one sentence in 1459 x 928 px of black (R8-F6).
+
+**What was built.** Ten Sonnet designers and critics worked from the same evidence (six blind
+to each other, then four attacking the synthesis). They agreed on "she brings the decision to
+the operator" rather than a bigger panel, and the critics supplied the safety rules that went
+into the briefs. Seven changes were built in separate worktrees, each reviewed by an independent
+reviewer with a fresh context before merging; the reviews found one critical defect and about
+forty small ones, all fixed before merge.
+
+| Change | Pull request | State at the time of writing |
+|---|---|---|
+| The dashboard counts task questions and permission prompts; no "All clear" while one waits | #4271 | merged |
+| She answers from the board when her model fails, in 12 s at most, naming the provider | #4272 | merged |
+| The minimised bubble grows into the question with its answers; the column no longer folds it | #4273 | merged |
+| Her lines name the task and the amounts; expired questions record what was done | #4275 | merged |
+| The pull-request checklist finds tests in `.tsx` files and past its first 16 MiB | #4274 | merged |
+| Her typed conversation runs on Baseten (the operator's choice: "switch her to another model") | see Implementation | review passed, being delivered |
+| The desk: the full window in three columns (decisions, fleet, conversation) | see Implementation | in review |
+
+**What the operator has to know.** None of this is on the dashboard yet: the integration train,
+which moves `main` and so production, has not run since 26 November (R8-F13). And two decisions
+taken during the run by `kookr ask`: "Switch her to another model", "Build the desk after the 4
+fixes".
 
 ## Findings
 
@@ -271,6 +309,61 @@ Baseten becomes her default when its key is configured; `KOOKR_LUCY_OPERATOR_PRO
 (c) The guardrail itself stays the operator's: the helper-model calls that go through OpenRouter
 meet the same wall.
 
+### R8-F11. The pull-request checklist cannot see `.test.tsx` files (process) — severity: low
+
+**Evidence.** Delivering cluster D, `kookr pr-checklist verify` failed with "1 new source module(s)
+with no reference under a test path: src/frontend/avatar/bubble-decision.ts". The module is
+imported by `AvatarDock.bubble-card.test.tsx` (54 tests). The pull request needed a waiver for
+a test that exists.
+
+**Root cause.** `src/pr-checklist/engine.ts:309` reads "the tests" from `git ls-files --
+'*.test.ts' '*.test.js' '*/__tests__/*' 'test/*'`. Frontend tests are `.test.tsx`. The checklist's
+own `TEST_FILE_PATTERNS` (`checklist.ts:27`) does know `.tsx`; the two lists drifted.
+
+**Suggested fix.** One list: `.test.` or `.spec.`, in `.ts`, `.tsx`, `.js` or `.jsx`. Cluster I.
+
+### R8-F12. A server test calls the host's real helper model, so the push gate fails when that model's provider hangs (process) — severity: medium
+
+**Evidence.** Cluster D's push was rejected by the fast gate: `src/server/lucy-interaction.wiring.test.ts`
+("speak -> ws lucy_clip_ended …") timed out after 15 s, three times. The same test fails alone
+on unchanged `origin/main` in a task's shell (53 s with its retries) and passes there with
+`OPENROUTER_API_KEY`, `KOOKR_OPENROUTER_API_KEY` and `KOOKR_LLM_PROVIDER` unset.
+
+**Root cause.** A Kookr task's shell carries production's `.env` (model keys included). The test
+starts a real server with a fake speech service and nothing in place of the helper model, so
+`POST /api/tasks/:id/speak-summary` asks the real provider for the summary. Today that call hangs
+for 20 seconds on the guardrailed account (R8-F10), longer than the test's limit. On a host
+whose provider answers, the same test passes while spending the operator's credit. The gate
+runs it only for a diff that touches the interaction log, which is why clusters A and B passed.
+
+**Suggested fix.** The test gives the server a stand-in summary model (or clears the model keys
+in its own set-up); better, the test runner clears model keys for every test, so no test can
+reach a paid model by accident. Not built in this run; cluster D was pushed with the three
+variables unset, which its pull request says.
+
+### R8-F13. Merged fixes do not reach the operator: the integration train has not run since 26 November (process) — severity: high
+
+**Evidence.** At 19:06 the five pull requests this run had merged were on `staging` and nowhere
+else. `origin/main` is still `e33d8654d`, the commit of 23 November, and production follows
+`main`. `pnpm train:status`: `running: false`, `halted: base-red` since 26 November 22:38, last
+cycle 27 November 06:59; its process id belongs to a process that died with the host's restart.
+Three pull requests from other tasks (#4267, #4269 and a plugin bump) have been waiting on
+`staging` as well. `GET /api/health` reports `integrationTrain.alerting: true`; nothing on the
+dashboard or in Lucy says that merges have stopped reaching production. This is run 7's first
+finding again in a new place: work that is "merged" and that the operator never sees.
+
+**Root cause.** Two things. (1) On 26 November `main` itself failed its verification
+(`src/core/maintenance-prune.test.ts` and `src/cli/kookr-maintenance.test.ts`, in the reports under
+`~/.kookr/integration-train/kookr-ai-kookr/`), so the train halted without reverting anything,
+which is its rule for a red `main`. The same tests pass today on the same commit, so the cause was
+the host's state that day and not the code. (2) The train is a process started by hand
+(`start-args.json`: `--worktree ~/git/kookr-train --workers 6`); nothing restarts it after a
+reboot, and a halted train waits for somebody to read its status.
+
+**Suggested fix.** Asked of the operator during the run (ask `a9dc08691266`): start the train.
+For Kookr: start the train with the server (or as a unit that restarts), and make a train that
+has not completed a cycle for a day a finding in "Needs you", and a line of Lucy's briefing.
+
 ## Things that worked well (keep-list)
 
 - **The interaction log.** Every number in R8-F1 came from one file in a few minutes, and it
@@ -414,5 +507,19 @@ disagreement is the question put to the operator.
   started (stacked on A).
 - 19:00 Clusters A, B and C to independent review (fresh context, blind to the implementers).
   Cluster D built; sent back to rebase onto B, which touches three of the same files.
+- 19:10 Reviews, round 1: A no correctness defect, 3 small; B 6 small; C 8 small; D 1 critical (a
+  second question arriving moved live answer buttons under the pointer) and 6 small. All sent back
+  and fixed; fix checks followed (C took five rounds, each on smaller wording).
+- 19:30 #4271 merged. 19:36 #4272 merged.
+- 19:40 D's push rejected by a test that calls the real helper model (R8-F12); pushed with the
+  model keys unset. A second push passed the gate and failed on DNS; the third went through.
+  20:02 #4273 merged.
+- 19:45 The checklist reported a tested module as untested (R8-F11). My first fix widened the file
+  list; its reviewer showed it would hide 94 other test files behind the 16 MiB limit. Reworked.
+  20:10 #4274 merged.
+- 20:05 Rebasing C onto the merged A showed that the two together would answer "From the board:"
+  followed by nothing; fixed in C with a test. 20:25 #4275 merged.
+- 20:06 `origin/main` has not moved: the integration train is not running (R8-F13). Asked.
+- 20:15 The desk built and photographed; in review.
 - Scope choice: this run does not re-drive the launch dialog, the live terminal or the rating
   flow (runs 1 to 4 did, and the brief is Lucy), and launches no task of its own.
