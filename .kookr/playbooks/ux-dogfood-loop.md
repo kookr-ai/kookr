@@ -240,10 +240,13 @@ Screenshot/automation notes that save an hour:
   of anything this cluster changed: run 8's "named lines" cluster emptied a briefing that the
   already merged "board reply" quoted.
 - **The push gate inherits the task's model keys.** A task's shell carries production's `.env`,
-  and some server tests then call the real helper model. When that provider hangs, the gate
-  fails on unchanged `main`. Push with the keys unset
-  (`env -u OPENROUTER_API_KEY -u KOOKR_OPENROUTER_API_KEY -u KOOKR_LLM_PROVIDER pnpm deliver …`)
-  and say so in the pull request.
+  and a server test that starts a real server without a stand-in model then calls the real
+  helper model. When that provider hangs, the gate fails on unchanged `main`. Run 8 fixed the
+  one test it met; the suite-wide scrub (`test/scrub-agent-env.ts`) still lets through keys that
+  do not start with `KOOKR_`, `CLAUDE_` or `ANTHROPIC_`. The sign: a gate failure that also
+  fails on `origin/main` and passes with the keys unset
+  (`env -u OPENROUTER_API_KEY -u GROQ_API_KEY -u GEMINI_API_KEY pnpm exec vitest run <file>`).
+  Then push with those unset, say so in the pull request, and fix the test.
 - **One reviewer per cluster, kept for every round.** Write the requirements to a file, give a
   fresh agent the diff, the requirements and nothing from the implementer, and resume the same
   reviewer for fix checks. Post every round's verdict on the pull request, the blocks too.

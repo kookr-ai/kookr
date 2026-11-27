@@ -1,6 +1,6 @@
 # RFC: UX Dogfooding Findings — November 2026 (run 8: Lucy is closed)
 
-- **Status**: Findings recorded and acted on. Seven changes are merged into `staging` (#4271, #4272, #4273, #4274, #4275, #4277, #4280). None is on `main` or in production: the integration train is not running (R8-F13) and the operator has been asked whether to start it. What was not built is in #4279.
+- **Status**: Findings recorded and acted on. Eight changes are merged into `staging` (#4271, #4272, #4273, #4274, #4275, #4277, #4280, #4281). None is on `main` or in production: the integration train is not running (R8-F13) and the operator has been asked whether to start it. What was not built is in #4279.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
 - **Date**: 2026-11-27 (all clock times below are UTC)
 - **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production runs
@@ -31,7 +31,7 @@
 The operator asked a third time for an overhaul of Lucy's panel, because it is "too small". The
 column and the full-window room that runs 5 to 7 built have been in production since 18
 November. What the operator did with them, read from Lucy's own interaction log: nothing was
-typed or said to her, none of six questions that tasks asked was answered from her panel, and
+typed or said to her, none of the six questions still on record was answered from her panel, and
 the room was used for seven seconds. So this run did not start from her size.
 
 **What was wrong, in the order it mattered.**
@@ -49,9 +49,9 @@ the room was used for seven seconds. So this run did not start from her size.
 **What was built.** Ten Sonnet designers and critics worked from the same evidence (six blind
 to each other, then four attacking the synthesis). They agreed on "she brings the decision to
 the operator" rather than a bigger panel, and the critics supplied the safety rules that went
-into the briefs. Seven changes were built in separate worktrees, each reviewed by an independent
-reviewer with a fresh context before merging; the reviews found one critical defect and about
-forty small ones, all fixed before merge.
+into the briefs. Eight changes were built in separate worktrees, each reviewed by an independent
+reviewer with a fresh context before merging; the reviews found two critical defects (one in the bubble card, one in my
+own first version of the checklist fix) and about forty small ones, all fixed before merge.
 
 | Change | Pull request | State |
 |---|---|---|
@@ -62,6 +62,7 @@ forty small ones, all fixed before merge.
 | The pull-request checklist finds tests in `.tsx` files and past its first 16 MiB | #4274 | merged |
 | Her typed conversation runs on Baseten (the operator's choice: "switch her to another model") | #4277 | merged |
 | The desk: the full window in three columns (decisions, fleet, conversation) | #4280 | merged |
+| A server test no longer calls a real model with the shell's keys | #4281 | merged |
 
 **What the operator has to know.** None of this is on the dashboard yet: the integration train,
 which moves `main` and so production, has not run since 26 November (R8-F13). The question
@@ -86,9 +87,14 @@ reached production) to 27 November 17:30. The host was off from 23 November 20:4
 | Times her panel was opened | 8 |
 | How long it stayed open | 2 h 52 min once (left open), 1 min 47 s, 4 min 05 s, then five visits of 14, 3, 7, 3 and 9 seconds |
 | Visits to the room | 2, lasting 5.8 s and 1.2 s |
-| Questions tasks asked | 6: two answered, both from Telegram; two expired; one cancelled; one waiting |
+| Questions asked (the ones still in the ask store) | 6: two answered, both from Telegram; two expired; one cancelled; one waiting |
 | Questions answered from her panel | 0 |
 | Lines she said aloud | 3 (one restart question, two permission notices), each while the panel was minimised and the tab hidden |
+
+Six is a floor: the ask store keeps a closed question only for a while. The restart question of
+18 November 23:53 ("You asked about 9 interrupted tasks. Resume them?", in
+`~/.kookr/interrupted-tasks.json` and in her spoken log) has left it; nobody answered that one
+either, and the tasks were resumed at its deadline.
 
 The baseline needs a correction that earlier runs did not make. The log holds 30 typed turns
 before 18 November, but 26 of them carry conversation ids `dogfood-r5-*`, `dogfood-r6-*` and
@@ -109,7 +115,7 @@ away, what she writes names nothing, the dashboard beside her says nothing is wa
 voice is switched off (R8-F4).
 
 **Suggested fix.** Stop treating her size as the problem. Measure every change of this run by
-one number: questions answered from her surface, out of questions asked (today 0 of 6).
+one number: questions answered from her surface, out of questions asked (today 0 of the 6 on record).
 
 ### R8-F2. In the operator's nine seconds with her today, the one question that needed an answer was a folded 31 px strip (proactivity) — severity: high
 
@@ -338,10 +344,12 @@ for 20 seconds on the guardrailed account (R8-F10), longer than the test's limit
 whose provider answers, the same test passes while spending the operator's credit. The gate
 runs it only for a diff that touches the interaction log, which is why clusters A and B passed.
 
-**Suggested fix.** The test gives the server a stand-in summary model (or clears the model keys
-in its own set-up); better, the test runner clears model keys for every test, so no test can
-reach a paid model by accident. Not built in this run; cluster D was pushed with the three
-variables unset, which its pull request says.
+**Suggested fix.** The test empties the model variables in its own set-up (cluster J, #4281),
+so it passes whatever the shell holds. Better still, and not built: the test runner clears model
+keys for every test (`test/scrub-agent-env.ts` only removes `KOOKR_`, `CLAUDE_` and `ANTHROPIC_`
+variables), so no test can reach a paid model by accident. With cluster J applied, the server,
+core, adapters and CLI tests pass in a shell that carries the keys (943 files, 21,474 tests), so
+this was the only test of those directories that reached a real model on this host.
 
 ### R8-F13. Merged fixes do not reach the operator: the integration train has not run since 26 November (process) — severity: high
 
@@ -385,7 +393,7 @@ her to find out what she wants. A bigger surface comes second and must be full. 
 today's screenshots beside them: https://claude.ai/artifact/JndKL29DUNG8XsRhctqxx7 (owner-only).
 
 The design is judged by one number, with its limits said: **questions and permission prompts
-answered from her surface, out of those raised** (today 0 of 6). Six in nine days is a small
+answered from her surface, out of those raised** (today 0 of the 6 on record). Six in nine days is a small
 sample and Telegram competes for the same answers, so the number is read together with how often
 the new card is dismissed ("Later"); both are logged by cluster D.
 
@@ -484,11 +492,12 @@ request. All were merged with `kookr merge`, into `staging`.
 |---|---|---|---|
 | A. She answers when her model fails (R8-F10) | #4272 | 2 rounds, no correctness defect | Before review I sent it back myself: its 8-second deadline would have cut healthy turns (the slowest healthy first text in the operator's history was 9.4 s) and could not see reasoning arrive. The reviewer added the wiring test that fails when the breaker is not connected. |
 | B. One list of what waits (R8-F3) | #4271 | 2 rounds | The bubble's accessible label did not mention permission prompts that its number counted; four behaviours had no test. |
-| C. Lines that name the task and the amount (R8-F5, R8-F8) | #4275 | 5 rounds and a delta check | Twelve small defects: "twice its $25 alert" at $180, "iOS build" re-cased to "IOS build", a chip with no text, titles cut on "for the". The delta check after rebasing onto A found that the two together would answer "From the board:" followed by nothing. |
-| D. The decision at the bubble (R8-F2) | #4273 | 3 rounds | One critical defect: a second question arriving inserted "+1 more waiting" above the live answer buttons and moved them under the pointer. Also: an outcome shown to a hidden tab, focus thrown to the page, a task's URL as a live link on a card that appears by itself. |
+| C. Lines that name the task and the amount (R8-F5, R8-F8) | #4275 | 4 rounds and a delta check | Twelve small defects: "twice its $25 alert" at $180, "iOS build" re-cased to "IOS build", a chip with no text, titles cut on "for the". The delta check after rebasing onto A found that the two together would answer "From the board:" followed by nothing. |
+| D. The decision at the bubble (R8-F2) | #4273 | 2 rounds and a delta check | One critical defect: a second question arriving inserted "+1 more waiting" above the live answer buttons and moved them under the pointer. Also: an outcome shown to a hidden tab, focus thrown to the page, a task's URL as a live link on a card that appears by itself. |
 | G. Her typed conversation on Baseten (R8-F10) | #4277 | 3 rounds and a delta check | No correctness defect. It asked for the upgrade rule (an install that already names an OpenRouter model stays on OpenRouter) and for the retry without `reasoning_effort`. |
 | H. The desk (R8-F6, R8-F9) | #4280 | 2 rounds | Every Fleet row was drawn again on every change of any agent; the entry animation no longer matched; the Playwright spec still asserted the old room. |
-| I. The checklist reads `.tsx` tests (R8-F11) | #4274 | 3 rounds | My first version would have hidden 94 server test files behind the checklist's 16 MiB limit. Reworked into a lookup with no total limit. |
+| J. The wiring test no longer calls a real model (R8-F12) | #4281 | 1 round, pass | Nothing blocking. It listed the suite-wide scrub that lets the same thing happen to another test. |
+| I. The checklist reads `.tsx` tests (R8-F11) | #4274 | 3 rounds | One critical finding, against my own first version: it would have hidden 94 server test files behind the checklist's 16 MiB limit. Reworked into a lookup with no total limit. |
 
 **What the operator sees once `main` moves** (it has not: R8-F13).
 
@@ -503,10 +512,24 @@ request. All were merged with `kookr merge`, into `staging`.
 - "Desk" in her column, or Alt+Shift+L, opens three columns: what waits, what the fleet is doing,
   the conversation.
 
+**Checked together.** On the head of `staging` with all of this run's changes: the train's
+static checks pass (`check:cycles`: 0 cycles in 1,449 files; the three type checks; the
+documentation validators); the frontend, Lucy, dashboard and checklist suites pass with the model
+keys unset (477 files, 7,708 tests); and with cluster J the server, core, adapters and CLI
+suites pass with the keys present (943 files, 21,474 tests). The two maintenance tests that
+halted the train on 26 November are in those runs and pass. Not run: `pnpm test:integration`,
+`test:smoke`, `test:hooks`, `test:stt` and Playwright beyond the desk's four tests; the train
+runs the first four.
+
+**Starting the train.** As it was last started (`start-args.json`), from the production
+checkout: `pnpm train:start --worktree ~/git/kookr-train --workers 6`. It will verify `staging`
+(twelve commits ahead of `main`, eight of them this run's), move `main`, and production will then
+update and restart itself.
+
 **Not built, and where it went.** Issue #4279: the expiry outcome on the card (the server half
 is in #4275), the column's text field and dead Talk button (R8-F7), batch actions, the train's
-supervision (R8-F13), the test that calls the real model (R8-F12), and the reviewers' larger
-follow-ups.
+supervision (R8-F13), a suite-wide scrub of model keys for tests (the rest of R8-F12), and the
+reviewers' larger follow-ups.
 
 **What to measure in the next run.** `~/.kookr/lucy-interactions.jsonl` now records
 `bubble_card_shown`, `bubble_card_answered`, `bubble_card_dismissed` and `bubble_card_opened`.
@@ -514,6 +537,9 @@ The number this run is judged by is questions and permission prompts answered fr
 out of those raised (0 of 6 before), read together with how often the card is dismissed.
 
 ## Session log
+
+Times are UTC. Merge times are GitHub's (`mergedAt`), question times the ask records', commit
+times git's; the others are to the nearest few minutes.
 
 - 17:28 Setup. The task received the playbook text of a checkout 779 commits behind
   (`/home/jean/git/kookr`): its copy still says "ask before push". The current playbook
@@ -524,50 +550,57 @@ out of those raised (0 of 6 before), read together with how often the card is di
   #4151, #4154 and #4166 are merged since.
 - 17:31 to 17:33 Live read-only probe (nine page loads, about 80 s in all, no click). Screenshots
   and `measurements.json` in `/tmp/kookr-ux-shots/r8/live/`.
-- 17:35 Read `~/.kookr/lucy-interactions.jsonl` and `~/.kookr/asks/asks.json`: R8-F1, R8-F2.
-- 17:40 Six Sonnet designers started, blind to each other (lenses: the Jarvis loop, the surface,
-  "more surface is the wrong fix", actions, proactivity, the conversation).
-- 17:36 to 17:45 The conversation designer's three test questions and one of mine all failed after
+- 17:34 Read `~/.kookr/lucy-interactions.jsonl` and `~/.kookr/asks/asks.json`: R8-F1, R8-F2. Six
+  Sonnet designers started, blind to each other (lenses: the Jarvis loop, the surface, "more
+  surface is the wrong fix", actions, proactivity, the conversation).
+- 17:36 to 17:39 The conversation designer's three test questions and one of mine all failed after
   28 s: R8-F10. Reproduced against OpenRouter directly (five request shapes, all 429 from Sail
   Research).
-- 17:50 Round 2: four Sonnet critics attack the synthesis (what to cut, failure modes, delivery,
-  a walkthrough as the operator).
-- 17:52 Mock-up page published; two questions put to the operator with `kookr ask` (no wait).
-- 17:55 Four cluster worktrees from `origin/main` (`kookr-r8-a-model-fallback`,
-  `kookr-r8-b-one-waiting-list`, `kookr-r8-c-named-lines`, `kookr-r8-d-decision-bubble`), one
-  implementer each. Host load 52 before they started (the fleet's own work).
-- 18:05 Correction: speech is switched off in `.env`, it did not fail to start. R8-F4 rewritten;
+- 17:41 Round 2: four Sonnet critics on the synthesis (what to cut, failure modes, delivery, a
+  walkthrough as the operator).
+- 17:45 Mock-up page published; two questions put to the operator with `kookr ask` (no wait).
+- 17:48 Four cluster worktrees from `origin/main`, one implementer each. Host load 52 before they
+  started (the fleet's own work).
+- 17:50 Correction: speech is switched off in `.env`, it did not fail to start. R8-F4 rewritten;
   the mock-up page corrected.
-- 18:25 RFC pushed, pull request #4270 opened (stays open as this log).
-- 18:40 The operator answered both questions on Telegram: "Build the desk after the 4 fixes" and
-  "Switch her to another model".
-- 18:45 Cluster A reviewed by me: its 8-second deadline would have cut healthy turns (9 of 30 past
+- 17:53 This pull request (#4270) opened; it stays open as the log.
+- 17:56 and 17:57 The operator answered both questions on Telegram: "Switch her to another model"
+  and "Build the desk after the 4 fixes".
+- 18:00 Cluster A reviewed by me: its 8-second deadline would have cut healthy turns (9 of 30 past
   turns took over 5 s to their first text, one 9.4 s) and it could not see reasoning arrive. Sent
   back; now 12 s of provider silence, reasoning counts.
-- 18:55 Probing "another model" through the operator's account: every other model and every other
+- 18:03 Probing "another model" through the operator's account: every other model and every other
   provider is refused by a workspace guardrail. Baseten answers in under a second. Cluster G
   started (stacked on A).
-- 19:00 Clusters A, B and C to independent review (fresh context, blind to the implementers).
-  Cluster D built; sent back to rebase onto B, which touches three of the same files.
-- 19:10 Reviews, round 1: A no correctness defect, 3 small; B 6 small; C 8 small; D 1 critical (a
-  second question arriving moved live answer buttons under the pointer) and 6 small. All sent back
-  and fixed; fix checks followed (C took five rounds, each on smaller wording).
-- 19:30 #4271 merged. 19:36 #4272 merged.
-- 19:40 D's push rejected by a test that calls the real helper model (R8-F12); pushed with the
-  model keys unset. A second push passed the gate and failed on DNS; the third went through.
-  20:02 #4273 merged.
-- 19:45 The checklist reported a tested module as untested (R8-F11). My first fix widened the file
-  list; its reviewer showed it would hide 94 other test files behind the 16 MiB limit. Reworked.
-  20:10 #4274 merged.
-- 20:05 Rebasing C onto the merged A showed that the two together would answer "From the board:"
-  followed by nothing; fixed in C with a test. 20:25 #4275 merged.
-- 20:06 `origin/main` has not moved: the integration train is not running (R8-F13). Asked.
-- 20:15 The desk built and photographed; in review.
-- 20:40 #4277 merged (Baseten). Follow-up issue #4279 filed.
-- 20:45 The desk's review: functionally right, five small defects and a stale Playwright spec;
-  fixed, the spec rewritten and run (4 passed). 21:05 fix check passed.
-- 21:20 #4280 merged (the desk). `origin/main` is still `e33d8654d`; eleven commits wait on
-  `staging`, seven of them this run's. The train question is unanswered.
-- 21:25 Playbook updated with this run's process lessons (Phase 5), in this pull request.
+- 18:07 Clusters A, B and C to independent review (fresh context, blind to the implementers).
+  Cluster D built; sent back to rebase onto B, which touches three of the same files; then to
+  review.
+- 18:15 to 18:30 Reviews, round 1: A no correctness defect, 3 small; B 6 small; C 8 small; D 1
+  critical (a second question arriving moved live answer buttons under the pointer) and 6 small.
+  All sent back and fixed; fix checks followed.
+- 18:30 #4271 merged (B). 18:37 #4272 merged (A).
+- 18:40 D's push rejected by a test that calls the real helper model (R8-F12); pushed again with
+  the model keys unset. That push passed the gate and failed on DNS ("Could not resolve host:
+  github.com"); the third went through. 18:58 #4273 merged (D).
+- 18:45 The checklist reported a tested module as untested (R8-F11). My first fix widened the file
+  list; its reviewer classed it critical: it would have hidden 94 other test files behind the
+  16 MiB limit. Reworked. 19:00 #4274 merged (I).
+- 18:50 Rebasing C onto the merged A showed that the two together would answer "From the board:"
+  followed by nothing; fixed in C with a test, delta-checked. 19:07 #4275 merged (C).
+- 19:06 `origin/main` has not moved since 23 November: the integration train is not running
+  (R8-F13). 19:10 the operator asked whether to start it (ask `a9dc08691266`).
+- 19:18 #4277 merged (G, Baseten), after a rebase onto C and a delta check.
+- 19:00 to 19:40 The desk (H): built and photographed; its review found it functionally right
+  with five small defects and a stale Playwright spec; fixed, the spec rewritten and run (4
+  passed); fix check passed. 19:40 #4280 merged.
+- 19:26 Follow-up issue #4279 filed.
+- 19:45 On the head of `staging` with all seven changes: `check:cycles`, the three type checks
+  and the documentation validators pass. `origin/main` is still `e33d8654d`; eleven commits wait
+  on `staging`, seven of them this run's (twelve and eight after cluster J). The train question
+  is unanswered.
+- 19:50 to 20:30 Checks on the combined result (see "Checked together"). A train started from a
+  shell with model keys would have met R8-F12 on `main`: fixed as cluster J, reviewed, #4281
+  merged.
+- Playbook updated with this run's process lessons (Phase 5), in this pull request.
 - Scope choice: this run does not re-drive the launch dialog, the live terminal or the rating
   flow (runs 1 to 4 did, and the brief is Lucy), and launches no task of its own.
