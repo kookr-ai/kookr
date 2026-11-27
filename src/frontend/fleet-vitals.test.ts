@@ -7,8 +7,10 @@ import {
   fleetVitalsVerdict,
   formatVitalsBytesOfTotal,
   formatVitalsCount,
+  formatVitalsLowerBound,
   formatVitalsPercent,
   gpuLoadLevel,
+  historyWindowLabel,
   isFleetVitalsHistoryPoint,
   isFleetVitalsSample,
   isFleetVitalsStale,
@@ -189,7 +191,8 @@ describe('fleetVitalsVerdict', () => {
     const verdict = fleetVitalsVerdict(sample({ cpu: 88, vramPercent: 97 }));
     expect(verdict.level).toBe('bad');
     expect(verdict.headline).toBe('VRAM nearly full, CPU busy');
-    expect(verdict.detail).toBe('Tightest: VRAM 97%');
+    // The headline names the problem; "tightest" would only repeat it.
+    expect(verdict.detail).toBeNull();
     expect(verdict.issues.map((issue) => `${issue.resource}:${issue.level}`)).toEqual(['vram:bad', 'cpu:watch']);
   });
 
@@ -202,7 +205,8 @@ describe('fleetVitalsVerdict', () => {
   test('the pressure sheet case: CPU 96 %, VRAM 23.3 of 24 GB, lag 640 ms', () => {
     const verdict = fleetVitalsVerdict(sample({ cpu: 96, vramPercent: 97.1, lag: 640 }));
     expect(verdict.level).toBe('bad');
-    expect(verdict.headline).toBe('CPU saturated, VRAM nearly full, +1 more');
+    expect(verdict.headline).toBe('CPU saturated, VRAM nearly full');
+    expect(verdict.detail).toBe('+1 more');
     expect(verdict.issues).toHaveLength(3);
   });
 
@@ -218,6 +222,12 @@ describe('fleetVitalsVerdict', () => {
       detail: null,
       issues: [],
     });
+  });
+
+  test('a machine whose CPU is not measured yet is not called comfortable', () => {
+    const verdict = fleetVitalsVerdict(sample({ cpu: null }));
+    expect(verdict.level).toBe('unknown');
+    expect(verdict.headline).toBe('Measuring');
   });
 
   test('a slow dashboard is reported even when the machine readings are unknown', () => {
@@ -247,9 +257,21 @@ describe('formatting', () => {
     expect(formatVitalsCount(null)).toBe('--');
   });
 
+  test('a lower bound carries its sign on the number, except at zero', () => {
+    expect(formatVitalsLowerBound(110)).toBe('≥110');
+    expect(formatVitalsLowerBound(13_860)).toBe('≥13.9k');
+    expect(formatVitalsLowerBound(0)).toBe('0');
+    expect(formatVitalsLowerBound(0.3)).toBe('0');
+    expect(formatVitalsLowerBound(null)).toBe('--');
+  });
+
   test('an amount against its limit', () => {
     expect(formatVitalsBytesOfTotal(2.5 * GIB, 24 * GIB)).toBe('2.5 / 24 GB');
     expect(formatVitalsBytesOfTotal(10 * GIB, 31 * GIB)).toBe('10 / 31 GB');
+    // Close to the limit, the decimal is what matters.
+    expect(formatVitalsBytesOfTotal(23.3 * GIB, 24 * GIB)).toBe('23.3 / 24 GB');
+    expect(formatVitalsBytesOfTotal(54 * GIB, 503 * GIB)).toBe('54 / 503 GB');
+    expect(formatVitalsBytesOfTotal(120.4 * GIB, 503 * GIB)).toBe('120 / 503 GB');
     expect(formatVitalsBytesOfTotal(310 * 1_048_576, 512 * 1_048_576)).toBe('310 / 512 MB');
     expect(formatVitalsBytesOfTotal(null, 24 * GIB)).toBe('--');
   });
@@ -293,6 +315,15 @@ describe('trend lines', () => {
   test('a buffer that is still filling is right-aligned: the newest point is at the right edge', () => {
     // Two points in a five-slot window occupy the last two slots.
     expect(sparklinePath([100, 100], 100, 20, 5)).toBe('M75.0 1.0L100.0 1.0');
+  });
+
+  test('the window label says how much time the lines really cover', () => {
+    expect(historyWindowLabel([])).toBe('Just started');
+    expect(historyWindowLabel([point({ t: 0 })])).toBe('Just started');
+    expect(historyWindowLabel([point({ t: 0 }), point({ t: 40_000 })])).toBe('Last 40 s');
+    expect(historyWindowLabel([point({ t: 0 }), point({ t: 130_000 })])).toBe('Last 2 min');
+    // A full buffer: 150 samples two seconds apart.
+    expect(historyWindowLabel([point({ t: 0 }), point({ t: 298_000 })])).toBe('Last 5 min');
   });
 
   test('nothing to draw gives an empty path', () => {

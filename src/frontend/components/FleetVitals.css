@@ -1,0 +1,465 @@
+/*
+ * Machine + fleet vitals (FleetVitals.tsx): the block at the top of the System
+ * detail and the opt-in strip in the top bar.
+ *
+ * Rules this file keeps (design-tokens.test.ts checks the first two):
+ * - type sizes 12 / 13 / 14 / 16 / 20 px only; radii 4 px, 8 px, 999px or 50%;
+ * - colour means state only: amber = watch, red = bad. Meters are neutral at
+ *   rest, so a coloured meter always means something. Teal is kept for fleet
+ *   activity (trend lines, the "agents" mark, the switch when on);
+ * - a state colour never stands alone: it comes with a mark shape (dot for
+ *   watch, diamond for bad, ring for fine, dash for unknown), a hatched fill
+ *   and words;
+ * - numbers are monospace with tabular figures in columns of reserved width,
+ *   so a changing value never shifts its neighbours.
+ */
+
+.vitals {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The System detail sizes itself to its content; without a width of its own
+     the block would squeeze to its narrowest row. Capped for small screens. */
+  width: 392px;
+  max-width: calc(100vw - 64px);
+  margin: 0 0 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-dim);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* --- State marks ------------------------------------------------------- */
+
+.vitals-mark {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+}
+/* Fine: ring. */
+.vitals-mark--ok {
+  border: 2px solid var(--state-work);
+  border-radius: 50%;
+  background: transparent;
+}
+/* Watch: filled dot. */
+.vitals-mark--watch {
+  border-radius: 50%;
+  background: var(--state-need);
+}
+/* Bad: diamond. */
+.vitals-mark--bad {
+  width: 7px;
+  height: 7px;
+  background: var(--state-bad);
+  transform: rotate(45deg);
+}
+/* Not measured: dash. */
+.vitals-mark--unknown {
+  height: 2px;
+  background: var(--state-neutral);
+}
+/* Out of date: two bars, a "paused" sign. */
+.vitals-mark--stale {
+  width: 7px;
+  border-right: 2px solid var(--state-neutral);
+  border-left: 2px solid var(--state-neutral);
+  background: transparent;
+}
+
+/* --- Verdict line ------------------------------------------------------ */
+
+/* The padding and negative margin are always there, so the tinted banner that
+   appears under pressure does not move the text or the rows below it. */
+.vitals-verdict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  min-height: 28px;
+}
+.vitals-verdict-headline {
+  color: var(--text-bright);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.vitals-verdict-detail {
+  margin-left: auto;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.vitals-verdict--watch { background: rgba(251, 191, 36, 0.12); }
+.vitals-verdict--bad { background: rgba(248, 113, 113, 0.14); }
+.vitals-verdict--watch .vitals-verdict-detail,
+.vitals-verdict--bad .vitals-verdict-detail { color: var(--text); }
+
+/* --- Machine meters ---------------------------------------------------- */
+
+.vitals-machine {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 20px;
+  row-gap: 8px;
+}
+.vitals-meter-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
+}
+.vitals-meter-head .vitals-mark { align-self: center; }
+.vitals-meter-label {
+  color: var(--text-bright);
+  font-weight: 700;
+}
+.vitals-meter-detail {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+}
+.vitals-meter-value {
+  margin-left: auto;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.vitals-meter-track {
+  position: relative;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--border-dim);
+}
+.vitals-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 2px;
+  border-radius: 999px;
+  background: var(--text-secondary);
+}
+/* Where "under pressure" starts. Taller than the track so it reads as a mark, not a gap. */
+.vitals-meter-tick {
+  position: absolute;
+  top: -2px;
+  width: 1px;
+  height: 10px;
+  background: var(--text-secondary);
+}
+/* Under pressure: state colour and a diagonal hatch, which still shows in greyscale. */
+.vitals-meter--watch .vitals-meter-fill {
+  background:
+    repeating-linear-gradient(135deg, transparent 0 4px, rgba(15, 17, 23, 0.55) 4px 6px),
+    var(--state-need);
+}
+.vitals-meter--bad .vitals-meter-fill {
+  background:
+    repeating-linear-gradient(135deg, transparent 0 4px, rgba(15, 17, 23, 0.55) 4px 6px),
+    var(--state-bad);
+}
+.vitals-meter--watch .vitals-meter-detail,
+.vitals-meter--bad .vitals-meter-detail {
+  color: var(--text-bright);
+  font-family: inherit;
+  font-weight: 600;
+}
+
+/* --- Fleet: how much is running ---------------------------------------- */
+
+.vitals-fleet {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-dim);
+}
+.vitals-running {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: none;
+}
+/* The one dominant number of the block. */
+.vitals-running-count {
+  min-width: 2ch;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 24px;
+}
+.vitals-running-label { color: var(--text-secondary); }
+.vitals-split {
+  display: inline-flex;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  color: var(--text);
+}
+.vitals-split-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.vitals-split-item--need { color: var(--text-bright); }
+
+/* --- Rates: number + five-minute trend line ---------------------------- */
+
+.vitals-rates {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vitals-rate {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 86px 80px;
+  align-items: center;
+  column-gap: 10px;
+  min-height: 20px;
+}
+.vitals-rate-label { color: var(--text-secondary); }
+.vitals-spark {
+  display: block;
+  width: 100%;
+  height: 18px;
+  overflow: visible;
+}
+.vitals-spark-floor {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.vitals-spark-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.vitals-spark--fleet .vitals-spark-line { stroke: var(--state-work); }
+/* Tokens read is mostly cache: kept quiet so it does not outweigh what was generated. */
+.vitals-spark--quiet .vitals-spark-line { stroke: var(--text-secondary); }
+.vitals-rate-value {
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+.vitals-unit {
+  margin-left: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+.vitals-rate-scale {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vitals-caption {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+}
+
+/* --- Footer: lag, details, pin ----------------------------------------- */
+
+.vitals-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-dim);
+  min-height: 24px;
+}
+.vitals-lag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.vitals-lag-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.vitals-lag--watch,
+.vitals-lag--bad {
+  color: var(--text-bright);
+  font-weight: 600;
+}
+.vitals-details-toggle,
+.vitals-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vitals-details-toggle {
+  margin-left: auto;
+  font-weight: 600;
+}
+.vitals-details-toggle::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin: -3px 2px 0 2px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+}
+.vitals-details-toggle[aria-expanded='true']::after {
+  margin-top: 3px;
+  transform: rotate(-135deg);
+}
+.vitals-details-toggle:hover,
+.vitals-pin:hover { color: var(--text-bright); }
+.vitals-details-toggle:focus-visible,
+.vitals-pin:focus-visible,
+.vitals-strip:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.vitals-pin-track {
+  position: relative;
+  display: inline-block;
+  width: 26px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--text-secondary);
+  border-radius: 999px;
+}
+.vitals-pin-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.vitals-pin[aria-checked='true'] .vitals-pin-track {
+  border-color: var(--teal);
+  background: rgba(45, 212, 191, 0.18);
+}
+.vitals-pin[aria-checked='true'] .vitals-pin-thumb {
+  left: 14px;
+  background: var(--teal);
+}
+
+/* --- Details ----------------------------------------------------------- */
+
+.vitals-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 14px;
+  margin: 0;
+}
+.vitals-details dt { color: var(--text-secondary); }
+.vitals-details dd {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.vitals-note {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+}
+
+/* --- Out-of-date readings ---------------------------------------------- */
+
+/* No fresh sample for ten seconds: the last values stay, visibly not current.
+   The verdict line says so in words and stays at full strength. */
+.vitals--stale .vitals-machine,
+.vitals--stale .vitals-fleet,
+.vitals--stale .vitals-rates { opacity: 0.55; }
+
+/* --- Strip in the top bar ---------------------------------------------- */
+
+/* Always present (even with no strip inside), so the strip's room can be measured. */
+.vitals-strip-slot {
+  display: inline-flex;
+  align-items: center;
+}
+
+.vitals-strip {
+  display: inline-flex;
+  align-items: stretch;
+  align-self: center;
+  gap: 2px;
+  height: 28px;
+  /* Room between the strip and the System button it sits beside. */
+  margin-right: 10px;
+  padding: 0 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 13px;
+  cursor: pointer;
+}
+.vitals-strip:hover { border-color: var(--border); }
+.vitals-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.vitals-cell-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+.vitals-cell-value {
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+/* Reserved widths: "9%" and "100%" take the same room. */
+.vitals-cell--machine .vitals-cell-value,
+.vitals-cell--alert .vitals-cell-value { min-width: 4ch; }
+.vitals-cell--fleet .vitals-cell-value { min-width: 5ch; }
+.vitals-strip-sep {
+  flex: none;
+  width: 1px;
+  margin: 5px 4px;
+  background: var(--border);
+}
+/* Under pressure the cell names itself: tint, mark, bright label, bold value. */
+.vitals-cell--watch { background: rgba(251, 191, 36, 0.14); }
+.vitals-cell--bad { background: rgba(248, 113, 113, 0.16); }
+.vitals-cell--watch .vitals-cell-label,
+.vitals-cell--bad .vitals-cell-label { color: var(--text-bright); }
+.vitals-cell--watch .vitals-cell-value,
+.vitals-cell--bad .vitals-cell-value { font-weight: 700; }
+.vitals-strip--stale .vitals-cell--machine,
+.vitals-strip--stale .vitals-cell--fleet { opacity: 0.55; }

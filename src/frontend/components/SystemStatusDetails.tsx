@@ -29,6 +29,8 @@ import type {
   TimerHealthStatus,
 } from '../store/store-types.js';
 import type { SystemResourceStatus } from '../../shared/protocol.js';
+import { vramLevel, type VitalsLevel } from '../fleet-vitals.js';
+import { useFleetVitalsStale } from './FleetVitals.js';
 import {
   formatLiveFrictionChipLabel,
   isLiveFrictionSnapshot,
@@ -87,6 +89,13 @@ export interface SystemAttentionInput {
   resourceStatus?: SystemResourceStatus | null;
   /** True when the resource sample is too old to trust (then it raises nothing). */
   resourceStale?: boolean;
+  /**
+   * Video-memory pressure from the fleet vitals: `watch` from 90 %, `bad` from
+   * 97 %. Raised here so the System indicator and the vitals strip, which
+   * names the same condition, can never disagree. Pass `unknown` (or leave it
+   * out) when there is no GPU or the vitals are out of date.
+   */
+  vramLevel?: VitalsLevel;
 }
 
 /** Short reasons, one per degraded condition; empty when the system is healthy. */
@@ -118,6 +127,8 @@ export function systemAttentionReasons(input: SystemAttentionInput): string[] {
     if (hot(memorySeverity(resources))) reasons.push('memory high');
     if (hot(eventLoopSeverity(resources.server.eventLoopDelayP95Ms))) reasons.push('server event loop slow');
   }
+  if (input.vramLevel === 'bad') reasons.push('GPU memory nearly full');
+  else if (input.vramLevel === 'watch') reasons.push('GPU memory tight');
   return reasons;
 }
 
@@ -161,6 +172,11 @@ export function useSystemAttentionReasons(): string[] {
   const taskNamer = useKookrStore((s) => s.taskNamer);
   const resourceStatus = useKookrStore((s) => s.resourceStatus);
   const resourceStale = useResourceStatusStale();
+  // Selected as a level, not the sample: the sample changes every two seconds,
+  // the level almost never, so the top bar does not re-render on each tick.
+  const freshVramLevel = useKookrStore((s) => (s.fleetVitals ? vramLevel(s.fleetVitals) : 'unknown'));
+  const vitalsStale = useFleetVitalsStale();
+  const currentVramLevel: VitalsLevel = vitalsStale ? 'unknown' : freshVramLevel;
   return useMemo(() => systemAttentionReasons({
     prodSmokeTick,
     resourceWatchdog,
@@ -171,6 +187,7 @@ export function useSystemAttentionReasons(): string[] {
     taskNamer,
     resourceStatus,
     resourceStale,
+    vramLevel: currentVramLevel,
   }), [
     prodSmokeTick,
     resourceWatchdog,
@@ -181,6 +198,7 @@ export function useSystemAttentionReasons(): string[] {
     taskNamer,
     resourceStatus,
     resourceStale,
+    currentVramLevel,
   ]);
 }
 
@@ -636,10 +654,13 @@ export function SystemStatusDetails({
   const toggleSound = useCallback(() => {
     sound.setEnabled(!sound.enabled);
   }, [sound]);
+  const hasFleetVitals = useKookrStore((s) => s.fleetVitals !== null);
 
   return (
     <div className="system-status-details" data-testid="system-status-details">
-      <ResourceDisplay compact={false} />
+      {/* The vitals block above shows CPU and memory once a vitals sample has
+          arrived; these two pills remain for the moments before that. */}
+      {!hasFleetVitals && <ResourceDisplay compact={false} />}
       <OpsHealthPills
         onOpenCapacity={onOpenCapacity}
         onOpenDiagnostics={onOpenDiagnostics}

@@ -190,9 +190,13 @@ export function fleetVitalsIssues(sample: FleetVitalsSample): VitalsIssue[] {
 
 export interface VitalsVerdict {
   level: VitalsLevel;
-  /** "Machine comfortable", "CPU saturated", "VRAM nearly full, CPU busy". */
+  /** "Machine comfortable", "CPU saturated", "VRAM nearly full, CPU busy". Names at most two issues. */
   headline: string;
-  /** "Tightest: CPU 66%", or `null` when nothing can be compared yet. */
+  /**
+   * The short second read. At rest, the resource closest to its limit
+   * ("Tightest: CPU 66%"). Under pressure the headline already names the
+   * problem, so this only says how many more there are ("+1 more"), or nothing.
+   */
   detail: string | null;
   issues: VitalsIssue[];
 }
@@ -217,15 +221,16 @@ export function fleetVitalsVerdict(sample: FleetVitalsSample): VitalsVerdict {
   const detail = tightest ? `Tightest: ${tightest.name} ${Math.round(tightest.percent)}%` : null;
 
   if (issues.length === 0) {
-    if (shares.length === 0) return { level: 'unknown', headline: 'Measuring', detail: null, issues };
+    // CPU needs two samples before it has a value. Until then the machine
+    // cannot be called comfortable, whatever the other readings say.
+    if (cpuUsagePercent === null) return { level: 'unknown', headline: 'Measuring', detail: null, issues };
     return { level: 'ok', headline: 'Machine comfortable', detail, issues };
   }
   const named = issues.slice(0, 2).map((issue, index) => (index === 0 ? issue.label : lowerFirstWord(issue.label)));
-  const more = issues.length > 2 ? `, +${issues.length - 2} more` : '';
   return {
     level: issues[0].level,
-    headline: `${named.join(', ')}${more}`,
-    detail,
+    headline: named.join(', '),
+    detail: issues.length > 2 ? `+${issues.length - 2} more` : null,
     issues,
   };
 }
@@ -258,10 +263,15 @@ export function formatVitalsCount(value: number | null | undefined): string {
   return `${(rounded / 1_000_000).toFixed(1)}M`;
 }
 
-/** Gigabytes with one decimal below 10 ("2.5"), none above ("24"); megabytes below 1 GB ("310 MB"). */
+/**
+ * Gigabytes with one decimal below 100 ("2.5", "23.3"), dropped when it is zero
+ * ("24"). The decimal stays above 10 on purpose: 23.3 of 24 GB and 23.9 of
+ * 24 GB are very different amounts of room left.
+ */
 function formatGigabytes(bytes: number): string {
   const gib = bytes / GIB;
-  return gib >= 10 ? gib.toFixed(0) : gib.toFixed(1);
+  if (gib >= 100) return gib.toFixed(0);
+  return gib.toFixed(1).replace(/\.0$/, '');
 }
 
 /** "2.5 / 24 GB": an amount against its limit. */
@@ -269,6 +279,16 @@ export function formatVitalsBytesOfTotal(usedBytes: number | null | undefined, t
   if (usedBytes == null || totalBytes == null) return VITALS_UNAVAILABLE;
   if (totalBytes < GIB) return `${Math.round(usedBytes / MIB)} / ${Math.round(totalBytes / MIB)} MB`;
   return `${formatGigabytes(usedBytes)} / ${formatGigabytes(totalBytes)} GB`;
+}
+
+/**
+ * A rate that can only be under-counted, as shown on the number: "≥110". Zero
+ * is shown bare: "≥0" says nothing and reads as an error.
+ */
+export function formatVitalsLowerBound(value: number | null | undefined): string {
+  if (value == null) return VITALS_UNAVAILABLE;
+  const text = formatVitalsCount(value);
+  return text === '0' ? text : `≥${text}`;
 }
 
 /** Share of the tokens read that came from the prompt cache, "98%"; `null` when nothing was read. */
@@ -339,4 +359,15 @@ export function sparklinePath(
     penDown = true;
   });
   return path;
+}
+
+/**
+ * How much time the trend lines cover, in words: "Last 5 min" once the buffer
+ * is full, less while it fills after a server restart ("Last 40 s").
+ */
+export function historyWindowLabel(history: readonly FleetVitalsHistoryPoint[]): string {
+  if (history.length < 2) return 'Just started';
+  const spanMs = history[history.length - 1].t - history[0].t;
+  if (spanMs < 60_000) return `Last ${Math.max(1, Math.round(spanMs / 1_000))} s`;
+  return `Last ${Math.round(spanMs / 60_000)} min`;
 }

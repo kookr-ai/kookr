@@ -25,6 +25,7 @@ import {
 } from '../api/index.js';
 import { loadDeployIntent } from '../store/deploy-intent-storage.js';
 import { SystemStatusDetails, useSystemAttentionReasons, useSystemQuietNotes } from './SystemStatusDetails.js';
+import { FleetVitalsBlock, FleetVitalsStrip } from './FleetVitals.js';
 
 interface Props {
   findings: number;
@@ -428,6 +429,12 @@ export function TopBar({
       <div className="topbar-right">
         <div className="metric-group">
           <div className="system-indicator-wrap" ref={systemWrapRef}>
+            {/* Opt-in vitals strip (off unless pinned from the System detail).
+                A second trigger for that detail, where the full block lives;
+                inside the wrap so a click on it is not an "outside" click. */}
+            {!compact && (
+              <FleetVitalsStrip onOpen={() => setShowPopover((v) => !v)} expanded={showPopover} />
+            )}
             <button
               ref={systemButtonRef}
               type="button"
@@ -464,6 +471,7 @@ export function TopBar({
                 role="dialog"
                 aria-label="System"
               >
+                <FleetVitalsBlock needYouCount={totalFindings} />
                 <h3 className="system-popover-heading">Status</h3>
                 {attentionReasons.length > 0 && (
                   <div className="system-attention-summary" role="status" data-testid="system-attention-summary">
