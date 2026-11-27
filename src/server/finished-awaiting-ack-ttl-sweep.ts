@@ -15,6 +15,7 @@ import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { paneHasHumanInteractiveMarkers } from '../shared/pane-semantics.js';
 import { evaluateLiveWorkVeto, liveWorkVetoReasonText } from './live-work-veto.js';
+import type { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 
 /** Cap last-pass outcome samples on health (issue #2084 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -253,6 +254,14 @@ export interface ReclaimFinishedAwaitingAckTasksDeps {
   getTaskPaneText?: (
     taskId: string,
   ) => string | undefined | null | Promise<string | undefined | null>;
+  /**
+   * The FAA ack-path reaper's grace/veto coordinator (issue #4266). While it
+   * holds a warning for a task whose deadline is still in the future (the
+   * 60 s grace the dashboard announced, possibly pushed out by "Keep it
+   * alive" or the presence hold), the ack reaper owns that task's close and
+   * this sweep leaves it alone. Absent ⇒ no task is held (pre-#4266 behaviour).
+   */
+  ackReapWarnings?: Pick<ReapWarningCoordinator, 'getWarning'>;
   /** Optional counters for strict reclaim + meta auto-complete + skip breakdown. */
   metrics?: Pick<
     FinishedAwaitingAckTtlReclaimMetrics,
@@ -275,6 +284,12 @@ export interface ReclaimFinishedAwaitingAckTasksResult {
   autoCompletedTaskIds: string[];
   /** Candidates deferred by TOCTOU (live turn / interactive pane) this sweep. */
   deferredTaskIds: string[];
+  /**
+   * Candidates left to the ack-path reaper this sweep because it holds an
+   * unexpired grace warning or keep-alive for them (issue #4266). Not counted
+   * as TOCTOU deferrals: the ack reaper closes them when its grace ends.
+   */
+  ackGraceHeldTaskIds: string[];
   /** Strict-path selection snapshot from this pass (issue #2084). */
   selection?: {
     candidatesConsidered: number;
@@ -329,11 +344,26 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     capacityPressureEarlyReclaimedTaskIds: [],
     autoCompletedTaskIds: [],
     deferredTaskIds: [],
+    ackGraceHeldTaskIds: [],
   };
   const lifecycleDeps = deps.lifecycleDeps;
   if (!lifecycleDeps) return empty;
 
   const now = opts.now ?? new Date();
+  const nowMs = now.getTime();
+  // Issue #4266: one owner for the close. When the ack-path reaper (#2170) has
+  // warned "close in 60s unless acked/kept", the countdown is a promise to the
+  // operator: this sweep must not close the task before the deadline, or the
+  // warning is false and "Keep it alive" does nothing. The ack reaper runs
+  // first on the same tick, so at the shared 5-minute mark it warns and this
+  // sweep then stands down. Only an UNEXPIRED warning holds: a warning stuck
+  // past its deadline (the ack reaper keeps deferring it) never shields a
+  // task from this backstop.
+  const ackGraceHeldTaskIds: string[] = [];
+  const isHeldByAckReapGrace = (taskId: string): boolean => {
+    const warning = deps.ackReapWarnings?.getWarning(taskId);
+    return warning !== undefined && warning.deadlineAt > nowMs;
+  };
   const softTtlMs = opts.softTtlMs ?? DEFAULT_FINISHED_AWAITING_ACK_SOFT_TTL_MS;
   const capacityAllowsEarlyReclaim = opts.capacityAllowsEarlyReclaim === true;
   deps.metrics?.recordSoftTtlPolicy({
@@ -381,6 +411,13 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
       || fresh.pendingSignal?.kind !== 'completion_ready'
     ) {
       // Acked / dismissed / transitioned since selection — no longer ours to close.
+      continue;
+    }
+    // The ack reaper's grace or keep-alive is running (issue #4266). Applies to
+    // the hard TTL too: one keep-alive adds 10 minutes at the 5-minute mark,
+    // which would otherwise end at the 15-minute hard TTL.
+    if (isHeldByAckReapGrace(task.id)) {
+      ackGraceHeldTaskIds.push(task.id);
       continue;
     }
     // Shared live-work veto: live turn, an unsent operator draft in the
@@ -466,8 +503,8 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   // Issue #2070: meta/playbook FAA auto-complete for the unfetched-PR-ref residual.
   // Skip ids the strict path already reclaimed OR deferred this sweep (a strict
   // deferral means the task has a live turn / interactive pane — the meta path
-  // must not re-close it either).
-  const alreadyHandled = new Set([...reclaimedTaskIds, ...deferredTaskIds]);
+  // must not re-close it either), and ids the ack reaper's grace holds.
+  const alreadyHandled = new Set([...reclaimedTaskIds, ...deferredTaskIds, ...ackGraceHeldTaskIds]);
   const metaEntries = listMetaFinishedAwaitingAckAutoCompleteTasks(deps.taskStore.viewTasks(), {
     now,
     ttlMs: opts.metaAutoCompleteTtlMs ?? DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
@@ -487,6 +524,11 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
       || fresh.status !== 'inProgress'
       || fresh.pendingSignal?.kind !== 'completion_ready'
     ) {
+      continue;
+    }
+    // Same single-owner rule as the strict loop (issue #4266).
+    if (isHeldByAckReapGrace(task.id)) {
+      ackGraceHeldTaskIds.push(task.id);
       continue;
     }
     // Shared live-work veto (live turn / unsent operator draft / interactive
@@ -575,6 +617,7 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     capacityPressureEarlyReclaimedTaskIds,
     autoCompletedTaskIds,
     deferredTaskIds,
+    ackGraceHeldTaskIds,
     selection: {
       candidatesConsidered: selection.candidatesConsidered,
       skips: selection.skips,
