@@ -236,25 +236,40 @@ Provider returned error". Nothing in `/api/health` or in the System indicator me
 model. The last turn that succeeded is from 18 November; nobody has talked to her since
 (R8-F1), so nobody knows how long she has been down.
 
-**Root cause.** Reproduced with the same model and key, outside Kookr. OpenRouter sends
-`deepseek/deepseek-v4.1-flash-1017` to one provider, Sail Research, which answers after 20
-seconds with `429 rate_limit_exceeded`, `provider_code: ttft_deadline_guard` ("temporarily
-rate-limited upstream … limit_source: upstream_provider_share"), with or without tools,
-streaming or not. Since #4255 (23 November, an operator decision) Kookr sends no provider
-preference and the routing rule on the OpenRouter account chooses; that rule has one provider
-for this model and no second choice. On Kookr's side:
+**Root cause.** Reproduced with the same model and key, outside Kookr. The operator's OpenRouter
+workspace has a guardrail (`https://openrouter.ai/workspaces/default/guardrails`) that allows one
+provider and one model family:
+
+- `deepseek/deepseek-v4.1-flash-1017` goes to Sail Research, which answers after 20 seconds with
+  `429 rate_limit_exceeded`, `provider_code: ttft_deadline_guard` ("temporarily rate-limited
+  upstream"), with or without tools, streaming or not. The model has about 25 other providers on
+  OpenRouter, all healthy; asking for one of them (`provider.ignore`, `provider.order`) answers
+  `404 … Provider not allowed by guardrail: 51 endpoints excluded`.
+- Any other model (five tried, among them the runner-up of the model trial on #3632) answers
+  `404 … Model blocked by guardrail`.
+
+So nothing Kookr sends can reach a working endpoint on that account. Since #4255 (23 November, an
+operator decision) Kookr sends no provider preference, which is right and is not the cause. On
+Kookr's side:
 
 - `src/adapters/llm/openrouter-chat-stream.ts:160` keeps only the error's `message` ("Provider
   returned error") and drops `metadata` (which provider, which code);
-- a failed turn ends with one fixed sentence and no retry (`src/core/lucy-operator/turn.ts`);
-- no health field reports her model.
+- a failed turn ends with one fixed sentence (`src/core/lucy-operator/turn.ts`);
+- no health field reports her model;
+- her typed conversation can only use OpenRouter, while her spoken one already uses Baseten.
 
-**Suggested fix.** (a) For the operator: add a second provider to the account's routing rule for
-this model, or choose another model for her (`KOOKR_LUCY_OPERATOR_MODEL`); asked through `kookr
-ask` during this run. (b) In Kookr: say the provider's real error ("OpenRouter: Sail Research is
-rate-limited, 429"); give up on the first token after 8 seconds instead of 28; when the model
-fails, answer from the board without it and say so; report her model's last success and failure
-in `/api/health`.
+**Suggested fix.** (a) In Kookr (cluster A): say the provider's name and status ("OpenRouter's
+provider Sail Research is rate-limited (429)"); give up on a provider that has sent nothing for
+12 seconds (the slowest healthy first text in the operator's history was 9.4 s, so 8 would cut
+healthy turns; reasoning counts as data); when the model fails, answer from the board without it
+and say so; stop asking a provider that just failed twice for a minute; report her model in
+`/api/health`. (b) The operator, asked during the run (ask `7d6f17c077c9`), chose "Switch her to
+another model". No other model passes the guardrail, so the switch is to another service (cluster
+G): the same model family on Baseten, with the key this install already has and that her spoken
+conversation already uses. Measured today with tools and streaming: a tool call in 0.2 to 1.1 s.
+Baseten becomes her default when its key is configured; `KOOKR_LUCY_OPERATOR_PROVIDER` chooses.
+(c) The guardrail itself stays the operator's: the helper-model calls that go through OpenRouter
+meet the same wall.
 
 ## Things that worked well (keep-list)
 
@@ -388,5 +403,16 @@ disagreement is the question put to the operator.
   implementer each. Host load 52 before they started (the fleet's own work).
 - 18:05 Correction: speech is switched off in `.env`, it did not fail to start. R8-F4 rewritten;
   the mock-up page corrected.
+- 18:25 RFC pushed, pull request #4270 opened (stays open as this log).
+- 18:40 The operator answered both questions on Telegram: "Build the desk after the 4 fixes" and
+  "Switch her to another model".
+- 18:45 Cluster A reviewed by me: its 8-second deadline would have cut healthy turns (9 of 30 past
+  turns took over 5 s to their first text, one 9.4 s) and it could not see reasoning arrive. Sent
+  back; now 12 s of provider silence, reasoning counts.
+- 18:55 Probing "another model" through the operator's account: every other model and every other
+  provider is refused by a workspace guardrail. Baseten answers in under a second. Cluster G
+  started (stacked on A).
+- 19:00 Clusters A, B and C to independent review (fresh context, blind to the implementers).
+  Cluster D built; sent back to rebase onto B, which touches three of the same files.
 - Scope choice: this run does not re-drive the launch dialog, the live terminal or the rating
   flow (runs 1 to 4 did, and the brief is Lucy), and launches no task of its own.
