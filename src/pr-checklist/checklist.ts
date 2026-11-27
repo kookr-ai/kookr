@@ -432,7 +432,8 @@ export function scanSecrets(
 /**
  * Structural fact checks that fire from the diff regardless of any box.
  * `envFileText` is the declared env template (empty string if none).
- * `testCorpus` is the concatenated text of the repo's test files.
+ * `testCorpus` only has to contain the name of each new source module that some test file mentions
+ * (`collectAndVerify` passes exactly those names, one per line, not the text of the tests).
  */
 export function evaluateStructural(
   facts: DiffFacts,

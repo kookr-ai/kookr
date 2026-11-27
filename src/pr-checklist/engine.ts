@@ -41,6 +41,7 @@ export interface VerifyInput {
   body: string | null;
   facts: DiffFacts;
   envFileText: string;
+  /** The names of the new source modules that some test file mentions, one per line (see `readTestCorpus`). */
   testCorpus: string;
   /** The repo's PR-template text, or '' when it ships none (presence rule then no-ops). */
   templateText: string;
@@ -321,7 +322,7 @@ export const TEST_CORPUS_PATHSPECS: readonly string[] = [
  * version joined the text of the test files up to 16 MiB and stopped there; this
  * repository has more test text than that, so which test files counted depended on where they sort,
  * and a module whose test sorted late (most of `src/server`) was reported as untested. Only the
- * per-file cap is kept: a test file is read up to `MAX_TEST_FILE_BYTES`.
+ * per-file cap is kept: a test file larger than `MAX_TEST_FILE_BYTES` is skipped whole, as before.
  */
 async function readTestCorpus(
   runner: GitRunner,
