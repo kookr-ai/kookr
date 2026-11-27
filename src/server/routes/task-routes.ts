@@ -193,7 +193,7 @@ export function createTaskRouteLifecycleCommands(deps: TaskRouteDeps): TaskLifec
       activityLedger: deps.activityLedger,
       hookIngestion: deps.hookIngestion,
     }),
-    tryPromotePending: async () => {
+    tryPromotePending: async (opts) => {
       const launchDeps = deps.launchServiceDeps;
       if (!launchDeps?.adapterRegistry || !launchDeps.lifecycleDeps) return;
       await promotePendingTasks({
@@ -203,6 +203,7 @@ export function createTaskRouteLifecycleCommands(deps: TaskRouteDeps): TaskLifec
         broadcastToAll,
         serverCwd,
         getMaxActiveTasks: launchDeps.getMaxActiveTasks,
+        ...(opts?.firstTaskId ? { firstTaskId: opts.firstTaskId } : {}),
       });
     },
   });

@@ -71,7 +71,9 @@ describe('POST /api/tasks/:id/claude-account', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, outcome: 'queued', from: 'host', to: 'work' });
     expect(stop).toHaveBeenCalledWith('kookr-live');
-    expect(promotePendingTasks).toHaveBeenCalled();
+    // The route's promotion pass must give the freed slot back to this task
+    // first, not to an older pending one (issue #4235).
+    expect(promotePendingTasks).toHaveBeenCalledWith(expect.objectContaining({ firstTaskId: id }));
     expect(broadcastToAll).toHaveBeenCalled();
     expect(taskStore.getTask(id)?.metadata?.claudeAccount).toBe('work');
   });

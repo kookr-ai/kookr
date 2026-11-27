@@ -3825,6 +3825,56 @@ describe('promotePendingTasks posture guard (issue #1526 C3 / FM11)', () => {
     expect(taskStore.getTask(olderAutoId)!.status).toBe('inProgress');
     expect(taskStore.getTask(newerAutoId)!.status).toBe('pending');
   });
+
+  describe('a caller-named first task (issue #4235)', () => {
+    test('takes the last free slot ahead of an older ask-first and a self-releasing pending', async () => {
+      const active = taskStore.createTask('Active', '/cwd');
+      taskStore.startTask(active.id);
+      const olderId = seedPending('ask-first, oldest', 90_000);
+      const autoCloseId = seedPending('self-releasing', 60_000, { autoCloseOnSignal: true });
+      const firstId = seedPending('switched task, newest', 30_000);
+
+      const promoted = await promotePendingTasks({ ...deps, firstTaskId: firstId });
+
+      expect(promoted).toBe(1);
+      expect(taskStore.getTask(firstId)!.status).toBe('inProgress');
+      expect(taskStore.getTask(olderId)!.status).toBe('pending');
+      expect(taskStore.getTask(autoCloseId)!.status).toBe('pending');
+    });
+
+    test('goes first with several free slots too, and the rest of the pass stays FIFO', async () => {
+      const olderId = seedPending('oldest', 90_000);
+      const middleId = seedPending('middle', 60_000);
+      const firstId = seedPending('switched task, newest', 30_000);
+      const maxThree = { ...deps, getMaxActiveTasks: () => 3, firstTaskId: firstId };
+
+      expect(await promotePendingTasks(maxThree)).toBe(3);
+      const launchOrder = vi.mocked(adapter.launch).mock.calls.map(([taskId]) => taskId);
+      expect(launchOrder).toEqual([firstId, olderId, middleId]);
+    });
+
+    test('is passed over when another launcher holds its reservation', async () => {
+      const active = taskStore.createTask('Active', '/cwd');
+      taskStore.startTask(active.id);
+      const olderId = seedPending('oldest', 90_000);
+      const firstId = seedPending('reserved elsewhere', 30_000);
+      // The foreign reservation occupies a slot, so give the pass one more.
+      expect(taskStore.beginLaunchWithToken(firstId)).toBeDefined();
+
+      expect(await promotePendingTasks({ ...deps, getMaxActiveTasks: () => 3, firstTaskId: firstId })).toBe(1);
+      expect(taskStore.getTask(olderId)!.status).toBe('inProgress');
+      expect(taskStore.getTask(firstId)!.status).toBe('pending');
+    });
+
+    test('is passed over when it is no longer pending', async () => {
+      const olderId = seedPending('oldest', 90_000);
+      const gone = taskStore.createTask('cancelled meanwhile', '/cwd');
+      taskStore.cancelTask(gone.id);
+
+      expect(await promotePendingTasks({ ...deps, getMaxActiveTasks: () => 1, firstTaskId: gone.id })).toBe(1);
+      expect(taskStore.getTask(olderId)!.status).toBe('inProgress');
+    });
+  });
 });
 
 describe('reflect worktree cleanup on terminal transition', () => {
