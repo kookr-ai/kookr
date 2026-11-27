@@ -5,7 +5,7 @@
  * it is written by someone else. Only short fields that were checked against a strict pattern are
  * used here: the provider's name (letters, digits, spaces, dots and dashes, at most 40 characters)
  * and a numeric status. Anything that does not match is dropped, not shortened, so a long or odd
- * value never turns into something that reads like a sentence. The two codes OpenRouter adds
+ * value never turns into something that reads like a sentence. The detail's `service` field (set only for Baseten) picks the wording. The two codes OpenRouter adds
  * (`error_type`, `provider_code`) go to the log only.
  */
 
@@ -60,7 +60,10 @@ export function cleanLogText(text: string, max: number): string {
 export function modelErrorLogLine(detail: LucyModelErrorDetail): string | null {
   if (!detail.providerName && detail.status === undefined && !detail.errorType && !detail.providerCode) return null;
   const answered = [detail.status !== undefined ? String(detail.status) : 'an error', detail.errorType].filter(Boolean).join(' ');
-  return `OpenRouter: ${detail.providerName ?? 'a provider'} answered ${answered}${detail.providerCode ? ` (${detail.providerCode})` : ''}`;
+  const code = detail.providerCode ? ` (${detail.providerCode})` : '';
+  // Baseten serves the model itself, so there is no provider behind it to name.
+  if (detail.service === 'Baseten') return `Baseten answered ${answered}${code}`;
+  return `OpenRouter: ${detail.providerName ?? 'a provider'} answered ${answered}${code}`;
 }
 
 /** The sentence for a failure whose shape is known (a provider name or a status), or null. */
@@ -70,11 +73,12 @@ function knownShapeSentence(err: LucyModelError): string | null {
   const name = cleanProviderName(detail.providerName);
   const status = cleanStatus(detail.status ?? err.status);
   if (!name && status === undefined) return null;
-  const subject = name ? `OpenRouter's provider ${name}` : 'OpenRouter';
+  const baseten = detail.service === 'Baseten';
+  const subject = baseten ? 'Baseten' : name ? `OpenRouter's provider ${name}` : 'OpenRouter';
   const at = status !== undefined ? ` (${status})` : '';
   let predicate: string;
   if (status === 429 || /rate_?limit/i.test(detail.errorType ?? '')) predicate = `is rate-limited${at}.`;
-  else if (status === 401 || status === 402 || status === 403) predicate = `refused the request${at}. Check the OpenRouter key and its credit.`;
+  else if (status === 401 || status === 402 || status === 403) predicate = `refused the request${at}. Check the ${baseten ? 'Baseten' : 'OpenRouter'} key and its credit.`;
   else if (status !== undefined && status >= 500) predicate = `had a server error${at}.`;
   else predicate = `answered with an error${at}.`;
   return `My language model is not answering: ${subject} ${predicate}`;

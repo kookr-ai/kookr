@@ -107,10 +107,12 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
   const turn = (baseUrl: string, text: string): Promise<Response> =>
     fetch(`${baseUrl}/api/lucy/turn`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, conversationId: 'wiring' }) });
 
-  test('unset with no OpenRouter key: the route answers 404 and nothing is contacted', async () => {
+  test('unset with no Baseten or OpenRouter key: the route answers 404 and nothing is contacted', async () => {
     vi.stubEnv('KOOKR_LUCY_OPERATOR', '');
     vi.stubEnv('KOOKR_OPENROUTER_API_KEY', '');
     vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('KOOKR_BASETEN_API_KEY', '');
+    vi.stubEnv('BASETEN_API_KEY', '');
     const baseUrl = await start();
     const res = await turn(baseUrl, 'What is running?');
     expect(res.status).toBe(404);
@@ -122,11 +124,43 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     vi.stubEnv('KOOKR_LUCY_OPERATOR', 'true');
     vi.stubEnv('KOOKR_OPENROUTER_API_KEY', '');
     vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('KOOKR_BASETEN_API_KEY', '');
+    vi.stubEnv('BASETEN_API_KEY', '');
     const baseUrl = await start();
     const res = await turn(baseUrl, 'What is running?');
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ error: 'lucy_operator_unavailable', message: expect.stringContaining('OpenRouter key') });
     expect(received).toHaveLength(0);
+  });
+
+  test('on Baseten, over real HTTP: the key goes in an Api-Key header, the level in reasoning_effort, and the reply streams back', async () => {
+    const baseUrl = await start({
+      enabled: true,
+      ok: true,
+      provider: 'baseten',
+      launch: false,
+      warnings: [],
+      model: { apiKey: 'bt-wiring', model: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast', baseUrl: `http://127.0.0.1:${portOf(provider)}/v1`, reasoningEffort: 'medium' },
+    });
+    replies.push([
+      sse({ choices: [{ delta: { reasoning_content: 'thinking about the board' } }] }),
+      sse({ choices: [{ delta: { content: 'Nothing needs you.' } }] }),
+      sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 500, completion_tokens: 6 } }),
+    ]);
+
+    const res = await turn(baseUrl, 'What needs me right now?');
+
+    expect(res.status).toBe(200);
+    const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as LucyTurnEvent);
+    expect(events.map((e) => e.type)).toEqual(['text', 'done']);
+    expect(events[0]).toMatchObject({ delta: 'Nothing needs you.' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', end: 'answered', inputTokens: 500, outputTokens: 6 });
+    expect(received).toHaveLength(1);
+    expect(received[0]!.auth).toBe('Api-Key bt-wiring');
+    expect(received[0]!.body).toMatchObject({ model: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast', stream: true, reasoning_effort: 'medium' });
+    expect(received[0]!.body).not.toHaveProperty('provider');
+    expect(received[0]!.body).not.toHaveProperty('reasoning');
+    expect(JSON.stringify(events)).not.toContain('thinking about');
   });
 
   test('switched off explicitly: the route answers 404 and the provider is never contacted', async () => {

@@ -128,6 +128,7 @@ import {
 } from '../stale-dtach-pressure.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import { getHelperLlmHealthSnapshot } from '../../core/llm-factory.js';
+import { lucyOperatorProviderOf } from '../lucy-operator/config.js';
 import type { LucyOperatorHealth } from '../../shared/contracts/diagnostic.js';
 
 /**
@@ -2757,5 +2758,6 @@ function lucyOperatorHealthBlock(deps: RouteDeps): LucyOperatorHealth {
   const config = deps.lucyOperatorConfig;
   const configured = Boolean(config && config.enabled && config.ok);
   const state = deps.lucyModelHealth?.snapshot() ?? { lastSuccessAt: null, lastFailureAt: null, lastFailure: null, breakerOpen: false };
-  return { configured, model: config && config.enabled && config.ok ? config.model.model : null, ...state };
+  const usable = config && config.enabled && config.ok ? config : null;
+  return { configured, provider: usable ? lucyOperatorProviderOf(usable) : null, model: usable ? usable.model.model : null, ...state };
 }

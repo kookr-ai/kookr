@@ -1487,7 +1487,7 @@ describe('diagnostics routes', () => {
     test('says she is not configured, with empty history, when nothing is wired', async () => {
       const res = await mkApp({ taskStore: new TaskStore(), queue: new AttentionQueue(), buildInfo: {} as never }).request('/api/health');
       expect(((await res.json()) as { lucyOperator?: unknown }).lucyOperator).toEqual({
-        configured: false, model: null, lastSuccessAt: null, lastFailureAt: null, lastFailure: null, breakerOpen: false,
+        configured: false, provider: null, model: null, lastSuccessAt: null, lastFailureAt: null, lastFailure: null, breakerOpen: false,
       });
     });
 
@@ -1506,8 +1506,20 @@ describe('diagnostics routes', () => {
         lucyModelHealth: { guard: (port) => port, recordFailure: () => {}, snapshot: () => snapshot },
       }).request('/api/health');
       const body = (await res.json()) as { lucyOperator?: unknown };
-      expect(body.lucyOperator).toEqual({ configured: true, model: 'deepseek/deepseek-v4.1-flash-1017', ...snapshot });
+      expect(body.lucyOperator).toEqual({ configured: true, provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash-1017', ...snapshot });
       expect(JSON.stringify(body)).not.toContain('sk-or-secret');
+    });
+
+    test('names Baseten as the provider when her model runs there', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        lucyOperatorConfig: { enabled: true, ok: true, provider: 'baseten', warnings: [], launch: true, model: { apiKey: 'bt-secret', model: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast', baseUrl: 'https://x', reasoningEffort: 'medium' } },
+      }).request('/api/health');
+      const body = (await res.json()) as { lucyOperator: unknown };
+      expect(body.lucyOperator).toMatchObject({ configured: true, provider: 'baseten', model: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast' });
+      expect(JSON.stringify(body)).not.toContain('bt-secret');
     });
 
     test('a switched-on but unusable setup (no key) is not "configured"', async () => {
@@ -1517,7 +1529,7 @@ describe('diagnostics routes', () => {
         buildInfo: {} as never,
         lucyOperatorConfig: { enabled: true, ok: false, reason: 'needs a key', warnings: [] },
       }).request('/api/health');
-      expect(((await res.json()) as { lucyOperator: { configured: boolean; model: unknown } }).lucyOperator).toMatchObject({ configured: false, model: null });
+      expect(((await res.json()) as { lucyOperator: { configured: boolean; model: unknown } }).lucyOperator).toMatchObject({ configured: false, provider: null, model: null });
     });
   });
 

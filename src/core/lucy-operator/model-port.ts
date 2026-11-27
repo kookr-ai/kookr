@@ -1,7 +1,7 @@
 /**
  * What the Lucy operator loop needs from a language model, described without naming
  * a provider. The loop (`turn.ts`) talks to this; `adapters/llm/openrouter-chat-stream.ts`
- * implements it against OpenRouter, and tests implement it with a script.
+ * and `baseten-chat-stream.ts` implement it, and tests implement it with a script.
  *
  * The message shapes follow the OpenAI chat format, because that is what the model on
  * the other side reads: an assistant message may carry tool calls, and each tool's
@@ -70,6 +70,8 @@ export type LucyModelFailureKind = 'http' | 'network' | 'timeout' | 'aborted' | 
  */
 export interface LucyModelErrorDetail {
   providerName?: string;
+  /** The service that failed, when it is not OpenRouter (the default): the operator's sentence names it. */
+  service?: 'OpenRouter' | 'Baseten';
   status?: number;
   errorType?: string;
   providerCode?: string;
