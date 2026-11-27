@@ -18376,10 +18376,13 @@ button.avatar-desk-row:focus-visible { outline: 2px solid var(--teal); outline-o
   right: auto;
   bottom: calc(var(--lucy-desk-composer-height, 120px) + 12px);
   left: calc(var(--lucy-desk-left, 0px) + 16px);
-  max-width: min(420px, calc(100vw - var(--lucy-desk-left, 0px) - 32px));
+  /* No wider than reaches the left third of the reading column, so a toast covers as little of the newest message as it can; a narrow toast wraps. */
+  max-width: min(420px, calc(max(24px, (100vw - var(--lucy-desk-left, 0px) - var(--lucy-reading-width, 760px)) / 2) + var(--lucy-reading-width, 760px) / 3 - 16px));
 }
 :root[data-lucy-desk] .achievement-toasts {
   right: auto;
   bottom: calc(var(--lucy-desk-composer-height, 120px) + 12px);
   left: calc(var(--lucy-desk-left, 0px) + 16px);
 }
+/* An empty conversation (only her opening words): the hello and its chips sit right under her portrait, so the eye goes portrait, hello, chips. Once there is an exchange the thread is as before, newest at the bottom. */
+.avatar-dock-room[data-room-rail="true"] .avatar-thread-content[data-opening="true"] { justify-content: flex-start; min-height: 0; }

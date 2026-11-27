@@ -50,7 +50,7 @@ import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, getAvatarRoom } from '../store/avatar-panel-prefs.js';
-import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { __resetLucyConversationForTests, appendConversationEntry } from '../store/lucy-conversation.js';
 import { __resetLucyPermissionForTests, handleLucyPermissionCards } from '../store/lucy-permission.js';
 import { __resetOperatorAsksForTests, handleOperatorAsks } from '../store/operator-asks.js';
 import { __resetLucyTypedForTests } from './LucyTypedInput.js';
@@ -193,6 +193,27 @@ describe('AvatarDock: the desk', () => {
       expect(text('avatar-desk-summary')).toBe('3 running · 1 needs you');
       pushAsks([ask('q1')]);
       expect(text('avatar-desk-summary')).toBe('3 running · 2 need you');
+    });
+
+    test('the header\u2019s running count is the Fleet column\u2019s count, whatever the data and the width', () => {
+      const count = (): [string | null, string | null] => [text('avatar-desk-summary')?.match(/^(\d+) running/)?.[1] ?? null, text('avatar-desk-fleet-count')];
+      render({ running: [agent('a'), agent('b')], findings: [finishedFinding()] });
+      expect(count()).toEqual(['2', '2']);
+      pushAsks([ask('q1')]);
+      setWindowWidth(1280);
+      expect(count()).toEqual(['2', '2']);
+      act(() => { root!.render(<AvatarDock attentionCount={0} onOpenTask={onOpenTask} running={[]} />); });
+      expect(count()).toEqual(['0', '0']);
+    });
+
+    test('with only her opening words the thread is marked so the desk puts them under her portrait; a real exchange ends it', () => {
+      render();
+      const content = () => container.querySelector('.avatar-thread-content')!;
+      expect(content().getAttribute('data-opening')).toBe('true');
+      act(() => { appendConversationEntry({ kind: 'lucy', text: 'Here is your briefing.' }); });
+      expect(content().getAttribute('data-opening')).toBe('true');
+      act(() => { appendConversationEntry({ kind: 'typed-you', text: 'What is running?' }); });
+      expect(content().hasAttribute('data-opening')).toBe(false);
     });
 
     test('the button that opens it is called Desk, with the same tooltip', () => {
