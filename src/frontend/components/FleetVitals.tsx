@@ -21,6 +21,7 @@ import {
   ramLevel,
   seriesPeak,
   shortGpuName,
+  sparklineEnd,
   sparklinePath,
   vitalsSeries,
   vramLevel,
@@ -114,7 +115,7 @@ function Meter({
   level: VitalsLevel;
   /** Where "under pressure" starts; omitted for a reading that is never judged. */
   tickPercent?: number;
-  /** Word shown when the reading is under pressure: "busy", "nearly full". */
+  /** Word spoken when the reading is under pressure: "busy", "nearly full". On screen the verdict line says it. */
   problem?: string;
 }) {
   const value = formatVitalsPercent(percent);
@@ -127,7 +128,8 @@ function Meter({
       <div className="vitals-meter-head">
         {pressured && <Mark level={level} />}
         <span className="vitals-meter-label">{label}</span>
-        <span className="vitals-meter-detail">{pressured && problem ? problem : detail}</span>
+        {/* The amount stays under pressure: how many GB are left matters most when memory is nearly full. */}
+        <span className="vitals-meter-detail">{detail}</span>
         <span className="vitals-meter-value">{value}</span>
       </div>
       <div
@@ -172,35 +174,37 @@ function RateRow({
   const values = vitalsSeries(history, series);
   const peak = seriesPeak(values);
   const path = sparklinePath(values, SPARK_WIDTH, SPARK_HEIGHT, FLEET_VITALS_HISTORY_POINTS);
+  const end = value === null ? null : sparklineEnd(values, SPARK_HEIGHT, FLEET_VITALS_HISTORY_POINTS);
+  const allZero = peak !== null && peak <= 0;
   const shown = lowerBound ? formatVitalsLowerBound(value) : formatVitalsCount(value);
-  const scale = value === null
-    ? 'warming up'
-    : peak === null
-      ? ''
-      : peak <= 0
-        ? 'all zero'
-        : `peak ${formatVitalsCount(peak)}`;
   const spoken = value === null
     ? `${label}: warming up`
-    : `${label}: ${lowerBound ? 'at least ' : ''}${formatVitalsCount(value)} ${spokenUnit}${peak !== null && peak > 0 ? `, peak ${formatVitalsCount(peak)}` : ''}`;
+    : `${label}: ${lowerBound && shown.startsWith('≥') ? 'at least ' : ''}${formatVitalsCount(value)} ${spokenUnit}${peak !== null && peak > 0 ? `, peak ${formatVitalsCount(peak)}` : ''}`;
   return (
     <div className="vitals-rate" role="group" aria-label={spoken}>
       <span className="vitals-rate-label" aria-hidden="true">{label}</span>
-      <svg
-        className={`vitals-spark vitals-spark--${tone}`}
-        viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`}
-        preserveAspectRatio="none"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <line className="vitals-spark-floor" x1="0" x2={SPARK_WIDTH} y1={SPARK_HEIGHT - 0.5} y2={SPARK_HEIGHT - 0.5} />
-        {path && <path className="vitals-spark-line" d={path} />}
-      </svg>
-      <span className="vitals-rate-value" aria-hidden="true">
-        {shown}
-        <span className="vitals-unit">{unit}</span>
+      {/* An idle series is drawn quiet: teal is kept for a fleet that is working. */}
+      <span className={`vitals-spark vitals-spark--${allZero ? 'quiet' : tone}`} aria-hidden="true">
+        <svg viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`} preserveAspectRatio="none" focusable="false">
+          <line className="vitals-spark-floor" x1="0" x2={SPARK_WIDTH} y1={SPARK_HEIGHT - 0.5} y2={SPARK_HEIGHT - 0.5} />
+          {path && <path className="vitals-spark-line" d={path} />}
+        </svg>
+        {/* The newest point, as a dot: it ties the line to the number beside it. */}
+        {end && <span className="vitals-spark-end" style={{ left: `${end.xPercent}%`, top: `${end.y}px` }} />}
       </span>
-      <span className="vitals-rate-scale" aria-hidden="true">{scale}</span>
+      <span className="vitals-rate-value" aria-hidden="true">{shown}</span>
+      <span className="vitals-rate-unit" aria-hidden="true">{unit}</span>
+      <span className="vitals-rate-scale" aria-hidden="true">
+        {value === null ? (
+          'warming up'
+        ) : peak === null ? null : allZero ? (
+          'all zero'
+        ) : (
+          <>
+            peak <span className="vitals-rate-peak">{formatVitalsCount(peak)}</span>
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -324,9 +328,8 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
           <span className="vitals-running-count">{running}</span>
           <span className="vitals-running-label">running</span>
         </span>
-        {running === 0 && needYouCount === 0 ? (
-          <span className="vitals-split">No agents running</span>
-        ) : (
+        {/* "0 running" already says an idle fleet; a split of zeros adds nothing. */}
+        {running === 0 && needYouCount === 0 ? null : (
           <span className="vitals-split">
             <span className="vitals-split-item">
               <Mark level="ok" />
@@ -378,8 +381,8 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
           tone="fleet"
         />
         <p className="vitals-caption">
-          {windowLabel}, 0 to peak
-          {cached !== null && ` · ${Math.round(cached)}% of tokens read from cache`}
+          {windowLabel}, each line 0 to its peak
+          {cached !== null && ` · ${Math.round(cached)}% read from cache`}
         </p>
       </div>
 
@@ -433,6 +436,12 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
                     machine.gpu.powerWatts === null ? null : `${Math.round(machine.gpu.powerWatts)} W`,
                   ].filter(Boolean).join(' · ')}
                 </dd>
+              </>
+            )}
+            {!machine.gpu && (machine.gpuUnavailable === 'not_installed' || machine.gpuUnavailable === 'no_devices') && (
+              <>
+                <dt>GPU</dt>
+                <dd>No NVIDIA GPU found</dd>
               </>
             )}
             {disk && disk.diskFreeBytes !== null && (
@@ -511,7 +520,7 @@ export function fleetVitalsStripCells(sample: FleetVitalsSample, staleSeconds: n
   }
   const lag = lagLevel(sample);
   if (lag === 'watch' || lag === 'bad') {
-    const ms = `${Math.round(machine.serverLoopDelayP95Ms ?? 0)}ms`;
+    const ms = `${Math.round(machine.serverLoopDelayP95Ms ?? 0)} ms`;
     cells.push({
       key: 'lag',
       label: 'Lag',

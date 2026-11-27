@@ -70,8 +70,9 @@ test.describe('Fleet vitals', () => {
     const strip = page.getByTestId('fleet-vitals-strip');
     await expect(strip).toBeVisible();
     await expect(strip).toHaveAccessibleName(/^Vitals: CPU 66%, GPU load 24%, video memory 10%, 15 running/);
-    // At rest no cell carries a state colour.
+    // At rest no cell carries a state colour, and the System indicator is calm too.
     await expect(strip.locator('.vitals-cell--watch, .vitals-cell--bad')).toHaveCount(0);
+    await expect(page.getByTestId('system-indicator')).not.toHaveAccessibleName(/CPU high|GPU memory|memory high/);
 
     // The strip is a second trigger for the detail: it closes and reopens it.
     await strip.click();
@@ -103,7 +104,7 @@ test.describe('Fleet vitals', () => {
     await expect(strip.locator('[data-vitals-cell="vram"]')).toHaveText('VRAM97%');
     // A GPU at 100 % load is a busy GPU, not a problem.
     await expect(strip.locator('[data-vitals-cell="gpu"]')).toHaveClass(/vitals-cell--ok/);
-    await expect(page.getByTestId('system-indicator')).toHaveAccessibleName(/GPU memory nearly full/);
+    await expect(page.getByTestId('system-indicator')).toHaveAccessibleName(/CPU high.*GPU memory nearly full/);
     await expect(page.getByTestId('system-indicator')).toHaveClass(/needs-attention/);
 
     await strip.click();

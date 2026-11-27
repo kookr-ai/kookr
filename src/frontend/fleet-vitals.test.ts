@@ -19,6 +19,7 @@ import {
   sanitizeFleetVitalsHistory,
   seriesPeak,
   shortGpuName,
+  sparklineEnd,
   sparklinePath,
   vitalsSeries,
   vramLevel,
@@ -206,8 +207,12 @@ describe('fleetVitalsVerdict', () => {
     const verdict = fleetVitalsVerdict(sample({ cpu: 96, vramPercent: 97.1, lag: 640 }));
     expect(verdict.level).toBe('bad');
     expect(verdict.headline).toBe('CPU saturated, VRAM nearly full');
-    expect(verdict.detail).toBe('+1 more');
+    // The one issue that did not fit is named, not counted.
+    expect(verdict.detail).toBe('+ dashboard very slow');
     expect(verdict.issues).toHaveLength(3);
+    const four = fleetVitalsVerdict(sample({ cpu: 96, ramPercent: 92, vramPercent: 97.1, lag: 640 }));
+    expect(four.headline).toBe('CPU saturated, VRAM nearly full');
+    expect(four.detail).toBe('+2 more');
   });
 
   test('lowercases a second phrase but keeps acronyms', () => {
@@ -324,6 +329,14 @@ describe('trend lines', () => {
     expect(historyWindowLabel([point({ t: 0 }), point({ t: 130_000 })])).toBe('Last 2 min');
     // A full buffer: 150 samples two seconds apart.
     expect(historyWindowLabel([point({ t: 0 }), point({ t: 298_000 })])).toBe('Last 5 min');
+  });
+
+  test('the end of the line is where the current value sits on the same scale', () => {
+    // Current value 50 with a peak of 100 in a 20 px box: halfway between y = 19 and y = 1.
+    expect(sparklineEnd([0, 100, 50], 20)).toEqual({ xPercent: 100, y: 10 });
+    expect(sparklineEnd([0, 0, 0], 20)).toEqual({ xPercent: 100, y: 19 });
+    expect(sparklineEnd([10, null], 20)).toBeNull();
+    expect(sparklineEnd([], 20)).toBeNull();
   });
 
   test('nothing to draw gives an empty path', () => {

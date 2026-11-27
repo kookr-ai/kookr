@@ -5,7 +5,11 @@
  * every host (GPU or not, loaded or idle) and would make the vitals panel
  * untestable. `routeFleetVitals` therefore sits between the page and the
  * server: every other message passes through untouched, the server's own
- * `fleetVitals` messages are dropped, and the spec sends the sample it wants.
+ * `fleetVitals` and `resourceStatus` messages are dropped, and the spec sends
+ * the sample it wants. A matching `resourceStatus` goes with each sample, as
+ * on a real server where both come from one measurement, so the System
+ * indicator (which reads CPU, memory and lag from `resourceStatus`) agrees
+ * with the vitals.
  */
 import type { Page, WebSocketRoute } from '@playwright/test';
 import type {
@@ -128,6 +132,33 @@ export function vitalsHistory(
   return history;
 }
 
+/** The `resourceStatus` a server would send alongside `sample`. */
+function matchingResourceStatus(sample: FleetVitalsSample) {
+  const { machine } = sample;
+  return {
+    source: { kind: 'server-host' },
+    sampledAt: new Date(sample.sampledAtMs).toISOString(),
+    sampleGapMs: 2_000,
+    timerDriftMs: 0,
+    host: {
+      cpuUsagePercent: machine.cpuUsagePercent,
+      memoryUsedPercent: machine.memoryUsedPercent,
+      memoryFreeBytes: machine.memoryTotalBytes === null || machine.memoryUsedBytes === null
+        ? null
+        : machine.memoryTotalBytes - machine.memoryUsedBytes,
+      memoryTotalBytes: machine.memoryTotalBytes,
+      dataDirectory: { path: '/data', diskFreeBytes: 54 * GIB, diskTotalBytes: 503 * GIB, diskFreePercent: 10.7 },
+    },
+    server: {
+      eventLoopDelayP95Ms: machine.serverLoopDelayP95Ms,
+      processRssBytes: 215 * 1_048_576,
+      processHeapUsedBytes: 90 * 1_048_576,
+      processHeapTotalBytes: 120 * 1_048_576,
+    },
+    unavailable: machine.cpuUsagePercent === null ? ['cpu_warming_up'] : [],
+  };
+}
+
 export interface FleetVitalsRoute {
   /** Send a sample to every open dashboard socket, as the connection burst (`history`) or as a tick. */
   send(sample: FleetVitalsSample, history?: FleetVitalsHistoryPoint[]): void;
@@ -144,7 +175,10 @@ export async function routeFleetVitals(page: Page): Promise<FleetVitalsRoute> {
     socket.onMessage((message) => server.send(message));
     server.onMessage((message) => {
       // The real machine's readings are replaced by the spec's fixture.
-      if (typeof message === 'string' && message.startsWith('{"type":"fleetVitals"')) return;
+      if (
+        typeof message === 'string'
+        && (message.startsWith('{"type":"fleetVitals"') || message.startsWith('{"type":"resourceStatus"'))
+      ) return;
       socket.send(message);
     });
     socket.onClose(() => {
@@ -154,8 +188,12 @@ export async function routeFleetVitals(page: Page): Promise<FleetVitalsRoute> {
   });
   return {
     send(sample, history) {
+      const resource = JSON.stringify({ type: 'resourceStatus', status: matchingResourceStatus(sample) });
       const message = JSON.stringify({ type: 'fleetVitals', sample, ...(history ? { history } : {}) });
-      for (const socket of sockets) socket.send(message);
+      for (const socket of sockets) {
+        socket.send(resource);
+        socket.send(message);
+      }
     },
   };
 }

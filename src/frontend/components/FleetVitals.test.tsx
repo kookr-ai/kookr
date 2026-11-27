@@ -183,11 +183,28 @@ describe('FleetVitalsBlock', () => {
       'Tool calls: 26 per minute, peak 71',
     ]);
     expect(Array.from(container.querySelectorAll('.vitals-rate-value')).map((el) => el.textContent)).toEqual([
-      '≥110tok/s',
-      '≥13.9ktok/s',
-      '26/min',
+      '≥110',
+      '≥13.9k',
+      '26',
     ]);
-    expect(text('.vitals-caption')).toBe('Last 5 min, 0 to peak · 98% of tokens read from cache');
+    expect(Array.from(container.querySelectorAll('.vitals-rate-unit')).map((el) => el.textContent)).toEqual([
+      'tok/s',
+      'tok/s',
+      '/min',
+    ]);
+    expect(Array.from(container.querySelectorAll('.vitals-rate-scale')).map((el) => el.textContent)).toEqual([
+      'peak 240',
+      'peak 31.0k',
+      'peak 71',
+    ]);
+    // Each line ends in a dot at the current value; tokens read is the quiet one.
+    expect(container.querySelectorAll('.vitals-spark-end')).toHaveLength(3);
+    expect(Array.from(container.querySelectorAll('.vitals-spark')).map((el) => el.className)).toEqual([
+      'vitals-spark vitals-spark--fleet',
+      'vitals-spark vitals-spark--quiet',
+      'vitals-spark vitals-spark--fleet',
+    ]);
+    expect(text('.vitals-caption')).toBe('Last 5 min, each line 0 to its peak · 98% read from cache');
     expect(text('[data-testid="fleet-vitals-lag"]')).toBe('Dashboard lag123 ms');
   });
 
@@ -213,7 +230,7 @@ describe('FleetVitalsBlock', () => {
 
     expect(container.querySelector('.vitals-verdict')?.className).toContain('vitals-verdict--bad');
     expect(text('.vitals-verdict-headline')).toBe('CPU saturated, VRAM nearly full');
-    expect(text('.vitals-verdict-detail')).toBe('+1 more');
+    expect(text('.vitals-verdict-detail')).toBe('+ dashboard very slow');
 
     const labels = meters().map((meter) => meter.getAttribute('aria-label'));
     expect(labels[0]).toBe('CPU 96%, saturated, load 18.2');
@@ -223,6 +240,13 @@ describe('FleetVitalsBlock', () => {
     expect(classes[3]).toContain('vitals-meter--bad');
     // GPU at 100 % is a busy GPU, not a problem.
     expect(classes[2]).toContain('vitals-meter--ok');
+    // The amounts stay on screen under pressure: how much is left is the point.
+    expect(Array.from(container.querySelectorAll('.vitals-meter-detail')).map((el) => el.textContent)).toEqual([
+      'load 18.2',
+      '9.9 / 31 GB',
+      '48 °C',
+      '23.3 / 24 GB',
+    ]);
     // A state colour never stands alone: each problem meter also has a mark.
     expect(container.querySelectorAll('.vitals-meter--bad .vitals-mark--bad')).toHaveLength(2);
 
@@ -237,6 +261,11 @@ describe('FleetVitalsBlock', () => {
       'RAM 32%, 9.9 / 31 GB',
     ]);
     expect(container.textContent).not.toContain('VRAM');
+
+    // Details says why, so an absent GPU is not mistaken for a broken panel.
+    const toggle = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Details')!;
+    act(() => toggle.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(text('[data-testid="fleet-vitals-details"] dl')).toContain('GPUNo NVIDIA GPU found');
   });
 
   test('just started: unmeasured readings are "--" and rates say they are warming up', () => {
@@ -248,7 +277,7 @@ describe('FleetVitalsBlock', () => {
     expect(container.querySelector('.vitals-meter-value')?.textContent).toBe('--');
     expect(rateLabels().slice(0, 2)).toEqual(['Generated: warming up', 'Read: warming up']);
     expect(text('.vitals-rate-scale')).toBe('warming up');
-    expect(text('.vitals-caption')).toBe('Just started, 0 to peak');
+    expect(text('.vitals-caption')).toBe('Just started, each line 0 to its peak');
     expect(text('[data-testid="fleet-vitals-lag"]')).toBe('Dashboard lag--');
   });
 
@@ -256,20 +285,18 @@ describe('FleetVitalsBlock', () => {
     const idle = sample({ agents: 0, subagents: 0, tokens: { generatedPerSec: 0, readPerSec: 0, cacheReadPerSec: 0 }, toolCallsPerMin: 0 });
     feed(idle, history().map((point) => ({ ...point, gen: 0, read: 0, tools: 0, run: 0 })));
     renderBlock();
-    expect(text('.vitals-running-count')).toBe('0');
-    expect(text('.vitals-split')).toBe('No agents running');
-    expect(Array.from(container.querySelectorAll('.vitals-rate-value')).map((el) => el.textContent)).toEqual([
-      '0tok/s',
-      '0tok/s',
-      '0/min',
-    ]);
+    expect(text('[data-testid="fleet-vitals-running"]')).toBe('0running');
+    expect(Array.from(container.querySelectorAll('.vitals-rate-value')).map((el) => el.textContent)).toEqual(['0', '0', '0']);
+    // An idle fleet is drawn quiet: no teal line for work that is not happening.
+    expect(container.querySelectorAll('.vitals-spark--fleet')).toHaveLength(0);
+    expect(rateLabels()[0]).toBe('Generated: 0 tokens per second');
     expect(Array.from(container.querySelectorAll('.vitals-rate-scale')).map((el) => el.textContent)).toEqual([
       'all zero',
       'all zero',
       'all zero',
     ]);
     // Nothing was read, so no cache share is claimed.
-    expect(text('.vitals-caption')).toBe('Last 5 min, 0 to peak');
+    expect(text('.vitals-caption')).toBe('Last 5 min, each line 0 to its peak');
   });
 
   test('without a fresh sample for ten seconds the block says how old the readings are', () => {
@@ -384,7 +411,7 @@ describe('FleetVitalsStrip', () => {
     act(() => setVitalsPinned(true));
     feed(sample({ cpu: 96, ramPercent: 92, vramPercent: 97.1, gpuLoad: 100, lag: 640 }));
     renderStrip();
-    expect(cellText()).toEqual(['RAM92%', 'Lag640ms', 'CPU96%', 'GPU100%', 'VRAM97%', 'Running15', 'tok/s≥110']);
+    expect(cellText()).toEqual(['RAM92%', 'Lag640 ms', 'CPU96%', 'GPU100%', 'VRAM97%', 'Running15', 'tok/s≥110']);
     const state = (key: string) => container.querySelector(`[data-vitals-cell="${key}"]`)?.className ?? '';
     expect(state('cpu')).toContain('vitals-cell--bad');
     expect(state('vram')).toContain('vitals-cell--bad');

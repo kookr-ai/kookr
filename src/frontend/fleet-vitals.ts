@@ -195,7 +195,8 @@ export interface VitalsVerdict {
   /**
    * The short second read. At rest, the resource closest to its limit
    * ("Tightest: CPU 66%"). Under pressure the headline already names the
-   * problem, so this only says how many more there are ("+1 more"), or nothing.
+   * problem, so this only adds what did not fit: the third issue by name
+   * ("+ dashboard very slow"), a count beyond that ("+2 more"), or nothing.
    */
   detail: string | null;
   issues: VitalsIssue[];
@@ -230,9 +231,16 @@ export function fleetVitalsVerdict(sample: FleetVitalsSample): VitalsVerdict {
   return {
     level: issues[0].level,
     headline: named.join(', '),
-    detail: issues.length > 2 ? `+${issues.length - 2} more` : null,
+    detail: extraIssuesLabel(issues.slice(2)),
     issues,
   };
+}
+
+/** What the headline had no room for: the one remaining issue by name, or a count. */
+function extraIssuesLabel(extra: readonly VitalsIssue[]): string | null {
+  if (extra.length === 0) return null;
+  if (extra.length === 1) return `+ ${lowerFirstWord(extra[0].label)}`;
+  return `+${extra.length} more`;
 }
 
 /** "Memory tight" -> "memory tight", but "CPU busy" and "VRAM tight" keep their acronym. */
@@ -370,4 +378,27 @@ export function historyWindowLabel(history: readonly FleetVitalsHistoryPoint[]):
   const spanMs = history[history.length - 1].t - history[0].t;
   if (spanMs < 60_000) return `Last ${Math.max(1, Math.round(spanMs / 1_000))} s`;
   return `Last ${Math.round(spanMs / 60_000)} min`;
+}
+
+/**
+ * Where a trend line ends, for the dot that ties the line to the current
+ * number: horizontal position as a share of the width (0-100) and vertical
+ * position in the same units as `height`. `null` when the newest point is
+ * unmeasured or there is nothing to draw. Uses the same zero-based scale as
+ * `sparklinePath`.
+ */
+export function sparklineEnd(
+  values: ReadonlyArray<number | null>,
+  height: number,
+  slots: number = values.length,
+): { xPercent: number; y: number } | null {
+  if (values.length === 0 || slots <= 0) return null;
+  const last = values[values.length - 1];
+  const peak = seriesPeak(values);
+  if (last === null || peak === null) return null;
+  const top = 1;
+  const bottom = height - 1;
+  const y = peak <= 0 ? bottom : bottom - (Math.max(0, last) / peak) * (bottom - top);
+  // The newest point sits at the right edge (the series is right-aligned).
+  return { xPercent: 100, y };
 }
