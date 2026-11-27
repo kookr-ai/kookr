@@ -316,6 +316,52 @@ describe('nb-retro Stop hook (SubagentStop is let through)', () => {
     expect(runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-wait', background_tasks: [] }).code).toBe(0);
   });
 
+  describe('the subagent deferral is bounded (issue #4261)', () => {
+    const BOUND_MS = 30 * 60_000; // SUBAGENT_WAIT_BOUND_MS, pinned against bin/kookr-stop-nudge.js in kookr-stop-nudge.test.ts
+    const backdate = (p: string, ms: number) => {
+      const t = new Date(Date.now() - ms);
+      utimesSync(p, t, t);
+    };
+    const waiting = (sid: string) => ({ hook_event_name: 'Stop', session_id: sid, background_tasks: [runningSubagent] });
+
+    test('repeated stops inside the bound keep deferring', () => {
+      const env = { NB_DIR: dir };
+      for (let i = 0; i < 3; i++) expect(runRetro(env, waiting('sess-long'))).toEqual({ code: 0, err: '' });
+      expect(existsSync(join(dir, '.retrowait-sess-long'))).toBe(true);
+      expect(existsSync(join(dir, '.retro-sess-long'))).toBe(false);
+      backdate(join(dir, '.retrowait-sess-long'), BOUND_MS - 60_000);
+      expect(runRetro(env, waiting('sess-long')).code).toBe(0);
+      expect(existsSync(join(dir, '.retro-sess-long'))).toBe(false);
+    });
+
+    test('a subagent stuck `running` past the bound no longer withholds the nudge: it fires once', () => {
+      const env = { NB_DIR: dir };
+      expect(runRetro(env, waiting('sess-hung')).code).toBe(0);
+      backdate(join(dir, '.retrowait-sess-hung'), BOUND_MS + 60_000);
+      const late = runRetro(env, waiting('sess-hung'));
+      expect(late.code).toBe(2);
+      expect(late.err).toMatch(/agent-notebook retrospective/);
+      expect(existsSync(join(dir, '.retro-sess-hung'))).toBe(true);
+      expect(existsSync(join(dir, '.retrowait-sess-hung'))).toBe(false);
+      // once per session still holds, and an already-nudged session writes no new stamp
+      expect(runRetro(env, waiting('sess-hung'))).toEqual({ code: 0, err: '' });
+      expect(existsSync(join(dir, '.retrowait-sess-hung'))).toBe(false);
+    });
+
+    test('a SubagentStop writes no wait stamp', () => {
+      expect(runRetro({ NB_DIR: dir }, { ...waiting('sess-sub'), hook_event_name: 'SubagentStop' }).code).toBe(0);
+      expect(readdirSync(dir).filter((f) => f.startsWith('.retro'))).toEqual([]);
+    });
+
+    test('an old wait stamp is pruned with the sentinels', () => {
+      const old = join(dir, '.retrowait-sess-gone');
+      writeFileSync(old, 'x');
+      backdate(old, 8 * 86_400_000);
+      runRetro({ NB_DIR: dir }, { session_id: 'sess-prune' }); // triggers the prune
+      expect(existsSync(old)).toBe(false);
+    });
+  });
+
   test('only a running SUBAGENT defers the nudge: a running shell, or no/odd background_tasks, still nudges', () => {
     const env = { NB_DIR: dir };
     expect(runRetro(env, { session_id: 'sess-shell', background_tasks: [runningShell] }).code).toBe(2);

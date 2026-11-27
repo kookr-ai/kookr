@@ -17,6 +17,10 @@
 //     `background_tasks`) is the lead WAITING, not finishing: allow it without
 //     claiming the sentinel, so the nudge lands at a later stop, after the delegated
 //     work has come back.
+//   - That deferral is bounded (issue #4261): the first deferred stop writes a
+//     per-session stamp, and once it is SUBAGENT_WAIT_BOUND_MS old a stop no longer
+//     defers, so a hung or abandoned subagent that stays `running` cannot withhold
+//     the nudge for the rest of the session.
 //   - SubagentStop never nudges and never claims the sentinel. Blocking a subagent
 //     makes its answer to the nudge its last message, which is all its caller
 //     receives, so the report gets displaced; and a subagent that took the session's
@@ -27,7 +31,7 @@
 //     behaves the same.
 //
 // Fail-open: unparseable event, already-nudged, or any fs error -> allow (exit 0).
-import { readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -47,11 +51,6 @@ if (event.stop_hook_active) process.exit(0);
 
 // A subagent's stop never takes the session's nudge (see the header).
 if (event.hook_event_name === 'SubagentStop') process.exit(0);
-
-// The lead is waiting on delegated work: keep the nudge for a later stop. Only a
-// running SUBAGENT counts; a running shell or monitor can outlive the task, and
-// waiting on it would withhold the nudge for good.
-if (waitingOnSubagent(event.background_tasks)) process.exit(0);
 
 /** True when the Stop payload lists a background subagent that is still running. */
 function waitingOnSubagent(tasks) {
@@ -76,6 +75,47 @@ const dir =
     ? expandHomeDir(process.env.NB_DIR)
     : join(homedir(), '.kookr', 'notebooks');
 const sentinel = join(dir, `.retro-${sid}`);
+// The wait stamp (issue #4261). Its prefix is not `.retro-`, so no session id can
+// make it collide with a sentinel.
+const waitStamp = join(dir, `.retrowait-${sid}`);
+
+// How long a lead may keep deferring the nudge because a background subagent is
+// still `running`, counted from its first deferred stop (issue #4261). Same value
+// as bin/kookr-stop-nudge.js (kept in step by hand; a test pins the two together).
+const SUBAGENT_WAIT_BOUND_MS = 30 * 60_000;
+
+/**
+ * True while this stop should still defer: the first deferred stop writes the stamp
+ * (`wx`, so racing stops agree on one start time) and later ones read its age. If
+ * the stamp cannot be written or read, keep deferring (the #4231 behaviour).
+ */
+function withinWaitBound(stamp) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(stamp, new Date().toISOString(), { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if (!e || e.code !== 'EEXIST') return true;
+  }
+  try {
+    return Date.now() - statSync(stamp).mtimeMs < SUBAGENT_WAIT_BOUND_MS;
+  } catch {
+    return true;
+  }
+}
+
+// Already nudged: nothing to defer (and no wait stamp to write). The atomic claim
+// below still decides any race.
+try {
+  if (existsSync(sentinel)) process.exit(0);
+} catch {
+  /* fall through to the claim */
+}
+
+// The lead is waiting on delegated work: keep the nudge for a later stop, within the
+// bound above. Only a running SUBAGENT counts; a running shell or monitor can outlive
+// the task, and waiting on it would hold the nudge back for no reason.
+if (waitingOnSubagent(event.background_tasks) && withinWaitBound(waitStamp)) process.exit(0);
 
 // Claim this session's sentinel atomically. `wx` makes create-if-absent one OS step,
 // so when several stops race on one session id (opencode, or an event that carries
@@ -93,9 +133,14 @@ try {
 } catch {
   process.exit(0);
 }
+try {
+  unlinkSync(waitStamp);
+} catch {
+  /* no wait stamp: this session never deferred */
+}
 
 // Keep the sentinels bounded (the notebook's whole premise is boundedness): drop any
-// `.retro-*` sentinel older than the TTL. The TTL (days, default 7, override with
+// `.retro-*` sentinel (and `.retrowait-*` stamp) older than the TTL. The TTL (days, default 7, override with
 // NB_RETRO_TTL_DAYS, matching upstream's recipe) must stay well above any plausible
 // session length: a sentinel pruned while its session is still running would nudge
 // that session a second time. NB_RETRO_TTL_DAYS=Infinity never prunes (an addition to
@@ -106,7 +151,7 @@ try {
   const ttlMs = (Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 7) * 86_400_000;
   const cutoff = ttlDays === Infinity ? -Infinity : Date.now() - ttlMs;
   for (const f of readdirSync(dir)) {
-    if (!f.startsWith('.retro-')) continue;
+    if (!f.startsWith('.retro-') && !f.startsWith('.retrowait-')) continue;
     try {
       if (statSync(join(dir, f)).mtimeMs < cutoff) unlinkSync(join(dir, f));
     } catch {

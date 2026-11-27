@@ -6,13 +6,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, utimesSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — JS module without bundled types.
-import { resolveBaseUrl, markerPath, isTerminalStatus, parseMinAge, waitingOnSubagent, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
+import { resolveBaseUrl, markerPath, waitStampPath, isTerminalStatus, parseMinAge, waitingOnSubagent, SUBAGENT_WAIT_BOUND_MS, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
 import { LESSON_DECISION_TEMPLATE } from '../core/lesson-decision.js';
 
 const NUDGE = resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'bin', 'kookr-stop-nudge.js');
@@ -65,6 +65,18 @@ describe('kookr-stop-nudge pure helpers', () => {
     expect(waitingOnSubagent([{ type: 'subagent', status: 'completed' }])).toBe(false);
     expect(waitingOnSubagent([{ type: 'shell', status: 'running' }, { type: 'monitor', status: 'running' }])).toBe(false);
     for (const odd of [undefined, null, [], 'running', {}, [null]]) expect(waitingOnSubagent(odd)).toBe(false);
+  });
+  it('the subagent wait bound is the same in this script and in plugin/hooks/nb-retro.mjs (issue #4261)', () => {
+    // The plugin ships without bin/, so the constant is duplicated by hand.
+    const retro = readFileSync(resolve(NUDGE, '..', '..', 'plugin', 'hooks', 'nb-retro.mjs'), 'utf-8');
+    const m = /const SUBAGENT_WAIT_BOUND_MS = ([^;]+);/.exec(retro);
+    expect(m).not.toBeNull();
+    expect(Function(`return (${m![1]});`)()).toBe(SUBAGENT_WAIT_BOUND_MS);
+    expect(SUBAGENT_WAIT_BOUND_MS).toBe(30 * 60_000);
+  });
+  it('waitStampPath never names a task marker', () => {
+    expect(waitStampPath('t-1')).toBe(`${markerPath('t-1')}.waiting`);
+    expect(waitStampPath('a.waiting')).not.toBe(markerPath('a.waiting'));
   });
 });
 
@@ -127,6 +139,74 @@ describe('kookr-stop-nudge behavior (subprocess, hard fail-open)', () => {
     });
     expect(blocked(idle.stdout)).toBe(true);
     expect(existsSync(join(home, '.kookr', 'stop-nudge', 't-1'))).toBe(true);
+  });
+
+  describe('the subagent deferral is bounded (issue #4261)', () => {
+    const subagent = { id: 'a968876863f7fbf18', type: 'subagent', status: 'running', agent_type: 'general-purpose' };
+    const waitingStdin = JSON.stringify({ stop_hook_active: false, background_tasks: [subagent] });
+    const marker = () => join(home, '.kookr', 'stop-nudge', 't-1');
+    const stamp = () => join(home, '.kookr', 'stop-nudge', 't-1.waiting');
+    const backdate = (p: string, ms: number) => {
+      const t = new Date(Date.now() - ms);
+      utimesSync(p, t, t);
+    };
+
+    it('keeps deferring on repeated stops inside the bound', async () => {
+      for (let i = 0; i < 3; i++) {
+        const res = await run({ stdin: waitingStdin, env: baseEnv() });
+        expect(res.status).toBe(0);
+        expect(blocked(res.stdout)).toBe(false);
+      }
+      expect(existsSync(stamp())).toBe(true);
+      expect(existsSync(marker())).toBe(false);
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS - 60_000);
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+    });
+
+    it('a subagent stuck `running` past the bound no longer withholds the reminder: it fires once', async () => {
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 60_000);
+      const late = await run({ stdin: waitingStdin, env: baseEnv() });
+      expect(late.status).toBe(0);
+      expect(blocked(late.stdout)).toBe(true);
+      expect(existsSync(marker())).toBe(true);
+      expect(existsSync(stamp())).toBe(false);
+      // once per task still holds
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+      expect(existsSync(stamp())).toBe(false);
+    });
+
+    it('the bound lifts only the deferral: the later gates still apply', async () => {
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 60_000);
+      task = { ...task, status: 'completed' };
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+      expect(existsSync(marker())).toBe(false);
+    });
+
+    it('a stop with no running subagent clears the stamp, so a later genuine wait starts its own clock', async () => {
+      mkdirSync(join(home, '.kookr', 'stop-nudge'), { recursive: true });
+      writeFileSync(stamp(), 'old');
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 60_000);
+      // idle stop, silenced by the activity gate: no marker, but the old stamp goes
+      const idle = await run({
+        stdin: JSON.stringify({ stop_hook_active: false, background_tasks: [] }),
+        env: baseEnv({ KOOKR_NUDGE_MIN_TASK_AGE_MS: String(10 * 365 * 86_400_000) }),
+      });
+      expect(blocked(idle.stdout)).toBe(false);
+      expect(existsSync(stamp())).toBe(false);
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+      expect(existsSync(stamp())).toBe(true);
+    });
+
+    it('writes no stamp outside a managed task or once the task was already reminded', async () => {
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv({ KOOKR_TASK_ID: '' }) })).stdout)).toBe(false);
+      expect(existsSync(join(home, '.kookr', 'stop-nudge'))).toBe(false);
+      mkdirSync(join(home, '.kookr', 'stop-nudge'), { recursive: true });
+      writeFileSync(marker(), 'done');
+      expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+      expect(existsSync(stamp())).toBe(false);
+    });
   });
 
   it('a running background shell does not defer the reminder (only subagents do)', async () => {
