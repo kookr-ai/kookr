@@ -15,6 +15,7 @@ import {
   formatVitalsCount,
   formatVitalsLowerBound,
   formatVitalsPercent,
+  gpuLoadLevel,
   historyWindowLabel,
   isFleetVitalsStale,
   lagLevel,
@@ -120,7 +121,8 @@ function Meter({
 }) {
   const value = formatVitalsPercent(percent);
   const pressured = level === 'watch' || level === 'bad';
-  const spoken = [`${label} ${percent === null ? 'not measured yet' : value}`, pressured ? problem : null, detail]
+  // What a screen reader says after the name: the value, the state word, the amount.
+  const spoken = [percent === null ? 'not measured yet' : value, pressured ? problem : null, detail]
     .filter(Boolean)
     .join(', ');
   return (
@@ -132,20 +134,26 @@ function Meter({
         <span className="vitals-meter-detail">{detail}</span>
         <span className="vitals-meter-value">{value}</span>
       </div>
-      <div
-        className="vitals-meter-track"
-        role="meter"
-        aria-label={spoken}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent === null ? undefined : Math.round(percent)}
-        aria-valuetext={spoken}
-      >
-        {percent !== null && (
+      {percent === null ? (
+        // A meter must have a current value. With nothing measured this is a
+        // picture of an empty track, named in words.
+        <div className="vitals-meter-track" role="img" aria-label={`${label}: ${spoken}`}>
+          {tickPercent !== undefined && <span className="vitals-meter-tick" style={{ left: `${tickPercent}%` }} />}
+        </div>
+      ) : (
+        <div
+          className="vitals-meter-track"
+          role="meter"
+          aria-label={label}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(percent)}
+          aria-valuetext={spoken}
+        >
           <span className="vitals-meter-fill" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
-        )}
-        {tickPercent !== undefined && <span className="vitals-meter-tick" style={{ left: `${tickPercent}%` }} />}
-      </div>
+          {tickPercent !== undefined && <span className="vitals-meter-tick" style={{ left: `${tickPercent}%` }} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -264,10 +272,11 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
   const cached = cachedReadShare(sample);
   const windowLabel = historyWindowLabel(history);
   const verdictTone = stale ? 'stale' : verdict.level;
-  const headline = stale
-    ? `Readings are ${secondsOld ?? 0} s old`
-    : verdict.headline;
-  const verdictDetail = stale ? 'last values shown' : verdict.detail;
+  // The headline is a live region, so it holds only the state, which changes
+  // rarely. The figures beside it change with every sample (and the age every
+  // second) and stay outside, or a screen reader would repeat them all day.
+  const headline = stale ? 'Readings are old' : verdict.headline;
+  const verdictDetail = stale ? `${secondsOld ?? 0} s, last values shown` : verdict.detail;
   const lagText = machine.serverLoopDelayP95Ms === null
     ? VITALS_UNAVAILABLE
     : `${Math.round(machine.serverLoopDelayP95Ms)} ms`;
@@ -280,9 +289,9 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
       aria-label="Machine and fleet vitals"
       data-testid="fleet-vitals"
     >
-      <div className={`vitals-verdict vitals-verdict--${verdictTone}`} role="status" data-testid="fleet-vitals-verdict">
+      <div className={`vitals-verdict vitals-verdict--${verdictTone}`} data-testid="fleet-vitals-verdict">
         <Mark level={verdictTone} />
-        <span className="vitals-verdict-headline">{headline}</span>
+        <span className="vitals-verdict-headline" role="status">{headline}</span>
         {verdictDetail && <span className="vitals-verdict-detail">{verdictDetail}</span>}
       </div>
 
@@ -309,7 +318,7 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
               label="GPU"
               detail={details.gpu}
               percent={machine.gpu.utilizationPercent}
-              level={machine.gpu.utilizationPercent === null ? 'unknown' : 'ok'}
+              level={gpuLoadLevel(sample)}
             />
             <Meter
               label="VRAM"
@@ -335,7 +344,7 @@ export function FleetVitalsBlock({ needYouCount = 0 }: FleetVitalsBlockProps) {
               <Mark level="ok" />
               {fleet.agents} {fleet.agents === 1 ? 'agent' : 'agents'}
             </span>
-            <span className="vitals-split-item" title="Approximate: a subagent whose end was not reported is dropped after 30 minutes">
+            <span className="vitals-split-item">
               <Mark level="unknown" />
               ~{fleet.subagents} {fleet.subagents === 1 ? 'subagent' : 'subagents'}
             </span>
@@ -545,7 +554,7 @@ export function fleetVitalsStripCells(sample: FleetVitalsSample, staleSeconds: n
       key: 'gpu',
       label: 'GPU',
       value: formatVitalsPercent(machine.gpu.utilizationPercent),
-      level: machine.gpu.utilizationPercent === null ? 'unknown' : 'ok',
+      level: gpuLoadLevel(sample),
       spoken: `GPU load ${formatVitalsPercent(machine.gpu.utilizationPercent)}`,
       group: 'machine',
     });

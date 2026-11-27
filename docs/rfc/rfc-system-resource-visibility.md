@@ -355,7 +355,7 @@ The second and third questions are new. The first gained the GPU, because on a w
 | Agents | tasks whose agent session is live (`inProgress`) | |
 | Subagents | SubagentStart events with no SubagentStop yet | approximate (shown with `~`): a lost stop signal is dropped after 30 minutes |
 | Tokens generated / read per second | growth of each live task's token totals, averaged over 30 seconds | a lower bound (shown with `≥`): Grok Build and OpenCode report tokens only when they stop |
-| Tool calls per minute | tool-call hook events in the last 60 seconds, from any session of the fleet | exact |
+| Tool calls per minute | tool-call hook events in the last 60 seconds, from any session of the fleet; hook history replayed after a server restart is not counted | exact |
 
 Measured on the development host (16 pinned cores of 24, 31 GB, one RTX 3090): one `nvidia-smi` call takes about 0.1 s of wall time and 0.04 s of CPU. The fleet at that moment generated about 110 tokens per second and read about 13,900, of which 97.6 % came from the prompt cache; tool calls ran between 8 and 71 per minute.
 
@@ -363,6 +363,8 @@ Two rules follow from those numbers:
 
 - **Tokens read cannot share a scale with tokens generated.** Read is over a hundred times larger, almost all of it cache. It gets its own, deliberately quiet line, and the cache share is printed next to it.
 - **A reading that cannot be measured is `null` on the wire and `--` on screen, never 0.** "Idle" and "unknown" must look different.
+
+When the resource sampler fails, `resourceStatus` carries its last good values, marked stale (issue #2771). The vitals sample reports those readings as `null`: under a fresh timestamp they would read "Machine comfortable" for as long as the sampler stayed broken. The two v1 pills, which the vitals block otherwise replaces as soon as its first sample arrives, come back for as long as the status is marked stale, so their "Showing last good sample" and "Sampled N ago" lines stay reachable during the failure.
 
 ### GPU probe
 
@@ -391,7 +393,7 @@ A new message, `fleetVitals`, defined in `src/shared/contracts/fleet-vitals.ts`.
 
 - `sample.machine`: CPU, load average, core count, memory, `gpu` (or `null` with `gpuUnavailable` saying why), dashboard lag.
 - `sample.fleet`: `agents`, `subagents`, `tokens` (`null` while warming up), `toolCallsPerMin`, `topTools`.
-- `history`: the last 150 samples (five minutes), reduced to the eight series the dashboard draws. Sent once, in the burst an owner's dashboard receives on connect; the dashboard appends later samples itself.
+- `history`: the last 150 samples (five minutes), reduced to the three series the dashboard draws as trend lines (tokens generated, tokens read, tool calls). Sent once, in the burst an owner's dashboard receives on connect; the dashboard appends later samples itself.
 
 Like every non-snapshot message it goes to owners and all-scope viewers only, never to a viewer scoped to some projects: the counts are fleet-wide.
 

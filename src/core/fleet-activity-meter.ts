@@ -24,14 +24,12 @@ export class SlidingEventCounter {
   private readonly windowMs: number;
   /** Bucket start (ms) -> events in that bucket, in insertion (time) order. */
   private readonly buckets = new Map<number, number>();
-  private firstEventAtMs: number | null = null;
 
   constructor(windowMs: number = TOOL_CALL_WINDOW_MS) {
     this.windowMs = windowMs;
   }
 
   record(nowMs: number, count: number = 1): void {
-    if (this.firstEventAtMs === null) this.firstEventAtMs = nowMs;
     const bucket = Math.floor(nowMs / TOOL_CALL_BUCKET_MS) * TOOL_CALL_BUCKET_MS;
     this.buckets.set(bucket, (this.buckets.get(bucket) ?? 0) + count);
     this.prune(nowMs);

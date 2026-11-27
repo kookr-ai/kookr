@@ -6,7 +6,8 @@
  * 2. How much is running? (agents and their subagents)
  * 3. How hard is the fleet working? (tokens read and generated, tool calls)
  *
- * It is display-only. Nothing alerts, throttles or admits on it, and no sample
+ * A sample is sent each time the resource sampler takes a reading (every two
+ * seconds). It is display-only. Nothing alerts, throttles or admits on it, and no sample
  * is written to disk: the server keeps the last few minutes in memory so a
  * freshly opened dashboard can draw its trend lines at once.
  *
@@ -14,8 +15,6 @@
  * tell "idle" from "unknown".
  */
 
-/** How often the server samples and broadcasts. */
-export const FLEET_VITALS_INTERVAL_MS = 2_000;
 /** Samples kept in memory for trend lines: five minutes at one sample every two seconds. */
 export const FLEET_VITALS_HISTORY_POINTS = 150;
 
@@ -99,22 +98,13 @@ export interface FleetVitalsSample {
 }
 
 /**
- * One past sample reduced to the series the dashboard draws. Kept flat and
- * short-keyed because 150 of them are sent when a dashboard connects.
+ * One past sample reduced to the three series the dashboard draws as trend
+ * lines. Kept flat and short-keyed because 150 of them are sent when a
+ * dashboard connects.
  */
 export interface FleetVitalsHistoryPoint {
   /** Epoch milliseconds. */
   t: number;
-  /** CPU in use, percent. */
-  cpu: number | null;
-  /** Memory in use, percent. */
-  mem: number | null;
-  /** GPU compute load, percent. */
-  gpu: number | null;
-  /** Video memory in use, percent. */
-  vram: number | null;
-  /** Agents plus subagents. */
-  run: number;
   /** Tokens generated per second. */
   gen: number | null;
   /** Tokens read per second. */
@@ -127,11 +117,6 @@ export interface FleetVitalsHistoryPoint {
 export function fleetVitalsHistoryPoint(sample: FleetVitalsSample): FleetVitalsHistoryPoint {
   return {
     t: sample.sampledAtMs,
-    cpu: sample.machine.cpuUsagePercent,
-    mem: sample.machine.memoryUsedPercent,
-    gpu: sample.machine.gpu?.utilizationPercent ?? null,
-    vram: sample.machine.gpu?.memoryUsedPercent ?? null,
-    run: sample.fleet.agents + sample.fleet.subagents,
     gen: sample.fleet.tokens?.generatedPerSec ?? null,
     read: sample.fleet.tokens?.readPerSec ?? null,
     tools: sample.fleet.toolCallsPerMin,

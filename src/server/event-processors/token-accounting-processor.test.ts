@@ -144,6 +144,20 @@ describe('TokenAccountingProcessor', () => {
       expect(grok.tokenTracker.register).not.toHaveBeenCalled();
     });
 
+    test('remembers at most 2,000 running subagents, forgetting the oldest first', () => {
+      const { tokenTracker, start, stop } = build();
+      const real = (id: string) => `/srv/claude/projects/-repo/5e55/subagents/workflows/wf_1/agent-${id}.jsonl`;
+      // 2,001 subagents start and none has stopped yet: the first one's guess is forgotten.
+      for (let i = 0; i <= 2_000; i++) start({ agentId: `a${i}` });
+
+      // The forgotten one: its stop cannot name a guess to drop, so nothing is unregistered.
+      stop(real('a0'), 'a0');
+      expect(tokenTracker.unregister).not.toHaveBeenCalled();
+      // One that is still remembered: its wrong guess is dropped as usual.
+      stop(real('a2000'), 'a2000');
+      expect(tokenTracker.unregister).toHaveBeenCalledWith('/srv/claude/projects/-repo/5e55/subagents/agent-a2000.jsonl');
+    });
+
     test('a stop with no path report leaves the guessed registration in place', () => {
       const { tokenTracker, start, stop } = build();
       start();

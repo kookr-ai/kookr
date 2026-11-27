@@ -62,10 +62,8 @@ export function createFleetVitalsService(deps: CreateFleetVitalsServiceDeps): Fl
   const probe = deps.gpuProbe ?? new GpuProbe();
   return new FleetVitalsService({
     broadcastToAll: deps.broadcastToAll,
-    gpu: {
-      refresh: () => (deps.hasDashboardClients() ? probe.refresh() : Promise.resolve()),
-      snapshot: () => probe.snapshot(),
-    },
+    gpu: probe,
+    isWatched: deps.hasDashboardClients,
     listLiveTasks: () => listLiveAgentTasks(deps.taskStore.viewLiveTasks()),
     countSubagents: () => deps.monitor.getFleetSubagentCount(),
     readLoadAverage1m,

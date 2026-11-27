@@ -81,7 +81,7 @@ function sample(overrides: SampleOverrides = {}): FleetVitalsSample {
 }
 
 function point(overrides: Partial<FleetVitalsHistoryPoint> = {}): FleetVitalsHistoryPoint {
-  return { t: 1, cpu: 50, mem: 30, gpu: 20, vram: 10, run: 15, gen: 100, read: 9_000, tools: 20, ...overrides };
+  return { t: 1, gen: 100, read: 9_000, tools: 20, ...overrides };
 }
 
 describe('isFleetVitalsSample', () => {
@@ -113,10 +113,11 @@ describe('isFleetVitalsSample', () => {
 });
 
 describe('history points', () => {
-  test('a point needs a time, a running count and a tool-call count; the rest may be null', () => {
+  test('a point needs a time and a tool-call count; the token rates may be null', () => {
     expect(isFleetVitalsHistoryPoint(point())).toBe(true);
-    expect(isFleetVitalsHistoryPoint(point({ cpu: null, gpu: null, vram: null, gen: null, read: null }))).toBe(true);
-    expect(isFleetVitalsHistoryPoint({ ...point(), run: null })).toBe(false);
+    expect(isFleetVitalsHistoryPoint(point({ gen: null, read: null }))).toBe(true);
+    expect(isFleetVitalsHistoryPoint({ ...point(), tools: null })).toBe(false);
+    expect(isFleetVitalsHistoryPoint({ ...point(), t: 'now' })).toBe(false);
     expect(isFleetVitalsHistoryPoint({ ...point(), gen: 'x' })).toBe(false);
   });
 

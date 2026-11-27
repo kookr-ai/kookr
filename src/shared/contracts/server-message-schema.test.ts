@@ -154,7 +154,7 @@ const serverMessageCases = [
         topTools: [{ tool: 'Bash', calls: 18 }],
       },
     },
-    history: [{ t: 1790000000000, cpu: 66, mem: 32, gpu: null, vram: null, run: 15, gen: 110, read: 13860, tools: 26 }],
+    history: [{ t: 1790000000000, gen: 110, read: 13860, tools: 26 }],
   }),
   serverMessageCase({ type: 'circuitBreakerStatus', breakers: [] }),
   serverMessageCase({

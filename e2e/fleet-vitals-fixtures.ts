@@ -106,7 +106,7 @@ export function vitalsHistory(
   options: { idle?: boolean } = {},
 ): FleetVitalsHistoryPoint[] {
   const random = seeded(7);
-  const { machine, fleet } = sample;
+  const { fleet } = sample;
   const generated = fleet.tokens?.generatedPerSec ?? null;
   const read = fleet.tokens?.readPerSec ?? null;
   const history: FleetVitalsHistoryPoint[] = [];
@@ -119,11 +119,6 @@ export function vitalsHistory(
     const last = index === points - 1;
     history.push({
       t: sample.sampledAtMs - (points - 1 - index) * 2_000,
-      cpu: machine.cpuUsagePercent === null ? null : Math.min(100, machine.cpuUsagePercent * (0.85 + random() * 0.3)),
-      mem: machine.memoryUsedPercent,
-      gpu: machine.gpu?.utilizationPercent ?? null,
-      vram: machine.gpu?.memoryUsedPercent ?? null,
-      run: fleet.agents + fleet.subagents,
       gen: generated === null ? null : last ? generated : Math.round(generated * level),
       read: read === null ? null : last ? read : Math.round(read * level),
       tools: last ? fleet.toolCallsPerMin : Math.round(fleet.toolCallsPerMin * level),

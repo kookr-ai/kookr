@@ -66,7 +66,7 @@ interface Harness {
   gpuRefreshes(): number;
 }
 
-function harness(options: { historyPoints?: number } = {}): Harness {
+function harness(options: { historyPoints?: number; isWatched?: () => boolean } = {}): Harness {
   let now = 1_000_000;
   let tasks: FleetVitalsLiveTask[] = [];
   let subagents = 0;
@@ -83,6 +83,7 @@ function harness(options: { historyPoints?: number } = {}): Harness {
     },
     listLiveTasks: () => tasks,
     countSubagents: () => subagents,
+    isWatched: options.isWatched,
     readLoadAverage1m: () => 18.2,
     readLogicalCpuCount: () => 16,
     nowMs: () => now,
@@ -217,18 +218,52 @@ describe('FleetVitalsService', () => {
 
   test('keeps a bounded history, oldest first, one point per sample', () => {
     const h = harness({ historyPoints: 3 });
-    h.setTasks([task('a', 0)]);
-    h.setSubagents(2);
     for (let i = 0; i < 5; i++) {
-      h.tick(resourceStatus({ cpu: 10 * i }));
+      // One more tool call before each sample: 1, 2, 3, 4, 5 in the last minute.
+      h.service.noteToolCall('Bash');
+      h.tick();
       h.advance(2_000);
     }
     const history = h.service.getHistory();
-    expect(history.map((point) => point.cpu)).toEqual([20, 30, 40]);
-    expect(history[2]).toMatchObject({ t: 1_008_000, mem: 32, gpu: 24, vram: 10, run: 3, tools: 0 });
+    expect(history.map((point) => point.tools)).toEqual([3, 4, 5]);
+    // Only the series the dashboard draws are kept.
+    expect(history[2]).toEqual({ t: 1_008_000, gen: 0, read: 0, tools: 5 });
     // A copy: mutating it does not corrupt the buffer.
     history.length = 0;
     expect(h.service.getHistory()).toHaveLength(3);
+  });
+
+  test('held-over resource values are reported as unmeasured, not as current', () => {
+    const h = harness();
+    // The resource sampler failed: the status carries its last good values, marked stale.
+    const held: SystemResourceStatus = {
+      ...resourceStatus({ cpu: 40, memoryUsedPercent: 50, loopMs: 12 }),
+      stale: { reason: 'sampler_error', lastGoodAt: '2026-11-27T17:59:00.000Z', ageMs: 60_000 },
+    };
+    const sample = h.tick(held);
+    expect(sample.machine.cpuUsagePercent).toBeNull();
+    expect(sample.machine.memoryUsedPercent).toBeNull();
+    expect(sample.machine.memoryUsedBytes).toBeNull();
+    expect(sample.machine.memoryTotalBytes).toBeNull();
+    expect(sample.machine.serverLoopDelayP95Ms).toBeNull();
+    // Readings that do not come from the resource sampler are still current.
+    expect(sample.machine.gpu?.utilizationPercent).toBe(24);
+    expect(sample.machine.loadAverage1m).toBe(18.2);
+    // The next good sample is shown again.
+    expect(h.tick().machine.cpuUsagePercent).toBe(66);
+  });
+
+  test('past the cap on distinct tool names a call still counts, only its name is left out', () => {
+    const h = harness();
+    for (let i = 0; i < 200; i++) h.service.noteToolCall(`mcp__tool_${String(i).padStart(3, '0')}`);
+    h.service.noteToolCall('one_too_many');
+    h.service.noteToolCall('one_too_many');
+    h.service.noteToolCall('mcp__tool_000');
+    const sample = h.tick();
+    expect(sample.fleet.toolCallsPerMin).toBe(203);
+    // A name already tracked keeps counting; the 201st name never enters the mix.
+    expect(sample.fleet.topTools[0]).toEqual({ tool: 'mcp__tool_000', calls: 2 });
+    expect(sample.fleet.topTools.some((entry) => entry.tool === 'one_too_many')).toBe(false);
   });
 
   test('getLatest returns the last broadcast sample', () => {
@@ -247,6 +282,23 @@ describe('FleetVitalsService', () => {
     h.advance(2_000);
     h.tick();
     expect(h.gpuRefreshes()).toBe(2);
+  });
+
+  test('the GPU command is not run while nobody is watching, and runs at once when someone connects', () => {
+    let watched = false;
+    const h = harness({ isWatched: () => watched });
+    h.tick();
+    h.advance(2_000);
+    h.tick();
+    expect(h.gpuRefreshes()).toBe(0);
+    // A skipped probe does not start the four-second wait: the very next sample probes.
+    watched = true;
+    h.advance(2_000);
+    h.tick();
+    expect(h.gpuRefreshes()).toBe(1);
+    h.advance(2_000);
+    h.tick();
+    expect(h.gpuRefreshes()).toBe(1);
   });
 
   test('a throwing source becomes an unavailable reading and the sample still goes out', () => {

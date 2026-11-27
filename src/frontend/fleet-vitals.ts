@@ -51,7 +51,7 @@ const GPU_NUMBER_FIELDS = [
   'powerWatts',
 ] as const;
 
-const HISTORY_NULLABLE_FIELDS = ['cpu', 'mem', 'gpu', 'vram', 'gen', 'read'] as const;
+const HISTORY_NULLABLE_FIELDS = ['gen', 'read'] as const;
 
 /**
  * Runtime check of a `fleetVitals` sample. A message that fails is ignored and
@@ -82,7 +82,7 @@ export function isFleetVitalsSample(value: unknown): value is FleetVitalsSample 
 
 export function isFleetVitalsHistoryPoint(value: unknown): value is FleetVitalsHistoryPoint {
   if (!isObject(value)) return false;
-  if (!isCount(value.t) || !isCount(value.run) || !isCount(value.tools)) return false;
+  if (!isCount(value.t) || !isCount(value.tools)) return false;
   return hasNullableNumbers(value, HISTORY_NULLABLE_FIELDS);
 }
 
@@ -317,7 +317,7 @@ export function shortGpuName(name: string | null | undefined): string | null {
 /* Trend lines                                                         */
 /* ------------------------------------------------------------------ */
 
-export type VitalsSeries = 'gen' | 'read' | 'tools' | 'cpu' | 'mem' | 'gpu' | 'vram' | 'run';
+export type VitalsSeries = 'gen' | 'read' | 'tools';
 
 /** One series out of the history, oldest first; unmeasured points stay `null`. */
 export function vitalsSeries(history: readonly FleetVitalsHistoryPoint[], series: VitalsSeries): Array<number | null> {

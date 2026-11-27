@@ -180,7 +180,6 @@ export type {
 } from './contracts/workspace.js';
 export {
   FLEET_VITALS_HISTORY_POINTS,
-  FLEET_VITALS_INTERVAL_MS,
   fleetVitalsHistoryPoint,
 } from './contracts/fleet-vitals.js';
 export type {

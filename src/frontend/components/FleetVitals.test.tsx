@@ -85,11 +85,6 @@ function sample(overrides: Overrides = {}): FleetVitalsSample {
 function history(): FleetVitalsHistoryPoint[] {
   return Array.from({ length: 150 }, (_, index) => ({
     t: 1_790_000_000_000 - (149 - index) * 2_000,
-    cpu: 60,
-    mem: 32,
-    gpu: 24,
-    vram: 10,
-    run: 15,
     gen: index === 40 ? 240 : 110,
     read: index === 40 ? 31_000 : 13_860,
     tools: index === 40 ? 71 : 26,
@@ -146,7 +141,10 @@ function renderStrip(density: VitalsStripDensity = 'full', onOpen: () => void = 
 }
 
 const text = (selector: string): string => container.querySelector(selector)?.textContent ?? '';
-const meters = (): HTMLElement[] => Array.from(container.querySelectorAll<HTMLElement>('[role="meter"]'));
+const meters = (): HTMLElement[] => Array.from(container.querySelectorAll<HTMLElement>('.vitals-meter-track'));
+/** What a screen reader says for a meter: its name, then its value text. */
+const spokenMeters = (): string[] =>
+  meters().map((meter) => `${meter.getAttribute('aria-label')}: ${meter.getAttribute('aria-valuetext')}`);
 const rateLabels = (): string[] =>
   Array.from(container.querySelectorAll('.vitals-rate')).map((row) => row.getAttribute('aria-label') ?? '');
 
@@ -164,13 +162,18 @@ describe('FleetVitalsBlock', () => {
     expect(text('.vitals-verdict-detail')).toBe('Tightest: CPU 66%');
     expect(container.querySelector('.vitals-verdict')?.className).toContain('vitals-verdict--ok');
 
-    expect(meters().map((meter) => meter.getAttribute('aria-label'))).toEqual([
-      'CPU 66%, load 18.2',
-      'RAM 32%, 9.9 / 31 GB',
-      'GPU 24%, 48 °C',
-      'VRAM 10%, 2.4 / 24 GB',
+    expect(spokenMeters()).toEqual([
+      'CPU: 66%, load 18.2',
+      'RAM: 32%, 9.9 / 31 GB',
+      'GPU: 24%, 48 °C',
+      'VRAM: 10%, 2.4 / 24 GB',
     ]);
+    expect(meters().map((meter) => meter.getAttribute('role'))).toEqual(['meter', 'meter', 'meter', 'meter']);
     expect(meters().map((meter) => meter.getAttribute('aria-valuenow'))).toEqual(['66', '32', '24', '10']);
+    // Only the state is a live region: the figures beside it change with every sample.
+    expect(container.querySelector('.vitals-verdict-headline')?.getAttribute('role')).toBe('status');
+    expect(container.querySelector('.vitals-verdict')?.hasAttribute('role')).toBe(false);
+    expect(container.querySelector('.vitals-verdict-detail')?.closest('[role="status"]')).toBeNull();
     // Neutral at rest: no meter carries a state class.
     expect(container.querySelectorAll('.vitals-meter--watch, .vitals-meter--bad')).toHaveLength(0);
 
@@ -232,9 +235,8 @@ describe('FleetVitalsBlock', () => {
     expect(text('.vitals-verdict-headline')).toBe('CPU saturated, VRAM nearly full');
     expect(text('.vitals-verdict-detail')).toBe('+ dashboard very slow');
 
-    const labels = meters().map((meter) => meter.getAttribute('aria-label'));
-    expect(labels[0]).toBe('CPU 96%, saturated, load 18.2');
-    expect(labels[3]).toBe('VRAM 97%, nearly full, 23.3 / 24 GB');
+    expect(spokenMeters()[0]).toBe('CPU: 96%, saturated, load 18.2');
+    expect(spokenMeters()[3]).toBe('VRAM: 97%, nearly full, 23.3 / 24 GB');
     const classes = Array.from(container.querySelectorAll('.vitals-meter')).map((el) => el.className);
     expect(classes[0]).toContain('vitals-meter--bad');
     expect(classes[3]).toContain('vitals-meter--bad');
@@ -256,10 +258,7 @@ describe('FleetVitalsBlock', () => {
   test('a machine without a GPU has two meters and no GPU wording', () => {
     feed(sample({ gpu: false }));
     renderBlock();
-    expect(meters().map((meter) => meter.getAttribute('aria-label'))).toEqual([
-      'CPU 66%, load 18.2',
-      'RAM 32%, 9.9 / 31 GB',
-    ]);
+    expect(spokenMeters()).toEqual(['CPU: 66%, load 18.2', 'RAM: 32%, 9.9 / 31 GB']);
     expect(container.textContent).not.toContain('VRAM');
 
     // Details says why, so an absent GPU is not mistaken for a broken panel.
@@ -272,8 +271,12 @@ describe('FleetVitalsBlock', () => {
     feed(sample({ cpu: null, tokens: null, toolCallsPerMin: 0, lag: null }), []);
     renderBlock();
     expect(text('.vitals-verdict-headline')).toBe('Measuring');
-    expect(meters()[0].getAttribute('aria-label')).toBe('CPU not measured yet, load 18.2');
+    // A meter must have a current value: an unmeasured reading is a named picture instead.
+    expect(meters()[0].getAttribute('role')).toBe('img');
+    expect(meters()[0].getAttribute('aria-label')).toBe('CPU: not measured yet, load 18.2');
     expect(meters()[0].hasAttribute('aria-valuenow')).toBe(false);
+    expect(container.querySelector('.vitals-meter-fill')?.closest('.vitals-meter')?.querySelector('.vitals-meter-label')?.textContent)
+      .toBe('RAM');
     expect(container.querySelector('.vitals-meter-value')?.textContent).toBe('--');
     expect(rateLabels().slice(0, 2)).toEqual(['Generated: warming up', 'Read: warming up']);
     expect(text('.vitals-rate-scale')).toBe('warming up');
@@ -283,7 +286,7 @@ describe('FleetVitalsBlock', () => {
 
   test('an idle fleet reads zero, without a lower-bound sign', () => {
     const idle = sample({ agents: 0, subagents: 0, tokens: { generatedPerSec: 0, readPerSec: 0, cacheReadPerSec: 0 }, toolCallsPerMin: 0 });
-    feed(idle, history().map((point) => ({ ...point, gen: 0, read: 0, tools: 0, run: 0 })));
+    feed(idle, history().map((point) => ({ ...point, gen: 0, read: 0, tools: 0 })));
     renderBlock();
     expect(text('[data-testid="fleet-vitals-running"]')).toBe('0running');
     expect(Array.from(container.querySelectorAll('.vitals-rate-value')).map((el) => el.textContent)).toEqual(['0', '0', '0']);
@@ -308,8 +311,9 @@ describe('FleetVitalsBlock', () => {
     act(() => { vi.advanceTimersByTime(12_000); });
 
     expect(container.querySelector('.vitals')?.className).toContain('vitals--stale');
-    expect(text('.vitals-verdict-headline')).toMatch(/^Readings are 1[0-3] s old$/);
-    expect(text('.vitals-verdict-detail')).toBe('last values shown');
+    // The live region says the state once; the ticking age sits outside it.
+    expect(text('.vitals-verdict-headline')).toBe('Readings are old');
+    expect(text('.vitals-verdict-detail')).toMatch(/^1[0-3] s, last values shown$/);
 
     // A new sample makes it current again.
     feed(sample());
@@ -486,6 +490,53 @@ describe('FleetVitalsStrip', () => {
   });
 });
 
+describe('vitals in the store', () => {
+  const state = () => useKookrStore.getState();
+  const at = (sampledAtMs: number, generatedPerSec: number): FleetVitalsSample => {
+    const next = sample({ tokens: { generatedPerSec, readPerSec: 1_000, cacheReadPerSec: 900 } });
+    return { ...next, sampledAtMs };
+  };
+
+  test('the connection burst replaces the history; each later sample appends one point', () => {
+    const burst = history();
+    act(() => state().handleFleetVitals(at(burst[149].t, 110), burst, 5_000));
+    expect(state().fleetVitalsHistory).toHaveLength(150);
+    expect(state().fleetVitalsReceivedAtMs).toBe(5_000);
+
+    // A tick carries no history: its point is appended and the oldest one drops off.
+    const tick = at(burst[149].t + 2_000, 321);
+    act(() => state().handleFleetVitals(tick, undefined, 7_000));
+    const points = state().fleetVitalsHistory;
+    expect(points).toHaveLength(150);
+    expect(points[149]).toEqual({ t: burst[149].t + 2_000, gen: 321, read: 1_000, tools: 26 });
+    expect(points[0].t).toBe(burst[1].t);
+    expect(state().fleetVitals).toBe(tick);
+    expect(state().fleetVitalsReceivedAtMs).toBe(7_000);
+  });
+
+  test('a repeated or out-of-order sample updates the readings without charting a second point', () => {
+    act(() => state().handleFleetVitals(at(10_000, 100), [], 1));
+    act(() => state().handleFleetVitals(at(12_000, 200), undefined, 2));
+    expect(state().fleetVitalsHistory.map((point) => point.gen)).toEqual([200]);
+
+    // The same instant again (a reconnect can replay it), then an older one.
+    act(() => state().handleFleetVitals(at(12_000, 300), undefined, 3));
+    act(() => state().handleFleetVitals(at(11_000, 400), undefined, 4));
+    expect(state().fleetVitalsHistory.map((point) => point.gen)).toEqual([200]);
+    expect(state().fleetVitals?.fleet.tokens?.generatedPerSec).toBe(400);
+    expect(state().fleetVitalsReceivedAtMs).toBe(4);
+  });
+
+  test('a burst longer than five minutes is cut to its newest 150 points', () => {
+    const long = Array.from({ length: 180 }, (_, index) => ({ t: index * 2_000, gen: index, read: 0, tools: 0 }));
+    act(() => state().handleFleetVitals(at(long[179].t, 179), long, 1));
+    const points = state().fleetVitalsHistory;
+    expect(points).toHaveLength(150);
+    expect(points[0].gen).toBe(30);
+    expect(points[149].gen).toBe(179);
+  });
+});
+
 describe('System indicator and detail', () => {
   test('a full video memory is a reason for the System indicator to ask for a look', () => {
     expect(systemAttentionReasons({ vramLevel: 'bad' })).toEqual(['GPU memory nearly full']);
@@ -516,6 +567,18 @@ describe('System indicator and detail', () => {
     expect(container.querySelector('.resource-status')).not.toBeNull();
 
     feed(sample());
+    expect(container.querySelector('.resource-status')).toBeNull();
+
+    // The resource sampler starts failing: the pills come back, because their
+    // detail is what says the values are the last good sample.
+    act(() => useKookrStore.getState().handleResourceStatus({
+      ...status,
+      stale: { reason: 'sampler_error', lastGoodAt: status.sampledAt, ageMs: 30_000 },
+    } as SystemResourceStatus, Date.now()));
+    expect(container.querySelector('.resource-status')).not.toBeNull();
+
+    // It recovers: the vitals block is enough again.
+    act(() => useKookrStore.getState().handleResourceStatus(status, Date.now()));
     expect(container.querySelector('.resource-status')).toBeNull();
   });
 });

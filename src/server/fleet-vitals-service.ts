@@ -47,6 +47,12 @@ export interface FleetVitalsServiceDeps {
   listLiveTasks: () => Iterable<FleetVitalsLiveTask>;
   /** Subagents started and not yet finished, across all agents. */
   countSubagents: () => number;
+  /**
+   * Whether anyone is looking (a dashboard is connected). The GPU command is
+   * run only then; the rest of the sample is read from memory and always built.
+   * Defaults to always.
+   */
+  isWatched?: () => boolean;
   readLoadAverage1m?: () => number | null;
   readLogicalCpuCount?: () => number | null;
   nowMs?: () => number;
@@ -76,6 +82,7 @@ export class FleetVitalsService {
   private readonly gpu: FleetVitalsGpuSource;
   private readonly listLiveTasks: () => Iterable<FleetVitalsLiveTask>;
   private readonly countSubagents: () => number;
+  private readonly isWatched: () => boolean;
   private readonly readLoadAverage1m: () => number | null;
   private readonly readLogicalCpuCount: () => number | null;
   private readonly nowMs: () => number;
@@ -96,6 +103,7 @@ export class FleetVitalsService {
     this.gpu = deps.gpu;
     this.listLiveTasks = deps.listLiveTasks;
     this.countSubagents = deps.countSubagents;
+    this.isWatched = deps.isWatched ?? (() => true);
     this.readLoadAverage1m = deps.readLoadAverage1m ?? (() => null);
     this.readLogicalCpuCount = deps.readLogicalCpuCount ?? (() => null);
     this.nowMs = deps.nowMs ?? (() => Date.now());
@@ -140,6 +148,9 @@ export class FleetVitalsService {
   }
 
   private refreshGpuIfDue(now: number): void {
+    // Checked before the timing, so a skipped probe does not count as a
+    // refresh: the first tick after a dashboard connects probes at once.
+    if (!this.guard(this.isWatched, false)) return;
     if (this.lastGpuRefreshAtMs !== null && now - this.lastGpuRefreshAtMs < this.gpuRefreshMs) return;
     this.lastGpuRefreshAtMs = now;
     // Fire and forget: the probe is asynchronous and time-boxed, and this tick
@@ -148,8 +159,13 @@ export class FleetVitalsService {
   }
 
   private buildSample(status: SystemResourceStatus, now: number): FleetVitalsSample {
-    const memoryTotalBytes = finiteOrNull(status.host.memoryTotalBytes);
-    const memoryFreeBytes = finiteOrNull(status.host.memoryFreeBytes);
+    // When the resource sampler fails, the resource status carries its last good
+    // values, marked `stale` (issue #2771). They are not this tick's readings:
+    // sent under a fresh timestamp they would read "Machine comfortable" for as
+    // long as the sampler stays broken. Report them as unmeasured instead.
+    const held = status.stale !== undefined;
+    const memoryTotalBytes = held ? null : finiteOrNull(status.host.memoryTotalBytes);
+    const memoryFreeBytes = held ? null : finiteOrNull(status.host.memoryFreeBytes);
     const gpuSnapshot = this.guard<GpuProbeSnapshot>(
       () => this.gpu.snapshot(),
       { devices: [], ageMs: null, unavailable: 'probe_failed' },
@@ -165,17 +181,17 @@ export class FleetVitalsService {
     return {
       sampledAtMs: now,
       machine: {
-        cpuUsagePercent: finiteOrNull(status.host.cpuUsagePercent),
+        cpuUsagePercent: held ? null : finiteOrNull(status.host.cpuUsagePercent),
         loadAverage1m: finiteOrNull(this.guard(this.readLoadAverage1m, null)),
         logicalCpuCount: finiteOrNull(this.guard(this.readLogicalCpuCount, null)),
-        memoryUsedPercent: finiteOrNull(status.host.memoryUsedPercent),
+        memoryUsedPercent: held ? null : finiteOrNull(status.host.memoryUsedPercent),
         memoryUsedBytes: memoryTotalBytes === null || memoryFreeBytes === null
           ? null
           : Math.max(0, memoryTotalBytes - memoryFreeBytes),
         memoryTotalBytes,
         gpu: toGpu(gpuSnapshot),
         gpuUnavailable: gpuSnapshot.unavailable,
-        serverLoopDelayP95Ms: finiteOrNull(status.server.eventLoopDelayP95Ms),
+        serverLoopDelayP95Ms: held ? null : finiteOrNull(status.server.eventLoopDelayP95Ms),
       },
       fleet: {
         agents: liveTasks.length,

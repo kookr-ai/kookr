@@ -40,7 +40,8 @@ test.describe('Fleet vitals', () => {
     await expect(block.getByTestId('fleet-vitals-verdict')).toContainText('Machine comfortable');
     await expect(block.getByTestId('fleet-vitals-verdict')).toContainText('Tightest: CPU 66%');
     await expect(block.getByRole('meter')).toHaveCount(4);
-    await expect(block.getByRole('meter', { name: /^VRAM 10%, 2\.4 \/ 24 GB$/ })).toBeVisible();
+    await expect(block.getByRole('meter', { name: 'VRAM' })).toHaveAttribute('aria-valuetext', '10%, 2.4 / 24 GB');
+    await expect(block.getByRole('meter', { name: 'VRAM' })).toHaveAttribute('aria-valuenow', '10');
     await expect(block.getByTestId('fleet-vitals-running')).toContainText('15');
     await expect(block.getByRole('group', { name: /^Generated: at least 110 tokens per second/ })).toBeVisible();
     await expect(block.getByRole('group', { name: /^Tool calls: 26 per minute/ })).toBeVisible();

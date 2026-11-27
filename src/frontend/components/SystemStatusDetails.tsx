@@ -172,8 +172,8 @@ export function useSystemAttentionReasons(): string[] {
   const taskNamer = useKookrStore((s) => s.taskNamer);
   const resourceStatus = useKookrStore((s) => s.resourceStatus);
   const resourceStale = useResourceStatusStale();
-  // Selected as a level, not the sample: the sample changes every two seconds,
-  // the level almost never, so the top bar does not re-render on each tick.
+  // Selected as a level, not the sample, so the memo below is recomputed only
+  // when the level changes, not for every two-second sample.
   const freshVramLevel = useKookrStore((s) => (s.fleetVitals ? vramLevel(s.fleetVitals) : 'unknown'));
   const vitalsStale = useFleetVitalsStale();
   const currentVramLevel: VitalsLevel = vitalsStale ? 'unknown' : freshVramLevel;
@@ -655,12 +655,15 @@ export function SystemStatusDetails({
     sound.setEnabled(!sound.enabled);
   }, [sound]);
   const hasFleetVitals = useKookrStore((s) => s.fleetVitals !== null);
+  const resourceHeldOver = useKookrStore((s) => s.resourceStatus?.stale !== undefined);
 
   return (
     <div className="system-status-details" data-testid="system-status-details">
       {/* The vitals block above shows CPU and memory once a vitals sample has
-          arrived; these two pills remain for the moments before that. */}
-      {!hasFleetVitals && <ResourceDisplay compact={false} />}
+          arrived. These two pills remain for the moments before that, and while
+          the resource sampler is failing: their detail is the one place that
+          says the values are the last good sample, and how old it is. */}
+      {(!hasFleetVitals || resourceHeldOver) && <ResourceDisplay compact={false} />}
       <OpsHealthPills
         onOpenCapacity={onOpenCapacity}
         onOpenDiagnostics={onOpenDiagnostics}
