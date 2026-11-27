@@ -97,7 +97,7 @@ export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   // Its own key, not Alt+M: Alt+M is dictation into the text box, so Lucy's Talk also works while a text box has focus.
   { id: 'lucy_talk_toggle', group: 'Responding to findings', label: 'Talk to Lucy', description: 'Switch hands-free Talk with Lucy on or off, from anywhere (also inside a text box)', context: 'when Lucy\u2019s panel is on' },
   // Alt+Shift+L sits next to Talk's Alt+Shift+M and collides with nothing: Alt+L alone is Quick launch.
-  { id: 'lucy_room_toggle', group: 'Responding to findings', label: 'Lucy\u2019s room', description: 'Give Lucy the whole window, or go back to the dashboard, from anywhere (also inside a text box)', context: 'when Lucy\u2019s panel is on' },
+  { id: 'lucy_room_toggle', group: 'Responding to findings', label: 'Lucy\u2019s desk', description: 'Give Lucy the whole window, or go back to the dashboard, from anywhere (also inside a text box)', context: 'when Lucy\u2019s panel is on' },
   { id: 'quick_launch', group: 'Task management', label: 'Quick launch', description: 'Open quick launch bar to create a new task', featured: true },
   { id: 'snooze_dialog', group: 'Task management', label: 'Snooze task', description: 'Snooze selected task (opens duration picker)', featured: true },
   { id: 'quick_snooze', group: 'Task management', label: 'Quick snooze', description: 'Quick snooze selected task (5 minutes)' },

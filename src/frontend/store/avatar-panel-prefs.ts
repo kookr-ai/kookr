@@ -53,14 +53,17 @@ export const AVATAR_PAGE_MIN_WIDTH = 1000;
 /** Diameter of the minimised bubble. */
 export const AVATAR_BUBBLE_SIZE = 58;
 /**
- * From this window width Lucy's room has its side rail (her 3D view and what waits on the operator) beside the
- * conversation; in a narrower window the room is one column, laid out like the docked column.
+ * Lucy's room is "the desk" (AvatarDock.tsx). From this window width it has two columns: Decisions with Fleet
+ * stacked under it on the left, the conversation on the right. In a narrower window it is one column, laid out
+ * like the docked column with Decisions on top.
  */
 export const AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX = 1100;
-/** The rail is 400 px wide, and a little wider in a very wide window: 24% of it, up to 520 px. */
+/** From this window width the desk has three columns: Decisions, Fleet, Conversation. */
+export const AVATAR_DESK_THREE_COLUMN_MIN_VIEWPORT_PX = 1500;
+/** A side column (Decisions, Fleet) is 26% of the window, never under 400 px nor over 520 px. */
 export const AVATAR_ROOM_RAIL_MIN_WIDTH = 400;
 export const AVATAR_ROOM_RAIL_MAX_WIDTH = 520;
-export const AVATAR_ROOM_RAIL_VIEWPORT_SHARE = 0.24;
+export const AVATAR_ROOM_RAIL_VIEWPORT_SHARE = 0.26;
 /**
  * The conversation and the composer are at most this wide, centred in the room they have (`--lucy-reading-width`
  * in styles.css says the same).
@@ -105,11 +108,29 @@ export function clampAvatarColumnWidth(width: unknown, max: number = AVATAR_COLU
 
 export type AvatarColumnLayout =
   | { mode: 'sheet' | 'overlay' | 'docked'; width: number; maxWidth: number }
-  | { mode: 'room'; width: number; maxWidth: number; rail: boolean; railWidth: number };
+  | {
+      mode: 'room';
+      width: number;
+      maxWidth: number;
+      /** True from 1100 px: the desk has side columns. */
+      rail: boolean;
+      /** The width of all the side columns together (0 in one column). */
+      railWidth: number;
+      /** How many columns the desk has. */
+      columns: 1 | 2 | 3;
+      /** The width of one side column (Decisions, Fleet); 0 in one column. */
+      sideWidth: number;
+    };
 
-/** How wide the room's side rail is in a window of `viewportWidth`; 0 where the room has no rail. */
+/** The desk's columns in a window of `viewportWidth`: three from 1500 px, two from 1100 px, else one. */
+export function avatarDeskColumns(viewportWidth: number): 1 | 2 | 3 {
+  if (viewportWidth >= AVATAR_DESK_THREE_COLUMN_MIN_VIEWPORT_PX) return 3;
+  return viewportWidth >= AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX ? 2 : 1;
+}
+
+/** How wide one side column of the desk is in a window of `viewportWidth`; 0 where the desk is one column. */
 export function avatarRoomRailWidth(viewportWidth: number): number {
-  if (viewportWidth < AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX) return 0;
+  if (avatarDeskColumns(viewportWidth) === 1) return 0;
   const share = Math.round(viewportWidth * AVATAR_ROOM_RAIL_VIEWPORT_SHARE);
   return Math.min(Math.max(share, AVATAR_ROOM_RAIL_MIN_WIDTH), AVATAR_ROOM_RAIL_MAX_WIDTH);
 }
@@ -127,8 +148,8 @@ export function avatarThreadIsCentred(layout: AvatarColumnLayout): boolean {
 /**
  * How the open panel sits in a window of `viewportWidth`:
  *  - `room`: the operator gave her the whole window (`room` is true). She covers the page at every window
- *    width; `rail` says whether there is room for the side rail (1100 px and wider) or it is one column, and
- *    `railWidth` how wide that rail is (0 without one).
+ *    width; `columns` says how many columns the desk has (see `avatarDeskColumns`), `sideWidth` how wide each
+ *    side column is, and `railWidth` how wide they are together (0 in one column).
  *  - `sheet`: a window of 768 px or less; the column covers the whole page.
  *  - `overlay`: not enough room to take any from the page and leave it 1000 px (windows of 769 to 1319 px); the
  *    column floats over the page at the saved width (560 px at most), and the page keeps its full width and layout.
@@ -139,8 +160,17 @@ export function avatarThreadIsCentred(layout: AvatarColumnLayout): boolean {
  */
 export function avatarColumnLayout(viewportWidth: number, savedWidth?: number, room = false): AvatarColumnLayout {
   if (room) {
-    const railWidth = avatarRoomRailWidth(viewportWidth);
-    return { mode: 'room', width: viewportWidth, maxWidth: viewportWidth, rail: railWidth > 0, railWidth };
+    const columns = avatarDeskColumns(viewportWidth);
+    const sideWidth = avatarRoomRailWidth(viewportWidth);
+    return {
+      mode: 'room',
+      width: viewportWidth,
+      maxWidth: viewportWidth,
+      rail: columns > 1,
+      railWidth: sideWidth * (columns - 1),
+      columns,
+      sideWidth,
+    };
   }
   if (viewportWidth <= AVATAR_SHEET_MAX_VIEWPORT_PX) return { mode: 'sheet', width: viewportWidth, maxWidth: viewportWidth };
   if (viewportWidth - AVATAR_PAGE_MIN_WIDTH < AVATAR_COLUMN_MIN_WIDTH) {

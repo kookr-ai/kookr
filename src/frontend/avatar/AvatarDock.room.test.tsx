@@ -180,14 +180,14 @@ describe('AvatarDock: Lucy’s room', () => {
   });
 
   describe('entering and leaving', () => {
-    test('the column has a labelled Expand button; pressing it gives her the whole window, and the same button brings the dashboard back', () => {
+    test('the column has a labelled Desk button; pressing it gives her the whole window, and the same button brings the dashboard back', () => {
       start();
       render();
       expect(mode()).toBe('docked');
-      expect(toggle()!.textContent).toBe('Expand');
+      expect(toggle()!.textContent).toBe('Desk');
       expect(toggle()!.querySelector('svg')).not.toBeNull();
       expect(toggle()!.title).toBe('Give Lucy the whole window (Alt+Shift+L)');
-      expect(headerButtons()).toEqual(['Replay last message', 'Expand', 'Minimise Lucy']);
+      expect(headerButtons()).toEqual(['Replay last message', 'Desk', 'Minimise Lucy']);
       const button = toggle()!;
 
       click(button);
@@ -209,10 +209,10 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(dock()!.hasAttribute('data-room-rail')).toBe(false);
       expect(dock()!.style.width).toBe('380px');
       expect(q('avatar-column-resizer')).not.toBeNull();
-      expect(headerButtons()).toEqual(['Replay last message', 'Expand', 'Minimise Lucy']);
+      expect(headerButtons()).toEqual(['Replay last message', 'Desk', 'Minimise Lucy']);
     });
 
-    test('a full-width sheet already is the whole window, so it has no Expand', () => {
+    test('a full-width sheet already is the whole window, so it has no Desk button', () => {
       start();
       setWindowWidth(600);
       render();
@@ -227,7 +227,7 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(dock()!.tagName).toBe('SECTION');
       expect(dock()!.getAttribute('aria-label')).toBe('Lucy avatar');
       click(toggle());
-      expect(dock()!.getAttribute('aria-label')).toBe('Lucy’s room');
+      expect(dock()!.getAttribute('aria-label')).toBe('Lucy’s desk');
       click(toggle());
       expect(dock()!.getAttribute('aria-label')).toBe('Lucy avatar');
     });
@@ -557,7 +557,7 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(document.activeElement).toBe(button);
     });
 
-    test('leaving by the shortcut from somewhere else in the room lands on Expand', () => {
+    test('leaving by the shortcut from somewhere else in the room lands on Desk', () => {
       start();
       render();
       pressRoomShortcut();
@@ -578,7 +578,7 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(document.activeElement).toBe(composer());
     });
 
-    test('leaving the room in a window where she is a full-width sheet (no Expand button) puts focus on Minimise, not on the page', () => {
+    test('leaving the room in a window where she is a full-width sheet (no Desk button) puts focus on Minimise, not on the page', () => {
       start();
       render();
       click(toggle());
@@ -694,10 +694,10 @@ describe('AvatarDock: Lucy’s room', () => {
     });
   });
 
-  describe('the side rail: what waits on you', () => {
+  describe('the Decisions column: what waits on you', () => {
     const waitingCards = () => all('avatar-ask').filter((card) => card.dataset.askState === 'pending');
 
-    test('permission cards first, then every question a task waits for as an open card, then the opinions folded under one line', () => {
+    test('every question a task waits for as an open card, then the permission cards (the order of the needs-you list), then the opinions folded under one line', () => {
       start({}, true);
       render();
       pushAsks([
@@ -712,10 +712,9 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(tray.classList.contains('avatar-tray-rail')).toBe(true);
       // A title, not a button: the rail cannot be folded.
       expect(q('avatar-tray-toggle')).toBeNull();
-      expect(q('avatar-tray-title')!.querySelector('h2')!.textContent).toBe('Waiting on you');
-      // The number is what is shown; "waiting" is added for a screen reader only.
-      expect(q('avatar-tray-count')!.textContent).toBe('3 waiting');
-      expect(q('avatar-tray-count')!.querySelector('.sr-only')!.textContent).toBe(' waiting');
+      expect(q('avatar-tray-title')!.querySelector('h2')!.textContent).toBe('Decisions · 3');
+      expect(q('avatar-tray-count')!.textContent).toBe('3');
+      expect(tray.getAttribute('aria-label')).toBe('Decisions');
 
       // More than one card open at once, the one that closes soonest first, with their answers on screen.
       expect(waitingCards().map((card) => card.dataset.askId)).toEqual(['soon', 'late']);
@@ -724,9 +723,9 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(q('avatar-ask-collapse')).toBeNull();
       expect(all('avatar-ask-row')).toHaveLength(0);
 
-      // In the order on screen: permissions, questions, opinions.
+      // In the order on screen: questions (the one closing soonest first), permissions, opinions.
       const order = [...tray.querySelectorAll('[data-testid="avatar-permission"], [data-testid="avatar-ask"], [data-testid="avatar-opinions"]')].map((el) => el.getAttribute('data-testid'));
-      expect(order).toEqual(['avatar-permission', 'avatar-ask', 'avatar-ask', 'avatar-opinions']);
+      expect(order).toEqual(['avatar-ask', 'avatar-ask', 'avatar-permission', 'avatar-opinions']);
 
       // The opinions: one line, folded; unfolding shows a line each, and pressing one opens its card.
       const opinions = q('avatar-opinions-toggle')!;
@@ -744,18 +743,18 @@ describe('AvatarDock: Lucy’s room', () => {
       render();
       const tray = q('avatar-tray')!;
       expect(tray.classList.contains('avatar-tray-rail')).toBe(true);
-      expect(q('avatar-tray-empty')!.textContent).toBe('Nothing is waiting on you.');
-      expect(q('avatar-tray-count')).toBeNull();
+      expect(q('avatar-tray-empty')!.textContent).toBe('Nothing waits on you.');
+      expect(q('avatar-tray-count')!.textContent).toBe('0');
 
       pushAsks([ask('a')]);
       expect(q('avatar-tray-empty')).toBeNull();
       expect(q('avatar-tray')).toBe(tray);
-      expect(q('avatar-tray-count')!.textContent).toBe('1 waiting');
+      expect(q('avatar-tray-count')!.textContent).toBe('1');
 
       // Opinion requests block nothing: with only those left, nothing is waiting, and they are still offered.
       pushAsks([ask('op1', { taskEnded: true })]);
-      expect(q('avatar-tray-empty')!.textContent).toBe('Nothing is waiting on you.');
-      expect(q('avatar-tray-count')).toBeNull();
+      expect(q('avatar-tray-empty')!.textContent).toBe('Nothing waits on you.');
+      expect(q('avatar-tray-count')!.textContent).toBe('0');
       expect(q('avatar-opinions-toggle')!.textContent).toContain('1 opinion wanted by finished task');
 
       // Back in the column with nothing waiting, the strip is not shown at all, as before.
@@ -941,12 +940,12 @@ describe('AvatarDock: Lucy’s room', () => {
 
   describe('the conversation as a centred reading column', () => {
     const centred = () => dock()!.classList.contains('avatar-dock-centred');
-    const railWidth = () => dock()!.style.getPropertyValue('--lucy-rail-width');
+    const railWidth = () => dock()!.style.getPropertyValue('--lucy-desk-side-width');
 
-    test('the room tells the stylesheet how wide its rail is, and that the conversation is centred beside it', () => {
+    test('the room tells the stylesheet how wide its side columns are, and that the conversation is centred beside it', () => {
       start({}, true);
       render();
-      expect(railWidth()).toBe('461px');
+      expect(railWidth()).toBe('499px');
       expect(centred()).toBe(true);
       setWindowWidth(2560);
       expect(railWidth()).toBe('520px');
@@ -972,7 +971,7 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(centred()).toBe(true);
       // Back in the column the rail's width is not left behind.
       click(toggle());
-      expect(railWidth()).toBe('461px');
+      expect(railWidth()).toBe('499px');
       click(toggle());
       expect(railWidth()).toBe('');
       expect(dock()!.style.width).toBe('855px');

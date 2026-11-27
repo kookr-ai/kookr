@@ -607,7 +607,7 @@ describe('AvatarDock', () => {
       const header = container.querySelector('.avatar-dock-header')!;
       expect(Array.from(header.querySelectorAll('button')).map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual([
         'Replay last message',
-        'Expand',
+        'Desk',
         'Minimise Lucy',
       ]);
 

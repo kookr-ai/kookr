@@ -11,10 +11,12 @@ import {
   AVATAR_PAGE_MIN_WIDTH,
   AVATAR_PANEL_KEY,
   AVATAR_READING_WIDTH,
+  AVATAR_DESK_THREE_COLUMN_MIN_VIEWPORT_PX,
   AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX,
   DEFAULT_AVATAR_PANEL_PREFS,
   __resetAvatarPanelPrefsForTests,
   avatarColumnLayout,
+  avatarDeskColumns,
   avatarRoomRailWidth,
   avatarThreadIsCentred,
   clampAvatarColumnWidth,
@@ -205,29 +207,41 @@ describe('avatar-panel-prefs', () => {
       expect(avatarColumnLayout(8000, 9999).maxWidth).toBe(AVATAR_COLUMN_MAX_WIDTH);
     });
 
-    test('in her room she has the whole window at every width, with the side rail from 1100 px', () => {
+    test('in her room (the desk) she has the whole window at every width: three columns from 1500 px, two from 1100 px, else one', () => {
       expect(AVATAR_ROOM_RAIL_MIN_VIEWPORT_PX).toBe(1100);
-      // The rail is 400 px, and 24% of a very wide window up to 520 px.
-      expect(avatarColumnLayout(2560, undefined, true)).toEqual({ mode: 'room', width: 2560, maxWidth: 2560, rail: true, railWidth: 520 });
-      expect(avatarColumnLayout(1920, 450, true)).toEqual({ mode: 'room', width: 1920, maxWidth: 1920, rail: true, railWidth: 461 });
-      expect(avatarColumnLayout(1440, 9999, true)).toEqual({ mode: 'room', width: 1440, maxWidth: 1440, rail: true, railWidth: 400 });
-      expect(avatarColumnLayout(1100, undefined, true)).toEqual({ mode: 'room', width: 1100, maxWidth: 1100, rail: true, railWidth: 400 });
+      expect(AVATAR_DESK_THREE_COLUMN_MIN_VIEWPORT_PX).toBe(1500);
+      const room = (width: number, columns: 1 | 2 | 3, sideWidth: number) => ({
+        mode: 'room', width, maxWidth: width, rail: columns > 1, railWidth: sideWidth * (columns - 1), columns, sideWidth,
+      });
+      // A side column is 26% of the window, 400 to 520 px.
+      expect(avatarColumnLayout(2560, undefined, true)).toEqual(room(2560, 3, 520));
+      expect(avatarColumnLayout(1920, 450, true)).toEqual(room(1920, 3, 499));
+      expect(avatarColumnLayout(1500, undefined, true)).toEqual(room(1500, 3, 400));
+      // One short of three columns: Decisions with Fleet stacked under it, the conversation beside them.
+      expect(avatarColumnLayout(1499, 9999, true)).toEqual(room(1499, 2, 400));
+      expect(avatarColumnLayout(1100, undefined, true)).toEqual(room(1100, 2, 400));
       // Narrower than that it is one column, also where the column would float (769 to 1319) or be a sheet (768 and below).
-      expect(avatarColumnLayout(1099, undefined, true)).toEqual({ mode: 'room', width: 1099, maxWidth: 1099, rail: false, railWidth: 0 });
-      expect(avatarColumnLayout(1000, 450, true)).toEqual({ mode: 'room', width: 1000, maxWidth: 1000, rail: false, railWidth: 0 });
-      expect(avatarColumnLayout(768, undefined, true)).toEqual({ mode: 'room', width: 768, maxWidth: 768, rail: false, railWidth: 0 });
-      expect(avatarColumnLayout(375, undefined, true)).toEqual({ mode: 'room', width: 375, maxWidth: 375, rail: false, railWidth: 0 });
+      expect(avatarColumnLayout(1099, undefined, true)).toEqual(room(1099, 1, 0));
+      expect(avatarColumnLayout(1000, 450, true)).toEqual(room(1000, 1, 0));
+      expect(avatarColumnLayout(768, undefined, true)).toEqual(room(768, 1, 0));
+      expect(avatarColumnLayout(375, undefined, true)).toEqual(room(375, 1, 0));
     });
 
-    test('the rail never leaves the conversation less than 700 px, and grows only in a very wide window', () => {
+    test('the desk has the columns the breakpoints say, at 1099, 1100, 1499, 1500, 1920 and 2560', () => {
+      expect([1099, 1100, 1499, 1500, 1920, 2560].map(avatarDeskColumns)).toEqual([1, 2, 2, 3, 3, 3]);
+    });
+
+    test('the side columns never leave the conversation less than 700 px, and grow only in a very wide window', () => {
       expect(avatarRoomRailWidth(1099)).toBe(0);
       expect(avatarRoomRailWidth(1100)).toBe(400);
-      expect(avatarRoomRailWidth(1667)).toBe(400);
-      expect(avatarRoomRailWidth(1700)).toBe(408);
-      expect(avatarRoomRailWidth(2166)).toBe(520);
+      expect(avatarRoomRailWidth(1538)).toBe(400);
+      expect(avatarRoomRailWidth(1600)).toBe(416);
+      expect(avatarRoomRailWidth(2000)).toBe(520);
       expect(avatarRoomRailWidth(5000)).toBe(520);
       for (let viewport = 1100; viewport <= 4000; viewport += 13) {
-        expect(viewport - avatarRoomRailWidth(viewport)).toBeGreaterThanOrEqual(700);
+        const layout = avatarColumnLayout(viewport, undefined, true);
+        if (layout.mode !== 'room') throw new Error('not the room');
+        expect(viewport - layout.railWidth).toBeGreaterThanOrEqual(700);
       }
     });
 
@@ -245,6 +259,8 @@ describe('avatar-panel-prefs', () => {
       expect(avatarThreadIsCentred(avatarColumnLayout(1239, undefined, true))).toBe(false);
       expect(avatarThreadIsCentred(avatarColumnLayout(1240, undefined, true))).toBe(true);
       expect(avatarThreadIsCentred(avatarColumnLayout(1920, undefined, true))).toBe(true);
+      // Three columns at 1500 px leave the conversation 700 px: it fills them.
+      expect(avatarThreadIsCentred(avatarColumnLayout(1500, undefined, true))).toBe(false);
       // Without a rail the whole window is the conversation's.
       expect(avatarThreadIsCentred(avatarColumnLayout(1000, undefined, true))).toBe(true);
       expect(avatarThreadIsCentred(avatarColumnLayout(839, undefined, true))).toBe(false);

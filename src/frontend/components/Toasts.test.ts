@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AUTO_DISMISS_INFO_MS, Toasts } from './Toasts.js';
 import { DestructiveUndoToasts } from './DestructiveUndoToasts.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { __resetAvatarPanelPrefsForTests, setAvatarPageCovered, setAvatarRoom } from '../store/avatar-panel-prefs.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -36,6 +37,21 @@ describe('Toasts', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     document.body.innerHTML = '';
+  });
+
+  test('sit in the page corner normally, and carry the desk class only while Lucy\u2019s desk covers the window', () => {
+    useKookrStore.getState().handleAlert('agent-1', 'Agent needs attention', 'info');
+    act(() => { root.render(React.createElement(Toasts)); });
+    const stack = () => container.querySelector('.toasts')!;
+    expect(stack().classList.contains('toasts-in-desk')).toBe(false);
+    // Covered by the full-width sheet, not the desk: nothing changes.
+    act(() => { setAvatarPageCovered(true); });
+    expect(stack().classList.contains('toasts-in-desk')).toBe(false);
+    act(() => { setAvatarRoom(true); });
+    expect(stack().classList.contains('toasts-in-desk')).toBe(true);
+    act(() => { setAvatarRoom(false); setAvatarPageCovered(false); });
+    expect(stack().classList.contains('toasts-in-desk')).toBe(false);
+    __resetAvatarPanelPrefsForTests();
   });
 
   test('renders alert details under the summary', () => {

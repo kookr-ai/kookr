@@ -86,7 +86,7 @@ describe('shortcut bindings', () => {
     const help = getShortcutHelpGroups(defaults).flatMap((group) => group.shortcuts.map((shortcut) => shortcut.id));
     expect(help).toContain('lucy_room_toggle');
     const action = SHORTCUT_ACTIONS.find((candidate) => candidate.id === 'lucy_room_toggle');
-    expect(action).toMatchObject({ label: 'Lucy\u2019s room', context: 'when Lucy\u2019s panel is on' });
+    expect(action).toMatchObject({ label: 'Lucy\u2019s desk', context: 'when Lucy\u2019s panel is on' });
   });
 
   test('detects mac platforms without requiring tests to run on macOS', () => {

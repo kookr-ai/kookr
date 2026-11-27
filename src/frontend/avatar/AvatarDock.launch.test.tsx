@@ -137,8 +137,8 @@ describe('AvatarDock: Lucy launch card and typed input', () => {
     expect(card.closest('ol, ul, li')).toBeNull();
     expect(q('avatar-messages')!.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Nothing of it is left between the thread and the composer.
-    const dock = q('avatar-dock')!;
-    const order = [...dock.children].map((el) => (el as HTMLElement).dataset.testid ?? el.className);
+    const conversation = q('avatar-desk-conversation')!;
+    const order = [...conversation.children].map((el) => (el as HTMLElement).dataset.testid ?? el.className);
     expect(order.slice(-2)).toEqual(['avatar-thread-wrap', 'avatar-composer']);
   });
 

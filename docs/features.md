@@ -424,20 +424,45 @@ says out loud, and a one-line strip above it holds what is waiting on you.
   it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
   applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
-- **Lucy's room: she takes the whole window.** The column's title bar has an **Expand** button (the full-width sheet of a narrow window has none, and the shortcut still works there); press it,
+- **Lucy's desk: she takes the whole window.** The column's title bar has a **Desk** button (the full-width sheet of a narrow window has none, and the shortcut still works there); press it,
   or **Alt+Shift+L** (**Cmd+Ctrl+Shift+L** on macOS; rebindable in Settings, and it works from anywhere, text
   boxes and a minimised bubble included), and she covers the dashboard, which stays loaded underneath. The
-  same button, now **Back to dashboard**, or the same key brings the column back. From 1100 px wide the room
-  has three parts: a slim title bar (her name and what she is doing on the left; **Talk**, **Replay last
-  message** and **Back to dashboard** on the right); the conversation in the middle, at most 760 px wide and
-  centred, with the composer under it (the text box starts two lines tall and grows to eight); and a side
-  rail on the right, 400 to 520 px wide with the window, with her 3D view at the top (about 280 px tall in a
-  1080 px window) above everything that waits on you as whole cards: permission cards first, then every question a task is
-  waiting for, each with its answers on screen, then the opinion requests folded under one line. The rail
-  scrolls by itself, and when nothing waits it says so in one line. In a narrower window the room is one
-  column, laid out like the docked column, with the same title bar. Nothing is restarted by the switch: the
+  same button, now **Back to dashboard**, or the same key brings the column back. From 1500 px wide the desk
+  has three columns under one title bar. The title bar is her name and what she is doing, a plain summary from
+  the same data as the columns ("7 running · 2 need you"), and on the right **Talk**, **Replay last message**
+  and **Back to dashboard**. The columns, left to right, are each a labelled region and are reached in this
+  order with Tab:
+  - **Decisions** (26% of the window, 400 to 520 px; the title carries the count, "DECISIONS · 2"). Everything
+    that waits on you, soonest first, in the order of the dashboard's "Needs you" list: the questions tasks
+    ask (the one that closes soonest first) and the permission prompts as whole cards with their answers on
+    screen, then the findings (a task that says it is finished, is over budget, has gone quiet) as compact
+    cards with the finding's kind in words, the task's name, one line of Kookr's own explanation and one
+    button, **Open task**. A task stopped on a permission prompt shows the prompt's card, with Approve once
+    and Deny, in place of a second card for its finding. Nothing in this column changes a task except
+    the answer and permission buttons of the cards. On top, one line names the first item in words ("Next:
+    answer Earnings Watch UX review, 117 min left", "Next: Billing migration wants your permission to use
+    Bash", "Next: review Package release, it says it is finished"); pressing it scrolls that card into view and
+    lights it for a moment, and never moves keyboard focus. When nothing waits the column says "Nothing waits
+    on you." and, under **Decided today**, lists up to five questions closed today with how each ended;
+    opinion requests from tasks that have already ended stay folded under their one line.
+  - **Fleet** (the same width; "FLEET · 7 RUNNING"). One row per running task in the dashboard's order, with
+    the tasks that need you first and marked with the amber diamond: the name, the project, how long it has run
+    and its cost when it has one, and under the name what it is doing right now (the same current-tool line
+    the dashboard's working rows show; no line when it has none). Under them, **Finished today** lists up to
+    eight tasks with when they finished and their cost. A row is a button that leaves the desk and opens the
+    task. It reads what the dashboard already holds; nothing is fetched.
+  - **Conversation** (the rest). Her 3D view as a portrait about 160 px tall at the top, then the conversation, at
+    most 760 px wide and centred in the column, and the composer under it (the text box starts two lines tall
+    and grows to eight). An empty conversation shows her welcome and its suggestions.
+
+  Each of the two left columns scrolls by itself. From 1100 to 1499 px Decisions with Fleet under it sit in one
+  left column, each scrolling by itself, with the conversation on the right. In a narrower window the desk is
+  one column, laid out like the docked column with the same title bar (the "Waiting on you" strip is Decisions
+  there, and there is no Fleet). While the desk is shown, the dashboard's notifications stand at the bottom
+  left of the conversation column, just above the composer, so they never cover a card, her 3D view or the
+  composer. Nothing is restarted by the switch: the
   3D view keeps running, a half-typed message stays in the text box (which gets the keyboard focus on
-  entering), and the conversation stays where it was. **Open task** on a card in the room selects the task
+  entering; nothing else in the desk takes focus by itself), and the conversation stays where it was. **Open task** on a card in the desk selects the task
   and brings the column back, so the task is on screen beside her (also when she was a minimised bubble
   before the room). While she covers the dashboard, in the room
   and as the open full-width sheet of a narrow window, the

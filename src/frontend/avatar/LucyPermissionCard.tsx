@@ -46,7 +46,7 @@ export function waitedText(sinceMs: number, nowMs: number): string {
   return `waiting ${minutes} min`;
 }
 
-function PermissionCard({
+export function PermissionCard({
   card,
   pressed,
   nowMs,
@@ -126,6 +126,18 @@ function PermissionCard({
       <p className="avatar-ask-note" role="status" data-testid="avatar-permission-note">{note}</p>
     </li>
   );
+}
+
+/** The clock the "waiting N min" labels and the button time limit read: now, refreshed every second while `active`. */
+export function useSecondClock(active: boolean, nowFn: () => number = Date.now): number {
+  const [now, setNow] = useState(nowFn);
+  useEffect(() => {
+    if (!active) return undefined;
+    setNow(nowFn());
+    const timer = setInterval(() => setNow(nowFn()), 1000);
+    return () => clearInterval(timer);
+  }, [active, nowFn]);
+  return now;
 }
 
 export function LucyPermissionCards({
