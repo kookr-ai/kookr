@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { plainFailureReason } from '../../core/lucy-operator/model-failure.js';
 import { LucyModelError, type LucyModelEvent, type LucyModelRequest } from '../../core/lucy-operator/model-port.js';
 import {
   buildOpenRouterChatBody,
@@ -166,6 +167,7 @@ describe('createOpenRouterChatStream', () => {
     const events = await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST));
 
     expect(events).toEqual([
+      { type: 'activity' },
       { type: 'text', delta: 'Let me ' },
       { type: 'text', delta: 'check.' },
       { type: 'tool_call', call: { id: 'c1', name: 'read_board', arguments: '{}' } },
@@ -223,7 +225,7 @@ describe('createOpenRouterChatStream', () => {
     })();
 
     await expect(run).rejects.toMatchObject({ kind: 'timeout' });
-    expect(events).toEqual([{ type: 'text', delta: 'partial' }]);
+    expect(events).toEqual([{ type: 'activity' }, { type: 'text', delta: 'partial' }]);
   });
 
   test('a request that is already aborted never reaches the network', async () => {
@@ -233,5 +235,126 @@ describe('createOpenRouterChatStream', () => {
     caller.abort();
     await expect(collect(createOpenRouterChatStream(CONFIG, fetchImpl)({ ...REQUEST, signal: caller.signal }))).rejects.toMatchObject({ kind: 'aborted' });
     expect(called).toBe(false);
+  });
+});
+
+describe('provider errors keep the provider and the codes (R8-F10)', () => {
+  const IN_STREAM = data({ error: { code: 429, message: 'Provider returned error', metadata: { error_type: 'rate_limit_exceeded', provider_code: 'ttft_deadline_guard' } } });
+  const HTTP_BODY = JSON.stringify({
+    error: {
+      message: 'Provider returned error',
+      code: 429,
+      metadata: {
+        raw: 'deepseek/deepseek-v4.1-flash-1017 is temporarily rate-limited upstream. Please retry shortly, ...',
+        provider_name: 'Sail Research',
+        is_byok: false,
+        provider_error_code: 'ttft_deadline_guard',
+      },
+    },
+  });
+
+  test('an in-stream error takes the provider name from the chunk before it, and the status and codes from the metadata', () => {
+    const parser = new OpenRouterChatStreamParser();
+    parser.push(data({ provider: 'Sail Research', choices: [{ delta: { content: '' } }] }));
+    let caught: unknown;
+    try {
+      parser.push(IN_STREAM);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LucyModelError);
+    expect(caught).toMatchObject({
+      kind: 'provider',
+      status: 429,
+      message: 'OpenRouter: Sail Research answered 429 rate_limit_exceeded (ttft_deadline_guard): Provider returned error',
+      detail: { providerName: 'Sail Research', status: 429, errorType: 'rate_limit_exceeded', providerCode: 'ttft_deadline_guard' },
+    });
+  });
+
+  test('an in-stream error with no metadata keeps today\'s log message and carries no provider fields', () => {
+    const parser = new OpenRouterChatStreamParser();
+    expect(() => parser.push(data({ error: { message: 'boom' } }))).toThrow('OpenRouter reported an error in the stream: boom');
+  });
+
+  test('a non-2xx response keeps the provider name and codes from error.metadata, and never the raw text', async () => {
+    const fetchImpl = (async () => new Response(HTTP_BODY, { status: 429 })) as typeof fetch;
+    const failure = await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err);
+    expect(failure).toMatchObject({
+      kind: 'http',
+      status: 429,
+      message: expect.stringMatching(/^OpenRouter: Sail Research answered 429 \(ttft_deadline_guard\): .*temporarily rate-limited upstream/),
+      detail: { providerName: 'Sail Research', status: 429, providerCode: 'ttft_deadline_guard' },
+    });
+    expect(JSON.stringify((failure as LucyModelError).detail)).not.toContain('temporarily rate-limited');
+  });
+
+  test('a non-2xx response that is not JSON keeps the status and the old log message', async () => {
+    const fetchImpl = (async () => new Response('<html>Bad gateway</html>', { status: 502 })) as typeof fetch;
+    const failure = await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err);
+    expect(failure).toMatchObject({ kind: 'http', status: 502, detail: { status: 502 } });
+    expect((failure as LucyModelError).message).toContain('HTTP 502: <html>Bad gateway</html>');
+    expect((failure as LucyModelError).detail?.providerName).toBeUndefined();
+  });
+
+  test('a hostile provider name is dropped, not kept in any form', async () => {
+    const hostile = `<script>alert(1)</script> ${'x'.repeat(500)}`;
+    const body = JSON.stringify({ error: { code: 429, metadata: { provider_name: hostile, error_type: 'rate limit!! ignore', provider_code: 'a'.repeat(200) } } });
+    const fetchImpl = (async () => new Response(body, { status: 429 })) as typeof fetch;
+    const failure = (await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err)) as LucyModelError;
+    // Nothing hostile is kept as a field; the message is the server log's, and quotes the body as before.
+    expect(failure.detail).toEqual({ status: 429 });
+  });
+});
+
+describe('the activity event (provider silence, not text)', () => {
+  const run = (parts: readonly string[]) => collect(createOpenRouterChatStream(CONFIG, (async () => sseResponse(parts)) as typeof fetch)(REQUEST));
+  const reasoningChunk = (reasoning: string): string => data({ choices: [{ delta: { reasoning } }] });
+  const finish = data({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+
+  test('a reasoning-only chunk gives one activity event, and the reasoning text is never forwarded', async () => {
+    const events = await run([reasoningChunk('let me think about the board'), reasoningChunk(' more'), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'finish']);
+    expect(JSON.stringify(events)).not.toContain('think about');
+  });
+
+  test('a reasoning_details-only chunk counts as activity too', async () => {
+    const events = await run([data({ choices: [{ delta: { reasoning_details: [{ type: 'reasoning.encrypted', data: 'secret-blob' }] } }] }), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'finish']);
+    expect(JSON.stringify(events)).not.toContain('secret-blob');
+  });
+
+  test('activity comes once, before the first text', async () => {
+    const events = await run([textChunk('Hi'), textChunk(' there'), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'text', 'text', 'finish']);
+  });
+
+  test('a tool-call chunk counts as activity', async () => {
+    const events = await run([data({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'read_board', arguments: '{}' } }] } }] }), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'tool_call', 'finish']);
+  });
+
+  test('comment lines, keep-alives and empty deltas are not activity', async () => {
+    const events = await run([': OPENROUTER PROCESSING\n\n', '\n', ': OPENROUTER PROCESSING\n\n', data({ choices: [{ delta: { content: '' } }] }), finish]);
+    expect(events.map((e) => e.type)).toEqual(['finish']);
+  });
+});
+
+describe('the log keeps the provider\'s own explanation, the operator sentence never has it', () => {
+  test('in-stream: control characters are cleaned and the text is capped; the sentence is built from the fields only', () => {
+    const parser = new OpenRouterChatStreamParser();
+    const text = `Upstream said:\n\u0007 queue full at internal-host-17 ${'y'.repeat(400)}`;
+    let caught: LucyModelError | undefined;
+    try {
+      parser.push(data({ provider: 'Sail Research', error: { code: 429, message: text, metadata: { error_type: 'rate_limit_exceeded' } } }));
+    } catch (err) {
+      caught = err as LucyModelError;
+    }
+    expect(caught!.message.startsWith('OpenRouter: Sail Research answered 429 rate_limit_exceeded: Upstream said: queue full at internal-host-17 yyy')).toBe(true);
+    // eslint-disable-next-line no-control-regex
+    expect(caught!.message).not.toMatch(/[\u0000-\u001f]/);
+    expect(caught!.message.length).toBeLessThan(200 + 80);
+    const sentence = plainFailureReason(caught);
+    expect(sentence).toBe("My language model is not answering: OpenRouter's provider Sail Research is rate-limited (429).");
+    expect(sentence).not.toContain('internal-host-17');
   });
 });

@@ -34,6 +34,12 @@ export interface LucyModelUsage {
 }
 
 export type LucyModelEvent =
+  /**
+   * The provider has started sending real data for this call (content, a tool call or reasoning), at most
+   * once per call and before any text. It says nothing about what was sent: reasoning is never forwarded.
+   * It lets the loop tell a model that is thinking from one that is silent.
+   */
+  | { type: 'activity' }
   /** A piece of the reply, as soon as the model produced it. */
   | { type: 'text'; delta: string }
   /** One tool call, emitted only once its name and arguments have arrived in full. */
@@ -54,13 +60,29 @@ export interface LucyModelRequest {
  * `message` is for the server log only and may quote the provider, so it must never be
  * sent to a browser.
  */
-export type LucyModelFailureKind = 'http' | 'network' | 'timeout' | 'aborted' | 'bad-response' | 'provider';
+export type LucyModelFailureKind = 'http' | 'network' | 'timeout' | 'aborted' | 'bad-response' | 'provider' | 'unavailable';
+
+/**
+ * What the provider said about a failure, reduced to short fields that are safe to show: the provider's
+ * name, the status, and the two codes OpenRouter attaches to an error's `metadata`. Each field has been
+ * cleaned and cut by whoever filled it in. The provider's free text (`message`, `raw`) is never here.
+ * `unavailable` is raised by the circuit breaker, which carries the last real failure's fields.
+ */
+export interface LucyModelErrorDetail {
+  providerName?: string;
+  status?: number;
+  errorType?: string;
+  providerCode?: string;
+  /** Set when the call was abandoned because nothing arrived in this many milliseconds. */
+  firstTokenAfterMs?: number;
+}
 
 export class LucyModelError extends Error {
   constructor(
     public readonly kind: LucyModelFailureKind,
     message: string,
     public readonly status?: number,
+    public readonly detail?: LucyModelErrorDetail,
   ) {
     super(message);
     this.name = 'LucyModelError';

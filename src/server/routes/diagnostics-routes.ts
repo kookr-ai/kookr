@@ -128,6 +128,7 @@ import {
 } from '../stale-dtach-pressure.js';
 import { SCHEDULE_TICK_INTERVAL_MS } from '../schedule-runner.js';
 import { getHelperLlmHealthSnapshot } from '../../core/llm-factory.js';
+import type { LucyOperatorHealth } from '../../shared/contracts/diagnostic.js';
 
 /**
  * How many missed schedule-runner tick intervals make GET `/api/ready`
@@ -1148,6 +1149,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // failing for KOOKR_TASK_NAMER_ALERT_HOURS turns the dashboard System
       // indicator amber. In-memory read of a tiny record.
       ...(deps.taskNamerHealth ? { taskNamer: deps.taskNamerHealth.snapshot() } : {}),
+      // Is Lucy's language model answering? Whether she is configured, the model, the last success and
+      // failure (a safe one-sentence form, never the provider's text) and whether the circuit breaker is
+      // open. In-memory, since the server started; read without asking her anything.
+      lucyOperator: lucyOperatorHealthBlock(deps),
       // Delivery-bridge health (issue #3046): configured / consecutiveFailures /
       // pending / last send + last failure from the in-memory status() read.
       // Makes a silently-failing (revoked webhook / bad token / 429) Discord or
@@ -2745,4 +2750,12 @@ function readPositiveIntQuery(value: string | undefined, fallback: number, max: 
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
   return Math.min(parsed, max);
+}
+
+/** The `lucyOperator` block of GET `/api/health`. */
+function lucyOperatorHealthBlock(deps: RouteDeps): LucyOperatorHealth {
+  const config = deps.lucyOperatorConfig;
+  const configured = Boolean(config && config.enabled && config.ok);
+  const state = deps.lucyModelHealth?.snapshot() ?? { lastSuccessAt: null, lastFailureAt: null, lastFailure: null, breakerOpen: false };
+  return { configured, model: config && config.enabled && config.ok ? config.model.model : null, ...state };
 }

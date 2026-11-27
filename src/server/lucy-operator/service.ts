@@ -13,7 +13,8 @@
 
 import type { LucyTurnDoneEvent, LucyTurnEvent, LucyTurnRequest } from '../../shared/contracts/lucy-turn.js';
 import { recordLucyOperatorTurn } from '../../core/lucy-operator/diagnostics.js';
-import type { LucyModelPort } from '../../core/lucy-operator/model-port.js';
+import type { LucyModelError, LucyModelPort } from '../../core/lucy-operator/model-port.js';
+import type { OperatorBriefingInput } from '../../core/lucy-operator/operator-briefing.js';
 import type { LucyLookSource } from '../../core/lucy-operator/tools.js';
 import { runLucyTurn, type LucyHistoryMessage, type LucyTurnLimits, type LucyTurnSummary } from '../../core/lucy-operator/turn.js';
 import type { LucyUnpromptedSaid } from '../../core/lucy-operator/unprompted.js';
@@ -53,6 +54,10 @@ export interface LucyOperatorDeps {
    */
   unprompted?: (conversationId: string) => ReadonlyArray<LucyUnpromptedSaid & { inHistory?: true }>;
   limits?: Partial<LucyTurnLimits>;
+  /** The facts of the opening briefing: when her model fails on a turn's first call, she answers from them. */
+  briefing?: () => OperatorBriefingInput;
+  /** Told of a call a turn gave up on itself (nothing arrived in time), so the model's health and breaker count it. */
+  onModelFailure?: (err: LucyModelError) => void;
   now?: () => number;
   warn?: (message: string) => void;
 }
@@ -164,6 +169,7 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
       conversationId: request.conversationId,
       end: done.end,
       ...(done.reason ? { reason: done.reason } : {}),
+      ...(done.source ? { fallback: done.source } : {}),
       asked,
       ...(said ? { answer: said } : {}),
       tools,
@@ -250,7 +256,7 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
       // Filled by the loop when the turn is over, including when this generator is abandoned mid-way.
       let settled: LucyTurnSummary | undefined;
       const inner = runLucyTurn(
-        { model: deps.model, source: deps.source, launch: deps.launch, actions: deps.actions, limits: deps.limits, now, warn, onSettled: (summary) => { settled = summary; } },
+        { model: deps.model, source: deps.source, launch: deps.launch, actions: deps.actions, limits: deps.limits, briefing: deps.briefing, onModelFailure: deps.onModelFailure, now, warn, onSettled: (summary) => { settled = summary; } },
         { text: request.text, conversationId: request.conversationId, spoken: request.input === 'voice', history: historyOf(request.conversationId, startedAt), unprompted: unpromptedFor(request.conversationId, startedAt), signal },
       );
       try {
@@ -266,8 +272,10 @@ export function createLucyOperator(deps: LucyOperatorDeps): LucyOperatorService 
             tools: [],
             done: { type: 'done', end: 'error', reason: 'The turn ended without a result.', firstTextMs: null, totalMs: Math.max(0, now() - startedAt), steps: 0, inputTokens: 0, outputTokens: 0, costUsd: null },
           };
-          // Remember only an exchange the operator actually heard something from.
-          if (summary.answer.trim()) remember(request.conversationId, request.text, summary.answer, now());
+          // Remember only an exchange the operator actually heard something from, and only what she herself
+          // said: a reply written from the board without her model is not hers, and later turns must not
+          // read it as her own reasoning.
+          if (summary.answer.trim() && summary.done.source !== 'board') remember(request.conversationId, request.text, summary.answer, now());
           record(request, summary.answer, summary.tools, summary.done);
         } catch (err) {
           warn(`could not record a turn: ${err instanceof Error ? err.message : String(err)}`);

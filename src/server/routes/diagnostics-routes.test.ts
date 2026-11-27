@@ -1481,6 +1481,46 @@ describe('diagnostics routes', () => {
     });
   });
 
+  // GET /api/health — lucyOperator block (R8-F10)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health lucyOperator block (R8-F10)', () => {
+    test('says she is not configured, with empty history, when nothing is wired', async () => {
+      const res = await mkApp({ taskStore: new TaskStore(), queue: new AttentionQueue(), buildInfo: {} as never }).request('/api/health');
+      expect(((await res.json()) as { lucyOperator?: unknown }).lucyOperator).toEqual({
+        configured: false, model: null, lastSuccessAt: null, lastFailureAt: null, lastFailure: null, breakerOpen: false,
+      });
+    });
+
+    test('carries the model id, the last success and failure, the safe failure sentence and the breaker', async () => {
+      const snapshot = {
+        lastSuccessAt: '2026-11-27T10:00:00.000Z',
+        lastFailureAt: '2026-11-27T10:05:00.000Z',
+        lastFailure: "My language model is not answering: OpenRouter's provider Sail Research is rate-limited (429).",
+        breakerOpen: true,
+      };
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        lucyOperatorConfig: { enabled: true, ok: true, warnings: [], launch: true, model: { apiKey: 'sk-or-secret', model: 'deepseek/deepseek-v4.1-flash-1017', baseUrl: 'https://x', providers: [], reasoning: 'medium' } },
+        lucyModelHealth: { guard: (port) => port, recordFailure: () => {}, snapshot: () => snapshot },
+      }).request('/api/health');
+      const body = (await res.json()) as { lucyOperator?: unknown };
+      expect(body.lucyOperator).toEqual({ configured: true, model: 'deepseek/deepseek-v4.1-flash-1017', ...snapshot });
+      expect(JSON.stringify(body)).not.toContain('sk-or-secret');
+    });
+
+    test('a switched-on but unusable setup (no key) is not "configured"', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        lucyOperatorConfig: { enabled: true, ok: false, reason: 'needs a key', warnings: [] },
+      }).request('/api/health');
+      expect(((await res.json()) as { lucyOperator: { configured: boolean; model: unknown } }).lucyOperator).toMatchObject({ configured: false, model: null });
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // GET /api/health — taskNamer block (issue #3616)
   // ---------------------------------------------------------------------------

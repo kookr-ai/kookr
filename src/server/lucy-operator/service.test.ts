@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { LucyTurnEvent } from '../../shared/contracts/lucy-turn.js';
 import { boardTask, fakeSource, scriptedModel, type ScriptedStep } from '../../core/lucy-operator/__fixtures__/scripted.js';
 import { getLucyOperatorDiagnosticsSnapshot, resetLucyOperatorDiagnosticsForTest } from '../../core/lucy-operator/diagnostics.js';
+import { createLucyModelHealth } from '../../core/lucy-operator/model-health.js';
 import { LucyModelError } from '../../core/lucy-operator/model-port.js';
 import type { LucyInteractionLog, LucyOperatorTurnRecordInput } from '../lucy-interaction-log.js';
 import { CONVERSATION_TTL_MS, createLucyOperator, MAX_CONCURRENT_TURNS, MAX_CONVERSATIONS, MAX_HISTORY_MESSAGE_CHARS, MAX_HISTORY_MESSAGES } from './service.js';
@@ -281,5 +282,113 @@ describe('createLucyOperator', () => {
       // Only the turn that said something counts toward the first-text average.
       averageFirstTextMs: 900,
     });
+  });
+});
+
+describe('when her model fails (R8-F10)', () => {
+  const REASON = "My language model is not answering: OpenRouter's provider Sail Research is rate-limited (429).";
+  const rateLimited = () => new LucyModelError('provider', 'OpenRouter: Sail Research answered 429', 429, { providerName: 'Sail Research', status: 429 });
+
+  function failing() {
+    const records: LucyOperatorTurnRecordInput[] = [];
+    let clock = 1_000_000;
+    const health = createLucyModelHealth(() => clock);
+    let modelCalls = 0;
+    let fail = true;
+    const model = health.guard(async function* () {
+      modelCalls += 1;
+      if (fail) throw rateLimited();
+      yield { type: 'text', delta: 'Back again.' };
+      yield { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, costUsd: null } };
+    });
+    const requests: Array<{ messages: readonly unknown[] }> = [];
+    const service = createLucyOperator({
+      model: (request) => { requests.push(request); return model(request); },
+      modelName: 'test/model',
+      source: fakeSource({ tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })] }),
+      briefing: () => ({ tasks: [{ id: 'aaaa1111', name: 'Bake-off report', status: 'inProgress', attention: 'wants_review' }], asks: [] }),
+      onModelFailure: (err) => health.recordFailure(err),
+      log: { recordSaid: () => {}, recordLiveTurn: () => {}, recordOperatorTurn: (r) => { records.push(r); }, recordUi: () => {}, flush: async () => {} },
+      now: () => clock,
+      warn: () => {},
+    });
+    return { service, health, records, requests, calls: () => modelCalls, heal: () => { fail = false; }, advance: (ms: number) => { clock += ms; } };
+  }
+
+  test('the reply is marked as from the board, logged as a fallback, and not kept as something she said', async () => {
+    const t = failing();
+    const events = await drain(t.service.runTurn({ text: 'What needs me?', conversationId: 'c1' }));
+    const done = events.at(-1) as Extract<LucyTurnEvent, { type: 'done' }>;
+    expect(done).toMatchObject({ end: 'answered', source: 'board', reason: REASON });
+    expect(events.map((e) => (e.type === 'text' ? e.delta : '')).join('')).toContain('From the board: Bake-off report says it is finished and wants your review.');
+    expect(t.records).toHaveLength(1);
+    expect(t.records[0]).toMatchObject({ end: 'answered', fallback: 'board', reason: REASON });
+
+    // The next turn of the conversation starts with an empty history: the board reply was not stored.
+    t.heal();
+    t.advance(60_000);
+    await drain(t.service.runTurn({ text: 'And now?', conversationId: 'c1' }));
+    expect(t.requests.at(-1)!.messages.slice(1)).toEqual([{ role: 'user', content: 'And now?' }]);
+    expect(t.records[1]!.fallback).toBeUndefined();
+  });
+
+  test('after two failures the breaker answers from the board without calling the model, then closes after a success', async () => {
+    const t = failing();
+    await drain(t.service.runTurn({ text: 'one', conversationId: 'c1' }));
+    await drain(t.service.runTurn({ text: 'two', conversationId: 'c1' }));
+    expect(t.calls()).toBe(2);
+    expect(t.health.snapshot().breakerOpen).toBe(true);
+
+    const events = await drain(t.service.runTurn({ text: 'three', conversationId: 'c1' }));
+    expect(t.calls()).toBe(2); // the model was not called
+    const done = events.at(-1) as Extract<LucyTurnEvent, { type: 'done' }>;
+    expect(done).toMatchObject({ end: 'answered', source: 'board' });
+    expect(done.reason).toBe(`${REASON} I will not ask it again for a minute.`);
+    expect(done.totalMs).toBeLessThan(1000);
+
+    t.heal();
+    t.advance(60_000);
+    const back = await drain(t.service.runTurn({ text: 'four', conversationId: 'c1' }));
+    expect(back.map((e) => (e.type === 'text' ? e.delta : '')).join('')).toBe('Back again.');
+    expect(t.health.snapshot().breakerOpen).toBe(false);
+  });
+
+  test('a model that goes silent: two turns end at the silence deadline, then the breaker is open and a third turn does not call the model', async () => {
+    vi.useFakeTimers();
+    try {
+      const health = createLucyModelHealth();
+      let modelCalls = 0;
+      const model = health.guard(async function* (request) {
+        modelCalls += 1;
+        await new Promise<void>((resolve) => request.signal?.addEventListener('abort', () => resolve(), { once: true }));
+        throw new LucyModelError('aborted', 'cancelled');
+      });
+      const service = createLucyOperator({
+        model,
+        modelName: 'test/model',
+        source: fakeSource({ tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })] }),
+        briefing: () => ({ tasks: [{ id: 'aaaa1111', name: 'Bake-off report', status: 'inProgress', attention: 'wants_review' }], asks: [] }),
+        onModelFailure: (err) => health.recordFailure(err),
+        warn: () => {},
+      });
+      const silentTurn = async (text: string): Promise<LucyTurnEvent[]> => {
+        const pending = drain(service.runTurn({ text, conversationId: 'c1' }));
+        await vi.advanceTimersByTimeAsync(12_000);
+        return pending;
+      };
+      for (const text of ['one', 'two']) {
+        const events = await silentTurn(text);
+        expect(events.at(-1)).toMatchObject({ type: 'done', end: 'answered', source: 'board', reason: 'My language model is not answering: it sent nothing in 12 seconds.' });
+      }
+      expect(modelCalls).toBe(2);
+      expect(health.snapshot()).toMatchObject({ breakerOpen: true, lastFailure: 'My language model is not answering: it sent nothing in 12 seconds.' });
+      expect(health.snapshot().lastFailureAt).not.toBeNull();
+
+      const third = await drain(service.runTurn({ text: 'three', conversationId: 'c1' }));
+      expect(modelCalls).toBe(2); // not called
+      expect(third.at(-1)).toMatchObject({ type: 'done', end: 'answered', source: 'board' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -28,6 +28,7 @@ import {
   type LucyModelUsage,
   type LucyToolCall,
 } from '../../core/lucy-operator/model-port.js';
+import { cleanLogText, modelErrorDetailFrom, modelErrorLogLine } from '../../core/lucy-operator/model-failure.js';
 
 export const LUCY_OPERATOR_REASONING_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 export type LucyOperatorReasoning = (typeof LUCY_OPERATOR_REASONING_LEVELS)[number];
@@ -97,6 +98,12 @@ export class OpenRouterChatStreamParser {
   private provider: string | undefined;
   private finishReason: string | null = null;
   done = false;
+  /**
+   * True once a JSON chunk has carried a delta of content, a tool call or reasoning. Comment lines
+   * (`: OPENROUTER PROCESSING`) and empty keep-alives never set it: OpenRouter sends those while the
+   * provider has not started. Only the fact is kept; reasoning text is not read.
+   */
+  sawActivity = false;
 
   /** Feed decoded text; returns the text pieces completed by it, in order. Throws when the provider reports an error in the stream. */
   push(chunk: string): string[] {
@@ -143,23 +150,31 @@ export class OpenRouterChatStreamParser {
     }
     if (typeof json !== 'object' || json === null) return;
     const chunk = json as {
-      error?: { message?: unknown; code?: unknown };
+      error?: { message?: unknown; code?: unknown; metadata?: unknown };
       provider?: unknown;
       usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown };
       choices?: Array<{
         finish_reason?: unknown;
         delta?: {
           content?: unknown;
+          reasoning?: unknown;
+          reasoning_details?: unknown;
           tool_calls?: Array<{ index?: unknown; id?: unknown; function?: { name?: unknown; arguments?: unknown } }>;
         };
       }>;
     };
 
-    if (chunk.error) {
-      const detail = typeof chunk.error.message === 'string' ? chunk.error.message : 'unknown error';
-      throw new LucyModelError('provider', `OpenRouter reported an error in the stream: ${detail.slice(0, MAX_LOGGED_ERROR_CHARS)}`);
-    }
     if (typeof chunk.provider === 'string' && chunk.provider) this.provider = chunk.provider;
+    if (chunk.error) {
+      // The provider's name and status are kept as short checked fields (what the operator may be told);
+      // its message is only ever quoted in the server log, and only when no field could be read.
+      const errorDetail = modelErrorDetailFrom({ status: chunk.error.code, provider: this.provider, metadata: chunk.error.metadata });
+      const text = typeof chunk.error.message === 'string' ? chunk.error.message : 'unknown error';
+      // The log keeps the provider's own words after the fields; the operator's sentence never has them.
+      const fields = modelErrorLogLine(errorDetail);
+      const line = fields ? `${fields}: ${cleanLogText(text, MAX_LOGGED_ERROR_CHARS)}` : `OpenRouter reported an error in the stream: ${text.slice(0, MAX_LOGGED_ERROR_CHARS)}`;
+      throw new LucyModelError('provider', line, errorDetail.status, errorDetail);
+    }
     if (chunk.usage) {
       this.usage = {
         inputTokens: finiteNumber(chunk.usage.prompt_tokens) ?? this.usage.inputTokens,
@@ -173,7 +188,13 @@ export class OpenRouterChatStreamParser {
     if (typeof choice.finish_reason === 'string') this.finishReason = choice.finish_reason;
     const delta = choice.delta;
     if (!delta) return;
-    // `delta.reasoning` (the model thinking aloud) is deliberately not read.
+    if (
+      (typeof delta.content === 'string' && delta.content !== '')
+      || (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0)
+      || (typeof delta.reasoning === 'string' && delta.reasoning !== '')
+      || (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length > 0)
+    ) this.sawActivity = true;
+    // `delta.reasoning` (the model thinking aloud): only the fact that it arrived is used, above; its text is never read.
     if (typeof delta.content === 'string' && delta.content) out.push(delta.content);
     for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
       // The index comes from the provider. Anything that is not a small whole number is dropped,
@@ -248,14 +269,24 @@ async function* streamOnce(
     }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      // For the server log only (the loop never forwards this message). The key is in a header, never the body.
-      throw new LucyModelError('http', `OpenRouter returned HTTP ${res.status}: ${body.slice(0, MAX_LOGGED_ERROR_CHARS)}`, res.status);
+      // The message is for the server log only (the loop never forwards it). The key is in a header, never the body.
+      // The body's `error.metadata` gives the provider's name and codes, kept as short checked fields.
+      let metadata: unknown;
+      try {
+        metadata = (JSON.parse(body) as { error?: { metadata?: unknown } } | null)?.error?.metadata;
+      } catch {
+        // Not JSON (a proxy's page): there is nothing to read.
+      }
+      const errorDetail = modelErrorDetailFrom({ status: res.status, metadata });
+      const fields = errorDetail.providerName || errorDetail.errorType || errorDetail.providerCode ? modelErrorLogLine(errorDetail) : null;
+      throw new LucyModelError('http', fields ? `${fields}: ${cleanLogText(body, MAX_LOGGED_ERROR_CHARS)}` : `OpenRouter returned HTTP ${res.status}: ${body.slice(0, MAX_LOGGED_ERROR_CHARS)}`, res.status, errorDetail);
     }
     if (!res.body) throw new LucyModelError('bad-response', 'OpenRouter response has no body');
 
     const parser = new OpenRouterChatStreamParser();
     const decoder = new TextDecoder();
     const reader = res.body.getReader();
+    let activitySent = false;
     try {
       for (;;) {
         let chunk: ReadableStreamReadResult<Uint8Array>;
@@ -266,12 +297,21 @@ async function* streamOnce(
         }
         arm();
         if (chunk.done) break;
-        for (const delta of parser.push(decoder.decode(chunk.value, { stream: true }))) yield { type: 'text', delta };
+        const pieces = parser.push(decoder.decode(chunk.value, { stream: true }));
+        if (parser.sawActivity && !activitySent) {
+          activitySent = true;
+          yield { type: 'activity' };
+        }
+        for (const delta of pieces) yield { type: 'text', delta };
         if (parser.done) break;
       }
       if (!parser.done) {
-        for (const delta of parser.push(decoder.decode())) yield { type: 'text', delta };
-        for (const delta of parser.end()) yield { type: 'text', delta };
+        const tail = [...parser.push(decoder.decode()), ...parser.end()];
+        if (parser.sawActivity && !activitySent) {
+          activitySent = true;
+          yield { type: 'activity' };
+        }
+        for (const delta of tail) yield { type: 'text', delta };
       }
       for (const event of parser.finish()) yield event;
     } finally {

@@ -66,7 +66,8 @@ export type LucyActionToolName = (typeof LUCY_ACTION_TOOL_NAMES)[number];
  * - `ignored`: spoken words that could have been her own voice were left alone (she said nothing).
  * - `step_cap` / `time_cap` / `token_cap`: a limit was reached; her last sentence says so.
  * - `aborted`: the client went away, or the server is shutting down.
- * - `error`: the model or a look-up failed; `reason` says what, in plain words.
+ * - `error`: the model or a look-up failed; `reason` says what, in plain words. When the model fails on
+ *   its first call the turn does not end this way: it ends `answered` with `source: 'board'` on `done`.
  */
 export type LucyTurnEnd = 'answered' | 'ignored' | 'step_cap' | 'time_cap' | 'token_cap' | 'aborted' | 'error';
 
@@ -95,8 +96,14 @@ export type LucyTurnEvent =
   | {
       type: 'done';
       end: LucyTurnEnd;
-      /** Plain-words explanation when `end` is `error`. Never contains provider error bodies. */
+      /** Plain-words explanation when `end` is `error`, or why the model was not used when `source` is `board`. Never contains provider error bodies. */
       reason?: string;
+      /**
+       * Set to `board` when her language model failed and the reply was written without it, from the
+       * operator board (`end` is then `answered`, and `reason` says why the model was not used). Absent
+       * when the model wrote the reply. A reply from the board is not kept in the conversation history.
+       */
+      source?: 'board';
       /** Milliseconds from the request arriving to the first piece of her reply; null if she said nothing. */
       firstTextMs: number | null;
       totalMs: number;

@@ -92,6 +92,8 @@ export interface LucyOperatorTurnRecordInput {
   /** How the turn ended: `answered`, a cap, `aborted` or `error`. */
   end: string;
   reason?: string;
+  /** `board` when the model failed and the reply was written without it, from the operator board. Absent otherwise. */
+  fallback?: 'board';
   /** What the operator asked (secrets redacted by the caller). */
   asked: string;
   /** What Lucy said (secrets redacted by the caller). */
@@ -345,7 +347,7 @@ const LIVE_TURN_FIELDS = [
 ] as const;
 
 const OPERATOR_TURN_FIELDS = [
-  'conversationId', 'end', 'reason', 'asked', 'answer', 'model', 'provider', 'steps',
+  'conversationId', 'end', 'reason', 'fallback', 'asked', 'answer', 'model', 'provider', 'steps',
   'firstTextMs', 'totalMs', 'inputTokens', 'outputTokens', 'costUsd', 'askedWords', 'answerWords',
 ] as const;
 

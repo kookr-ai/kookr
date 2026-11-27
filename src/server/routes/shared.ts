@@ -533,6 +533,11 @@ export interface RouteDeps {
    * the environment at start-up. Absent or `{ enabled: false }`: the route answers 404.
    */
   lucyOperatorConfig?: import('../lucy-operator/config.js').LucyOperatorConfigResult;
+  /**
+   * How Lucy's language model is doing (its circuit breaker and last success and failure), shared by every
+   * operator model call and read by GET `/api/health.lucyOperator`. Created with the routes when absent.
+   */
+  lucyModelHealth?: import('../../core/lucy-operator/model-health.js').LucyModelHealth;
   /** Sends a message to every owner dashboard connection and to no viewer (cards and reports carry the operator's words and task text). */
   emitToOwners?: (msg: ServerMessage) => void;
   /**

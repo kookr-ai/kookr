@@ -101,6 +101,20 @@ export interface TaskNamerHealthSnapshot {
   failedAttempts: number;
 }
 
+/**
+ * How Lucy's language model is doing, published as `lucyOperator` on GET `/api/health`.
+ * `lastFailure` is one sentence built from checked fields only (never the provider's own text).
+ * Times are ISO-8601, since the server started; `breakerOpen` means calls are being refused for a minute.
+ */
+export interface LucyOperatorHealth {
+  configured: boolean;
+  model: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastFailure: string | null;
+  breakerOpen: boolean;
+}
+
 /** Slim helper-LLM pause / storm view published on GET `/api/health`. */
 export interface HelperLlmHealthSnapshot {
   paused: HelperLlmHealthPausedEntry[];
