@@ -352,4 +352,43 @@ describe('when her model fails (R8-F10)', () => {
     expect(back.map((e) => (e.type === 'text' ? e.delta : '')).join('')).toBe('Back again.');
     expect(t.health.snapshot().breakerOpen).toBe(false);
   });
+
+  test('a model that goes silent: two turns end at the silence deadline, then the breaker is open and a third turn does not call the model', async () => {
+    vi.useFakeTimers();
+    try {
+      const health = createLucyModelHealth();
+      let modelCalls = 0;
+      const model = health.guard(async function* (request) {
+        modelCalls += 1;
+        await new Promise<void>((resolve) => request.signal?.addEventListener('abort', () => resolve(), { once: true }));
+        throw new LucyModelError('aborted', 'cancelled');
+      });
+      const service = createLucyOperator({
+        model,
+        modelName: 'test/model',
+        source: fakeSource({ tasks: [boardTask({ id: 'aaaa1111', name: 'Bake-off report' })] }),
+        briefing: () => ({ tasks: [{ id: 'aaaa1111', name: 'Bake-off report', status: 'inProgress', attention: 'wants_review' }], asks: [] }),
+        onModelFailure: (err) => health.recordFailure(err),
+        warn: () => {},
+      });
+      const silentTurn = async (text: string): Promise<LucyTurnEvent[]> => {
+        const pending = drain(service.runTurn({ text, conversationId: 'c1' }));
+        await vi.advanceTimersByTimeAsync(12_000);
+        return pending;
+      };
+      for (const text of ['one', 'two']) {
+        const events = await silentTurn(text);
+        expect(events.at(-1)).toMatchObject({ type: 'done', end: 'answered', source: 'board', reason: 'My language model is not answering: it sent nothing in 12 seconds.' });
+      }
+      expect(modelCalls).toBe(2);
+      expect(health.snapshot()).toMatchObject({ breakerOpen: true, lastFailure: 'My language model is not answering: it sent nothing in 12 seconds.' });
+      expect(health.snapshot().lastFailureAt).not.toBeNull();
+
+      const third = await drain(service.runTurn({ text: 'three', conversationId: 'c1' }));
+      expect(modelCalls).toBe(2); // not called
+      expect(third.at(-1)).toMatchObject({ type: 'done', end: 'answered', source: 'board' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -468,6 +468,24 @@ describe('operator_turn records', () => {
     }
   });
 
+  it('records fallback "board" for a reply written without the model', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-fallback-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, now: () => new Date('2026-11-27T10:00:00.000Z') });
+      log.recordOperatorTurn!({
+        conversationId: 'c1', end: 'answered', fallback: 'board',
+        reason: "My language model is not answering: OpenRouter's provider Sail Research is rate-limited (429).",
+        asked: 'What needs me?', answer: 'From the board: All clear.', tools: [], steps: 1, totalMs: 40,
+        inputTokens: 0, outputTokens: 0, askedWords: 3, answerWords: 4,
+      });
+      await log.flush();
+      expect(JSON.parse(readFileSync(file, 'utf8').trim())).toMatchObject({ kind: 'operator_turn', end: 'answered', fallback: 'board', reason: expect.stringContaining('rate-limited (429)') });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('records a launch step with only the documented fields', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'lucy-log-'));
     const file = join(dir, 'l.jsonl');

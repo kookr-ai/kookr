@@ -33,6 +33,8 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
   let received: Array<{ auth: string | undefined; body: any }>;
   /** What the fake provider answers to each request, in order. */
   let replies: string[][];
+  /** HTTP statuses the fake provider answers before it starts answering normally, in order (a failing provider). */
+  let failures: number[];
   let backend: FakeTerminalBackend;
   let fakeTelegram: FakeTelegramServer | undefined;
 
@@ -40,11 +42,18 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-lucy-operator-'));
     received = [];
     replies = [];
+    failures = [];
     provider = createServer((req, res) => {
       let raw = '';
       req.on('data', (chunk) => { raw += chunk; });
       req.on('end', () => {
         received.push({ auth: req.headers.authorization, body: JSON.parse(raw) });
+        const failure = failures.shift();
+        if (failure !== undefined) {
+          res.writeHead(failure, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Provider returned error', code: failure, metadata: { provider_name: 'Sail Research', provider_error_code: 'ttft_deadline_guard' } } }));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         for (const part of replies.shift() ?? []) res.write(part);
         res.end('data: [DONE]\n\n');
@@ -133,6 +142,34 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
     const res = await turn(baseUrl, 'What is running?');
     expect(res.status).toBe(503);
     expect(received).toHaveLength(0);
+  });
+
+  test('a provider that answers 429 twice: each turn ends answered from the board, then the breaker opens and /api/health says so', async () => {
+    const baseUrl = await start(enabled());
+    server!.taskStore.createTask('Fix login flow', '/project/alpha');
+    failures = [429, 429];
+    const lastEvent = async (text: string): Promise<{ done: Extract<LucyTurnEvent, { type: 'done' }>; said: string }> => {
+      const events = (await (await turn(baseUrl, text)).text()).trim().split('\n').map((line) => JSON.parse(line) as LucyTurnEvent);
+      return { done: events.at(-1) as Extract<LucyTurnEvent, { type: 'done' }>, said: events.map((e) => (e.type === 'text' ? e.delta : '')).join('') };
+    };
+
+    for (const text of ['What is running?', 'And now?']) {
+      const { done, said } = await lucyTurn(text);
+      expect(done).toMatchObject({ end: 'answered', source: 'board', reason: "My language model is not answering: OpenRouter's provider Sail Research is rate-limited (429)." });
+      expect(said).toContain('From the board:');
+    }
+    expect(received).toHaveLength(2);
+
+    const health = (await (await fetch(`${baseUrl}/api/health`)).json()) as { lucyOperator: Record<string, unknown> };
+    expect(health.lucyOperator).toMatchObject({ configured: true, model: 'deepseek/deepseek-v4.1-flash-1017', breakerOpen: true, lastSuccessAt: null });
+    expect(health.lucyOperator.lastFailure).toContain('Sail Research');
+
+    // The breaker is open: the third turn is answered from the board without reaching the provider.
+    const third = await lucyTurn('Anything else?');
+    expect(third.done).toMatchObject({ end: 'answered', source: 'board' });
+    expect(received).toHaveLength(2);
+
+    async function lucyTurn(text: string) { return lastEvent(text); }
   });
 
   test('a look-up then an answer, over real HTTP: the board comes from the task store and the turn is logged', async () => {

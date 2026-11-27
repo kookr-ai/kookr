@@ -28,7 +28,7 @@ import {
   type LucyModelUsage,
   type LucyToolCall,
 } from '../../core/lucy-operator/model-port.js';
-import { modelErrorDetailFrom, modelErrorLogLine } from '../../core/lucy-operator/model-failure.js';
+import { cleanLogText, modelErrorDetailFrom, modelErrorLogLine } from '../../core/lucy-operator/model-failure.js';
 
 export const LUCY_OPERATOR_REASONING_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 export type LucyOperatorReasoning = (typeof LUCY_OPERATOR_REASONING_LEVELS)[number];
@@ -170,7 +170,9 @@ export class OpenRouterChatStreamParser {
       // its message is only ever quoted in the server log, and only when no field could be read.
       const errorDetail = modelErrorDetailFrom({ status: chunk.error.code, provider: this.provider, metadata: chunk.error.metadata });
       const text = typeof chunk.error.message === 'string' ? chunk.error.message : 'unknown error';
-      const line = modelErrorLogLine(errorDetail) ?? `OpenRouter reported an error in the stream: ${text.slice(0, MAX_LOGGED_ERROR_CHARS)}`;
+      // The log keeps the provider's own words after the fields; the operator's sentence never has them.
+      const fields = modelErrorLogLine(errorDetail);
+      const line = fields ? `${fields}: ${cleanLogText(text, MAX_LOGGED_ERROR_CHARS)}` : `OpenRouter reported an error in the stream: ${text.slice(0, MAX_LOGGED_ERROR_CHARS)}`;
       throw new LucyModelError('provider', line, errorDetail.status, errorDetail);
     }
     if (chunk.usage) {
@@ -192,7 +194,7 @@ export class OpenRouterChatStreamParser {
       || (typeof delta.reasoning === 'string' && delta.reasoning !== '')
       || (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length > 0)
     ) this.sawActivity = true;
-    // `delta.reasoning` (the model thinking aloud) is deliberately not read.
+    // `delta.reasoning` (the model thinking aloud): only the fact that it arrived is used, above; its text is never read.
     if (typeof delta.content === 'string' && delta.content) out.push(delta.content);
     for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
       // The index comes from the provider. Anything that is not a small whole number is dropped,
@@ -276,8 +278,8 @@ async function* streamOnce(
         // Not JSON (a proxy's page): there is nothing to read.
       }
       const errorDetail = modelErrorDetailFrom({ status: res.status, metadata });
-      const line = errorDetail.providerName || errorDetail.errorType || errorDetail.providerCode ? modelErrorLogLine(errorDetail) : null;
-      throw new LucyModelError('http', line ?? `OpenRouter returned HTTP ${res.status}: ${body.slice(0, MAX_LOGGED_ERROR_CHARS)}`, res.status, errorDetail);
+      const fields = errorDetail.providerName || errorDetail.errorType || errorDetail.providerCode ? modelErrorLogLine(errorDetail) : null;
+      throw new LucyModelError('http', fields ? `${fields}: ${cleanLogText(body, MAX_LOGGED_ERROR_CHARS)}` : `OpenRouter returned HTTP ${res.status}: ${body.slice(0, MAX_LOGGED_ERROR_CHARS)}`, res.status, errorDetail);
     }
     if (!res.body) throw new LucyModelError('bad-response', 'OpenRouter response has no body');
 
@@ -311,8 +313,6 @@ async function* streamOnce(
         }
         for (const delta of tail) yield { type: 'text', delta };
       }
-      // A reply whose only data chunks came with the last bytes (tool calls come out in finish()).
-      if (parser.sawActivity && !activitySent) yield { type: 'activity' };
       for (const event of parser.finish()) yield event;
     } finally {
       // Stop reading and drop the connection; ignore errors from an already-closed body.

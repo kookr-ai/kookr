@@ -84,6 +84,10 @@ describe('plainFailureReason', () => {
     expect(plainFailureReason(new LucyModelError('timeout', 'x', undefined, { firstTokenAfterMs: 12_000 }))).toBe('My language model is not answering: it sent nothing in 12 seconds.');
   });
 
+  test('one second is not "1 seconds"', () => {
+    expect(plainFailureReason(new LucyModelError('timeout', 'x', undefined, { firstTokenAfterMs: 1000 }))).toBe('My language model is not answering: it sent nothing in 1 second.');
+  });
+
   test('a refusal by the breaker repeats the last known cause and says it will not ask for a minute', () => {
     expect(plainFailureReason(new LucyModelError('unavailable', 'x', undefined, rateLimited.detail))).toBe(
       "My language model is not answering: OpenRouter's provider Sail Research is rate-limited (429). I will not ask it again for a minute.",

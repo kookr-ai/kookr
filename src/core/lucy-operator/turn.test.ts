@@ -648,7 +648,7 @@ describe('when the model fails (R8-F10)', () => {
     }
   });
 
-  test.each(['close the finished ones', 'can you launch a task', 'Please, stop the research task', 'go ahead and merge it', 'I want you to reply to it'])('the imperative "%s" gets the sentence', async (text) => {
+  test.each(['close the finished ones', 'can you launch a task', 'Please, stop the research task', 'go ahead and merge it', 'I want you to reply to it', 'Lucy, launch a task', 'would you close it', 'Will you please answer it'])('the imperative "%s" gets the sentence', async (text) => {
     const model = scriptedModel([{ fail: rateLimited() }]);
     const { events } = await run({ model: model.port, source: fakeSource(), briefing }, { text });
     expect(said(events)).toContain('I cannot launch, answer, reply or close anything until my language model is back.');

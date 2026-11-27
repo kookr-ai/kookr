@@ -50,6 +50,12 @@ export function modelErrorDetailFrom(parts: { status?: unknown; provider?: unkno
   };
 }
 
+/** Text from a provider, for the server log only: control characters and runs of spaces become one space, and it is cut to `max` characters. */
+export function cleanLogText(text: string, max: number): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim().slice(0, max);
+}
+
 /** The line for the server log: "OpenRouter: Sail Research answered 429 rate_limit_exceeded (ttft_deadline_guard)". Null when there is nothing to say. */
 export function modelErrorLogLine(detail: LucyModelErrorDetail): string | null {
   if (!detail.providerName && detail.status === undefined && !detail.errorType && !detail.providerCode) return null;
@@ -79,7 +85,7 @@ export function plainFailureReason(err: unknown): string {
   if (!(err instanceof LucyModelError)) return 'Something went wrong while preparing the answer.';
   if (err.kind === 'timeout' && err.detail?.firstTokenAfterMs !== undefined) {
     const seconds = Math.max(1, Math.round(err.detail.firstTokenAfterMs / 1000));
-    return `My language model is not answering: it sent nothing in ${seconds} seconds.`;
+    return `My language model is not answering: it sent nothing in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`;
   }
   const known = knownShapeSentence(err);
   if (err.kind === 'unavailable') {

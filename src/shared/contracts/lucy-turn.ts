@@ -96,7 +96,7 @@ export type LucyTurnEvent =
   | {
       type: 'done';
       end: LucyTurnEnd;
-      /** Plain-words explanation when `end` is `error`. Never contains provider error bodies. */
+      /** Plain-words explanation when `end` is `error`, or why the model was not used when `source` is `board`. Never contains provider error bodies. */
       reason?: string;
       /**
        * Set to `board` when her language model failed and the reply was written without it, from the

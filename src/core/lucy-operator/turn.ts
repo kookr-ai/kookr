@@ -152,7 +152,7 @@ export interface LucyTurnSummary {
 const CANNOT_ACT_SENTENCE = 'I cannot launch, answer, reply or close anything until my language model is back.';
 const ACTION_VERBS = 'launch|start|spawn|run|answer|reply|respond|close|stop|kill|cancel|approve|deny|send|merge';
 /** An action word counts only as the first word, or right after a polite lead-in: "close the finished ones", "can you launch a task". */
-const ACTION_REQUEST_RE = new RegExp(`^\\W*(?:(?:can you|could you|please|go ahead and|i want you to)[\\s,]+)*(?:${ACTION_VERBS})\\b`, 'i');
+const ACTION_REQUEST_RE = new RegExp(`^\\W*(?:(?:lucy|can you|could you|would you|will you|please|go ahead and|i want you to)[\\s,]+)*(?:${ACTION_VERBS})\\b`, 'i');
 
 /**
  * The reply written without the model: the failure sentence, then the briefing from the board. Null when
