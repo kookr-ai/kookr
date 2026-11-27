@@ -21,12 +21,18 @@ setting in `settings.json`.
 | Situation | Released after (default) | Setting | Section |
 |---|---|---|---|
 | Said finished and own pull request merged, in either order (launched with auto-close) | 2 minutes after the later of the signal and the merge | `mergedFinishedSettleMinutes` (1–60) | [Finished and merged](#finished-and-merged-issues-3930-3983) |
-| Said finished, signal still pending, slots are short | 5 minutes | none (capacity-pressure soft TTL) | finishedAwaitingAck reclaim (#2355) |
+| Said finished, signal still pending, slots are short | 5 minutes, unless the ack reaper's warning (next row) is counting down | none (capacity-pressure soft TTL) | finishedAwaitingAck reclaim (#2355) |
 | Said finished, signal still pending (any task) | 6 minutes: 5, then a 60-second warning the operator can veto | `finishedAwaitingAckAckReapMinutes`, `finishedAwaitingAckAckReapGraceSeconds` | finishedAwaitingAck ack reaper (#2170) |
 | Said finished, signal still pending (any task, open-PR fail-safe) | 15 minutes | `finishedAwaitingAckTtlMinutes` | finishedAwaitingAck TTL reclaim (#1884) |
 | Own pull request merged, no "finished" on record or merge time unknown (launched with auto-close) | 10 minutes after the merge is first seen | `postMergeCleanupBudgetMinutes` (1–120) | [Delivery-aware auto-completion](#delivery-aware-auto-completion-issue-1560) |
 | Said finished, signal still pending (launched with auto-close) | 30 minutes | `autoCloseCompletionReadyDelayMin` (1–1440) | this page, top |
 | Said finished, signal still pending (not launched with auto-close) | 120 minutes | `completionReadyTtlMinutes` (5–10080) | [TTL escalation](#ttl-escalation-for-non-opted-in-tasks-issue-1526) |
+
+Once the ack reaper has warned "close in 60s unless kept", it alone closes the
+task: the capacity-pressure soft TTL, the 15-minute TTL reclaim and the
+meta-task auto-complete wait until that countdown ends, including any time
+**Keep it alive** added (issue #4266). A countdown that has already run out
+holds nothing back.
 
 Each path has its own protections, described in its section. The settle
 path, the auto-close delay and the TTL escalation share one live-work veto:
