@@ -6,7 +6,9 @@
  * `KOOKR_LUCY_OPERATOR_PROVIDER` chooses the service. Unset, Baseten is used when its key
  * is configured (the key Lucy live already uses; the operator's OpenRouter account may
  * block the model, which no setting here can fix), otherwise OpenRouter when its key is
- * configured. With `KOOKR_LUCY_OPERATOR` unset it turns itself on when a key is present and
+ * configured. Exception: with both keys present and no service named, an install that sets
+ * `KOOKR_LUCY_OPERATOR_MODEL` to the OpenRouter default or sets `KOOKR_LUCY_OPERATOR_PROVIDERS`
+ * stays on OpenRouter, so it is not moved to Baseten unasked. With `KOOKR_LUCY_OPERATOR` unset it turns itself on when a key is present and
  * stays quietly off when none is. Setting it to `true` asks for it explicitly: a missing
  * key then makes the route answer 503 and say why. `0`, `false`, `off` or `no` switches it
  * off. The model and how much it thinks before answering are settings too; the OpenRouter
@@ -109,7 +111,7 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
       : rawProviders ? 'KOOKR_LUCY_OPERATOR_PROVIDERS is set, and it only applies to OpenRouter' : null;
     if (why) {
       provider = 'openrouter';
-      warnings.push(`Keeping Lucy's conversation on OpenRouter because ${why}. Set KOOKR_LUCY_OPERATOR_PROVIDER=baseten to use Baseten (and change or unset the model setting).`);
+      warnings.push(`Keeping Lucy's conversation on OpenRouter because ${why}. Set KOOKR_LUCY_OPERATOR_PROVIDER=baseten to use Baseten${modelSetting === DEFAULT_LUCY_OPERATOR_MODEL ? ' (and change or unset the model setting)' : ''}.`);
     }
   }
 

@@ -22,8 +22,8 @@ switches to this conversation whenever launching is on (the default; `KOOKR_LUCY
    `KOOKR_LUCY_OPERATOR=0` (or `false`, `off`, `no`) in Kookr's `.env`.
 
 Which service answers: with `KOOKR_LUCY_OPERATOR_PROVIDER` unset, Baseten when its key is set, otherwise
-OpenRouter when its key is set. With both keys set, Baseten is used; set
-`KOOKR_LUCY_OPERATOR_PROVIDER=openrouter` to keep OpenRouter. Baseten is the default because an
+OpenRouter when its key is set. With both keys set, Baseten is used (unless the install already shows it runs on OpenRouter: see the
+setting table below); set `KOOKR_LUCY_OPERATOR_PROVIDER=openrouter` to keep OpenRouter. Baseten is the default because an
 OpenRouter account can block the model or its provider by a rule of its own (a guardrail), and that
 cannot be fixed from Kookr: every turn then fails. Baseten serves the same model family, and a tool call
 came back in 0.2 to 1.1 seconds when it was measured. Naming a service whose key is missing makes the
@@ -40,9 +40,9 @@ on the OpenRouter account chooses which provider serves the model.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `KOOKR_LUCY_OPERATOR_PROVIDER` | `baseten` when a Baseten key is set, else `openrouter` | `baseten` or `openrouter`: which service answers. A choice between two services, not a switch. |
+| `KOOKR_LUCY_OPERATOR_PROVIDER` | `baseten` when a Baseten key is set, else `openrouter`; OpenRouter when both keys are set and the OpenRouter model default or a provider list is set | `baseten` or `openrouter`: which service answers. A choice between two services, not a switch. With both keys present and no service named, an install that sets `KOOKR_LUCY_OPERATOR_MODEL` to the OpenRouter default `deepseek/deepseek-v4.1-flash-1017`, or sets `KOOKR_LUCY_OPERATOR_PROVIDERS`, stays on OpenRouter (with a start-up note). |
 | `KOOKR_LUCY_OPERATOR_MODEL` | `deepseek-ai/DeepSeek-V4.1-Flash-Fast` on Baseten, `deepseek/deepseek-v4.1-flash-1017` on OpenRouter | The model that answers, on the service in use. It must support tool calls. On Baseten, when this is unset, `KOOKR_BASETEN_MODEL` is used, as for Lucy live; `KOOKR_BASETEN_BASE_URL` always applies on Baseten. |
-| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `any` (no provider pinned) | OpenRouter only, and ignored on Baseten (a note is logged at start-up). Opt-in: the providers allowed to serve it, tried in this order; no other provider is used. Unset, `any` or `auto` sends no `provider` field, so the OpenRouter account's routing rule decides. |
+| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `any` (no provider pinned) | OpenRouter only, and ignored on Baseten (a note is logged at start-up). Setting it while both keys are present and no service is named keeps OpenRouter. Opt-in: the providers allowed to serve it, tried in this order; no other provider is used. Unset, `any` or `auto` sends no `provider` field, so the OpenRouter account's routing rule decides. |
 | `KOOKR_LUCY_OPERATOR_REASONING` | `medium` | How much the model thinks before answering: `none`, `low`, `medium` or `high`. On Baseten it is sent as `reasoning_effort` (`none` is Baseten's own "do not think" level). |
 
 ## Trying it

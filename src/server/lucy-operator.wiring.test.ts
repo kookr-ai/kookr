@@ -136,15 +136,19 @@ describe('Lucy operator wiring (real server, fake model provider)', () => {
   test('on Baseten, over real HTTP: the key goes in an Api-Key header, the level in reasoning_effort, and the reply streams back', async () => {
     const logged: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
-    const baseUrl = await start({
-      enabled: true,
-      ok: true,
-      provider: 'baseten',
-      launch: false,
-      warnings: [],
-      model: { apiKey: 'bt-wiring', model: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast', baseUrl: `http://127.0.0.1:${portOf(provider)}/v1`, reasoningEffort: 'medium' },
-    });
-    spy.mockRestore();
+    let baseUrl: string;
+    try {
+      baseUrl = await start({
+        enabled: true,
+        ok: true,
+        provider: 'baseten',
+        launch: false,
+        warnings: [],
+        model: { apiKey: 'bt-wiring', model: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast', baseUrl: `http://127.0.0.1:${portOf(provider)}/v1`, reasoningEffort: 'medium' },
+      });
+    } finally {
+      spy.mockRestore();
+    }
     expect(logged.filter((line) => line.startsWith('[lucy-operator]'))).toEqual(['[lucy-operator] enabled: deepseek-ai/DeepSeek-V4.1-Flash-Fast on Baseten, reasoning medium']);
     expect(logged.join('\n')).not.toContain('bt-wiring');
     replies.push([
