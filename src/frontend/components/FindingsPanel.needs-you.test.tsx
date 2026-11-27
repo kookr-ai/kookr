@@ -222,12 +222,15 @@ describe('Needs you with questions and permission prompts', () => {
     expect(container.querySelector('.overview-count-attention .overview-count-value')?.textContent).toBe('2');
   });
 
-  test('pressing a row unfolds the strip of a dock that is already open and folded', () => {
+  test('pressing a row unfolds the strip of a dock that is already open and was folded by hand', () => {
     localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: false }));
     __resetAvatarPanelPrefsForTests();
     act(() => root.render(<><Panel findings={[]} healthy={[makeWorking()]} /><AvatarDock attentionCount={0} /></>));
     act(() => handleOperatorAsks([ask()]));
-    const toggle = () => container.querySelector('[data-testid="avatar-tray-toggle"]')!;
+    const toggle = () => container.querySelector<HTMLElement>('[data-testid="avatar-tray-toggle"]')!;
+    // A waiting question unfolds the strip by itself; the operator folds it by hand.
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    act(() => toggle().click());
     expect(toggle().getAttribute('aria-expanded')).toBe('false');
     act(() => rows()[0].click());
     expect(toggle().getAttribute('aria-expanded')).toBe('true');

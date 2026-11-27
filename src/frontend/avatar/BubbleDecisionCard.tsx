@@ -48,12 +48,13 @@ export function BubbleDecisionCard({ decision, onAnswerAsk, onPermissionChoice, 
   const { submit } = useOperatorAsks();
   const { pressed } = useLucyPermission();
 
-  // Armed again whenever what the card shows changes: another item, a closed question, a changed question or command.
+  // Armed again whenever what the card shows changes: another item, a closed question, a changed question, options or
+  // command, or the "+N more waiting" line coming or going (it shares the footer row, so nothing moves, but it is a change).
   const signature = item === null
     ? ''
     : item.kind === 'ask'
-      ? `${item.key}|${item.ask.state}|${item.ask.question}|${item.ask.options.join('\n')}`
-      : `${item.key}|${outcome ? 'done' : ''}|${item.card.toolName}|${item.card.command}`;
+      ? `${item.key}|${item.ask.state}|${item.ask.question}|${item.ask.options.join('\n')}|${moreCount > 0 ? 'more' : ''}`
+      : `${item.key}|${outcome ? 'done' : ''}|${item.card.toolName}|${item.card.command}|${moreCount > 0 ? 'more' : ''}`;
   const armedRef = useRef(false);
   const signatureRef = useRef('');
   if (signatureRef.current !== signature) {
@@ -81,20 +82,29 @@ export function BubbleDecisionCard({ decision, onAnswerAsk, onPermissionChoice, 
     onLater();
   };
 
-  const footer = (
-    <div className="lucy-bubble-card-actions">
-      <button type="button" className="avatar-ask-send" onClick={onOpenLucy} data-testid="lucy-bubble-card-open">
-        Open Lucy
-      </button>
-      <button type="button" className="avatar-ask-option lucy-bubble-card-later" onClick={onLater} data-testid="lucy-bubble-card-later">
-        Later
-      </button>
-    </div>
-  );
   const more = moreCount > 0 && (
     <button type="button" className="avatar-launch-link lucy-bubble-card-more" onClick={onOpenLucy} data-testid="lucy-bubble-card-more">
       +{moreCount} more waiting
     </button>
+  );
+
+  const footer = (
+    <div className="lucy-bubble-card-actions">
+      {more}
+      <button type="button" className="avatar-ask-send" onClick={onOpenLucy} data-testid="lucy-bubble-card-open">
+        Open Lucy
+      </button>
+      <button
+        type="button"
+        className="avatar-ask-option lucy-bubble-card-later"
+        // Held back like the answers: a press aimed at the card that was just replaced must not put the new one away.
+        onClick={() => { if (armedRef.current) onLater(); }}
+        aria-disabled={armed ? undefined : 'true'}
+        data-testid="lucy-bubble-card-later"
+      >
+        Later
+      </button>
+    </div>
   );
 
   let body;
@@ -102,8 +112,9 @@ export function BubbleDecisionCard({ decision, onAnswerAsk, onPermissionChoice, 
     const ask = item.ask;
     const answer = (askId: string, choice: AskAnswerChoice): void => {
       if (!armedRef.current) return;
-      onAnswered();
-      markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
+      const sent = onAnswerAsk ? onAnswerAsk(askId, choice) : false;
+      if (sent) onAnswered();
+      markAskSubmitting(askId, sent);
     };
     body = (
       <ul className="avatar-asks lucy-bubble-card-list" role="list" aria-label="A question waiting for your answer">
@@ -197,7 +208,6 @@ export function BubbleDecisionCard({ decision, onAnswerAsk, onPermissionChoice, 
       data-armed={armed ? 'true' : 'false'}
     >
       {body}
-      {more}
       {footer}
     </div>
   );

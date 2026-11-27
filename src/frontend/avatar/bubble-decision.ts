@@ -250,12 +250,14 @@ export function useBubbleDecision({ minimized, asks, blocked = false, onShown }:
   }, [shownKey, minimized, dnd, current.gone]);
 
   // An item that ended while on screen says so for a few seconds, then the next one (or the bubble).
+  // The 4 seconds count only while the card can be seen: not with the tab hidden or a dialog over the page.
   const ended = current.outcome !== null;
+  const onScreen = tabVisible && !blocked;
   useEffect(() => {
-    if (shownKey === null || !ended) return undefined;
+    if (shownKey === null || !ended || !onScreen) return undefined;
     const timer = setTimeout(() => setShownKey(null), OUTCOME_VISIBLE_MS);
     return () => clearTimeout(timer);
-  }, [shownKey, ended]);
+  }, [shownKey, ended, onScreen]);
 
   const dismiss = useCallback(() => setShownKey(null), []);
   const rememberChoice = useCallback((key: string, label: string) => { pressedChoiceRef.current.set(key, label); }, []);

@@ -551,8 +551,8 @@ typed answer when the task accepts one.
   the card says what happened for 4 seconds, then shows the next one or goes. "Later" (or Escape inside
   the card) puts it away, and that item never grows the bubble again in this browser tab. The card never
   takes keyboard focus (it is announced to screen readers instead), its buttons ignore presses for the first
-  0.6 s, and it waits while you are typing (2 seconds after the last key, or while focus is in a text field or
-  a terminal), while Do Not Disturb is on, and while the browser tab is hidden. "Open Lucy" opens her column
+  0.6 s, and it waits while you are typing (until 2 seconds after the last key, or 2 seconds after focus moves into a
+  text field or a terminal), while Do Not Disturb is on, and while the browser tab is hidden. "Open Lucy" opens her column
   with the waiting strip unfolded. The interaction log counts these as `lucy_panel_action` events
   (`bubble_card_shown`, `bubble_card_answered`, `bubble_card_dismissed`, `bubble_card_opened`).
 - **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the

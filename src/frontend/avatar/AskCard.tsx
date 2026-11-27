@@ -215,7 +215,9 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
         id={questionId}
         ref={questionRef}
         data-testid="avatar-ask-question"
-      ><TextWithLinks text={ask.question} /></p>
+      >{/* A card that appears by itself shows task text as plain text: no live link a stray click could follow. */}
+        {compact ? ask.question : <TextWithLinks text={ask.question} />}
+      </p>
       {compact && (overflowing || showAll) && (
         <button
           type="button"

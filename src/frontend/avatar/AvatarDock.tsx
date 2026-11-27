@@ -489,9 +489,21 @@ export function AvatarDock({
   // The card the minimised bubble grows into when a question or a permission prompt waits (`bubble-decision.ts`).
   // It is announced through the status region below, never by moving focus.
   // A modal dialog open over the page (App's modals, or a dashboard component's own): no card over it. The
-  // component dialogs are not state the dock sees, so while a card is up the page is watched for one opening.
-  const [domDialogOpen, setDomDialogOpen] = useState(false);
-  const decisionBlocked = dialogOpen || domDialogOpen;
+  // component dialogs are not state the dock sees, so the page is asked at every render, and watched for one
+  // opening or closing while minimised (the render that follows then reads the answer): this is how a card
+  // that was held back for a dialog appears when the dialog closes.
+  const [, setDialogWatch] = useState(0);
+  const decisionBlocked = dialogOpen || (minimized && (dashboardDialogOpen?.() ?? false));
+  const blockedRef = useRef(decisionBlocked);
+  blockedRef.current = decisionBlocked;
+  useEffect(() => {
+    if (!minimized || !dashboardDialogOpen || typeof MutationObserver === 'undefined') return undefined;
+    const observer = new MutationObserver(() => {
+      if ((dialogOpen || dashboardDialogOpen()) !== blockedRef.current) setDialogWatch((n) => n + 1);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [minimized, dialogOpen, dashboardDialogOpen]);
   const decision = useBubbleDecision({
     minimized,
     asks: operatorAsks.asks,
@@ -501,17 +513,6 @@ export function AvatarDock({
       setAskNotice((previous) => ({ seq: (previous?.seq ?? 0) + 1, text: announcedText(item) }));
     },
   });
-
-  const decisionUp = decision.item !== null;
-  useEffect(() => {
-    if (!minimized) return undefined;
-    const check = (): void => setDomDialogOpen(dashboardDialogOpen?.() ?? false);
-    check();
-    if (!decisionUp || !dashboardDialogOpen || typeof MutationObserver === 'undefined') return undefined;
-    const observer = new MutationObserver(check);
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [minimized, decisionUp, dashboardDialogOpen, operatorAsks.asks]);
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -816,6 +817,17 @@ export function AvatarDock({
     if (decisionCardRef.current?.contains(document.activeElement)) bubbleRef.current?.focus();
     decision.dismiss();
   };
+  // The card is replaced or removed under the operator (their answer closed the question, or it ended elsewhere):
+  // a control in it that had keyboard focus is gone and focus would fall to the top of the page; it goes to the
+  // bubble. Only when focus was already inside the card, so this never takes focus on appearance.
+  const focusInCardRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const focused = focusInCardRef.current;
+    if (!focused || focused.isConnected) return;
+    focusInCardRef.current = null;
+    const active = document.activeElement;
+    if (!active || active === document.body) bubbleRef.current?.focus();
+  });
   const onBubbleEnter = (): void => {
     setHovered(true);
     setCardDismissed(false);
@@ -903,7 +915,12 @@ export function AvatarDock({
           </button>
         )}
         {decision.item !== null && !decisionBlocked && (
-          <div ref={decisionCardRef} className="lucy-bubble-card-anchor">
+          <div
+            ref={decisionCardRef}
+            className="lucy-bubble-card-anchor"
+            onFocus={(event) => { focusInCardRef.current = event.target as HTMLElement; }}
+            onBlur={(event) => { if ((event.target as HTMLElement).isConnected) focusInCardRef.current = null; }}
+          >
             <BubbleDecisionCard
               decision={decision}
               {...(onAnswerAsk ? { onAnswerAsk } : {})}

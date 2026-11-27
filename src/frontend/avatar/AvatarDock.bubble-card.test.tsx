@@ -283,6 +283,7 @@ describe('AvatarDock: the minimised bubble grows into a decision', () => {
     test('"Later" shrinks it back to the bubble with its badge, and the item never grows it again in this tab', () => {
       render();
       push([ask('a')]);
+      advance(ARMING_MS + 10);
       click(q('lucy-bubble-card-later'));
       expect(card()).toBeNull();
       expect(q('avatar-bubble')!.querySelector('.avatar-bubble-badge')!.textContent).toBe('1');
@@ -325,7 +326,7 @@ describe('AvatarDock: the minimised bubble grows into a decision', () => {
       const many = Array.from({ length: MAX_REMEMBERED + 20 }, (_, i) => ask(`q${i}`, { expiresAt: NOW + (i + 1) * MIN }));
       for (const item of many) {
         push([item]);
-        advance(10);
+        advance(ARMING_MS + 10);
         if (card()) click(q('lucy-bubble-card-later'));
       }
       expect(JSON.parse(sessionStorage.getItem(BUBBLE_GROWN_KEY)!).length).toBeLessThanOrEqual(MAX_REMEMBERED);
@@ -363,6 +364,7 @@ describe('AvatarDock: the minimised bubble grows into a decision', () => {
       push([ask('a', { expiresAt: NOW + 20 * MIN }), ask('urgent', { expiresAt: NOW + MIN })]);
       expect(card()!.textContent).toContain('Task a asks');
       expect(q('lucy-bubble-card-more')!.textContent).toBe('+1 more waiting');
+      advance(ARMING_MS + 10);
       click(q('lucy-bubble-card-later'));
       expect(card()!.textContent).toContain('Task urgent asks');
       expect(q('lucy-bubble-card-more')!.textContent).toBe('+1 more waiting');
@@ -565,6 +567,7 @@ describe('AvatarDock: the minimised bubble grows into a decision', () => {
       click(container.querySelector('button[aria-label="Minimise Lucy"]'));
       advance(10_000);
       expect(card()!.textContent).toContain('Task b asks');
+      advance(ARMING_MS + 10);
       click(q('lucy-bubble-card-later'));
       advance(10_000);
       expect(card()).toBeNull();
@@ -604,6 +607,154 @@ describe('AvatarDock: the minimised bubble grows into a decision', () => {
       expect(actions()).toEqual([]);
       act(() => root!.render(<AvatarDock attentionCount={0} onAnswerAsk={onAnswerAsk} dialogOpen={false} />));
       expect(card()).not.toBeNull();
+    });
+  });
+
+  describe('review fixes', () => {
+    test('the "+N more waiting" line coming or going re-arms the card: a press right after is ignored', () => {
+      render();
+      push([ask('a')]);
+      advance(1000);
+      push([ask('a'), ask('b', { expiresAt: NOW + 60 * MIN })]);
+      expect(q('lucy-bubble-card-more')).not.toBeNull();
+      click(all('avatar-ask-option')[1]);
+      expect(onAnswerAsk).not.toHaveBeenCalled();
+      advance(ARMING_MS + 10);
+      push([ask('a')]);
+      expect(q('lucy-bubble-card-more')).toBeNull();
+      click(all('avatar-ask-option')[1]);
+      expect(onAnswerAsk).not.toHaveBeenCalled();
+      advance(ARMING_MS + 10);
+      click(all('avatar-ask-option')[1]);
+      expect(onAnswerAsk).toHaveBeenCalledWith('a', { optionIndex: 1 });
+    });
+
+    test('the "+N more waiting" line does not change the height of the footer row (nothing moves under the pointer)', () => {
+      render();
+      push([ask('a')]);
+      expect(q('lucy-bubble-card-more')).toBeNull();
+      expect(q('lucy-bubble-card-more')?.closest('.lucy-bubble-card-list')).toBeUndefined();
+      push([ask('a'), ask('b')]);
+      expect(q('lucy-bubble-card-more')!.parentElement!.classList.contains('lucy-bubble-card-actions')).toBe(true);
+    });
+
+    test('a prompt card is re-armed by the "+N more" line as well', () => {
+      render();
+      pushPermission([permissionCard('req-1')]);
+      advance(1000);
+      push([ask('a')]);
+      click(q('lucy-bubble-card-deny'));
+      expect(onPermissionChoice).not.toHaveBeenCalled();
+    });
+
+    test('re-arm is pinned part by part: only the question, only the options, only a prompt\'s command', () => {
+      render();
+      push([ask('a')]);
+      advance(1000);
+      push([ask('a', { question: 'Only the question changed?' })]);
+      click(all('avatar-ask-option')[0]);
+      expect(onAnswerAsk).not.toHaveBeenCalled();
+      advance(1000);
+      push([ask('a', { question: 'Only the question changed?', options: ['Left', 'Right'] })]);
+      click(all('avatar-ask-option')[0]);
+      expect(onAnswerAsk).not.toHaveBeenCalled();
+      act(() => root!.unmount());
+      sessionStorage.clear();
+      __resetOperatorAsksForTests();
+      render();
+      pushPermission([permissionCard('req-9', { command: 'git status' })]);
+      advance(1000);
+      pushPermission([permissionCard('req-9', { command: 'git push --force' })]);
+      click(q('lucy-bubble-card-approve'));
+      expect(onPermissionChoice).not.toHaveBeenCalled();
+      advance(ARMING_MS + 10);
+      pushPermission([permissionCard('req-9', { command: 'git push --force', toolName: 'Write' })]);
+      click(q('lucy-bubble-card-approve'));
+      expect(onPermissionChoice).not.toHaveBeenCalled();
+    });
+
+    test('the 4 seconds of an outcome count only while the tab is visible', () => {
+      render();
+      push([ask('a')]);
+      setVisibility('hidden');
+      push([answeredOn('a', 'telegram')]);
+      advance(OUTCOME_VISIBLE_MS * 3);
+      setVisibility('visible');
+      expect(q('avatar-ask-outcome')!.textContent).toBe('Answered on Telegram: Yes');
+      advance(OUTCOME_VISIBLE_MS - 100);
+      expect(q('avatar-ask-outcome')).not.toBeNull();
+      advance(200);
+      expect(card()).toBeNull();
+    });
+
+    test('keyboard focus goes to the bubble, not the page, when its card is replaced under it', () => {
+      render();
+      push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b')]);
+      advance(ARMING_MS + 10);
+      const option = all<HTMLButtonElement>('avatar-ask-option')[0];
+      act(() => { option.focus(); });
+      click(option);
+      push([answeredOn('a', 'dashboard'), ask('b')]);
+      expect(document.activeElement).toBe(q('avatar-bubble'));
+      advance(OUTCOME_VISIBLE_MS + 100);
+      expect(card()!.textContent).toContain('Task b asks');
+    });
+
+    test('focus resting on Later survives the outcome swap by going to the bubble', () => {
+      render();
+      push([ask('a')]);
+      const later = q<HTMLButtonElement>('lucy-bubble-card-later')!;
+      act(() => { later.focus(); });
+      push([answeredOn('a', 'telegram')]);
+      advance(OUTCOME_VISIBLE_MS + 100);
+      expect(card()).toBeNull();
+      expect(document.activeElement).toBe(q('avatar-bubble'));
+    });
+
+    test('a URL in a question is plain text on the card, not a link', () => {
+      render();
+      push([ask('a', { question: 'Deploy? see https://evil.example/x now' })]);
+      expect(card()!.querySelector('a')).toBeNull();
+      expect(q('avatar-ask-question')!.textContent).toBe('Deploy? see https://evil.example/x now');
+    });
+
+    test('"Later" is held back after one card replaces another', () => {
+      render();
+      push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b')]);
+      advance(ARMING_MS + 10);
+      click(q('lucy-bubble-card-later'));
+      expect(card()!.textContent).toContain('Task b asks');
+      click(q('lucy-bubble-card-later'));
+      expect(card()!.textContent).toContain('Task b asks');
+    });
+
+    test('a question whose answer could not be sent is not logged as answered from the bubble', () => {
+      render();
+      push([ask('a')]);
+      advance(ARMING_MS + 10);
+      onAnswerAsk.mockReturnValue(false);
+      click(all('avatar-ask-option')[0]);
+      expect(actions()).toEqual(['bubble_card_shown']);
+    });
+
+    test('a component dialog open before the item arrives: nothing is marked, logged or announced until it closes', async () => {
+      let open = true;
+      const dashboardDialogOpen = () => open;
+      localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
+      __resetAvatarPanelPrefsForTests();
+      root = createRoot(container);
+      act(() => { root!.render(<AvatarDock attentionCount={0} onAnswerAsk={onAnswerAsk} dashboardDialogOpen={dashboardDialogOpen} />); });
+      push([ask('a')]);
+      expect(card()).toBeNull();
+      expect(actions()).toEqual([]);
+      expect(sessionStorage.getItem(BUBBLE_GROWN_KEY)).toBeNull();
+      expect(q('avatar-ask-announce')).toBeNull();
+      open = false;
+      act(() => { document.body.appendChild(document.createElement('div')); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+      expect(card()).not.toBeNull();
+      expect(actions()).toEqual(['bubble_card_shown']);
+      expect(q('avatar-ask-announce')!.textContent).toContain('Task a asks');
     });
   });
 });

@@ -18266,10 +18266,11 @@ button.coordinator-chain-member:focus-visible {
 /* A permission prompt's command is whole, in a box that scrolls after about six lines. */
 .lucy-bubble-command { max-height: 100px; overflow: auto; }
 .lucy-bubble-command:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
-.lucy-bubble-card-more { align-self: flex-start; margin: 0 12px 6px 13px; font-size: 12px; }
+.lucy-bubble-card-more { margin-right: auto; font-size: 12px; }
 .lucy-bubble-card-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
   justify-content: flex-end;
   padding: 8px 12px;
   border-top: 1px solid var(--border-dim);
