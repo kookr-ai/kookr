@@ -2045,6 +2045,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       // force-completed once the grace elapses — same open-PR / live-turn /
       // interactive-pane fail-safes as the strict path. Runs first so it
       // front-runs the strict reclaim for the population that never reaches it.
+      //
+      // Both passes judge age against ONE clock read (issue #4266). With two
+      // separate `new Date()` reads ~30 ms apart, a task just under the shared
+      // 5-minute gate for the ack reaper could be just over it for the TTL
+      // sweep, which would then close it with no warning ever shown.
+      const faaTickNow = new Date();
       if (deps.faaAckReapWarningCoordinator) {
         try {
           // A reap force-completes via completeTask (which broadcasts on its
@@ -2080,7 +2086,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
                   },
                 }
               : {}),
-          });
+          }, { now: faaTickNow });
         } catch (err) {
           console.error('Error during FAA ack-path reap:', err);
         }
@@ -2127,6 +2133,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             : {}),
         },
         {
+          now: faaTickNow,
           ttlMs: deps.getFinishedAwaitingAckTtlMs?.(),
           softTtlMs:
             deps.getFinishedAwaitingAckSoftTtlMs?.()
