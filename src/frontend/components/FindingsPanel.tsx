@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useNeedsYou, waitingOnLucyItems, needsYouHint } from '../store/needs-you.js';
+import { WaitingOnLucyRow } from './WaitingOnLucyRow.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import type { AnomalySeverity } from '../../shared/contracts/anomalies.js';
@@ -385,6 +387,14 @@ export function FindingsPanel({
     () => buildFindingDisplayItems(visibleFindings),
     [visibleFindings],
   );
+  // Questions and permission prompts wait on the operator too, so the header counts them with the findings.
+  const needsYou = useNeedsYou(findings);
+  const waitingOnLucy = useMemo(() => waitingOnLucyItems(needsYou), [needsYou]);
+  const nothingWaiting = findings.length === 0 && waitingOnLucy.length === 0;
+  // The type and name filters narrow the findings only; the questions and prompts always show.
+  const shownCounts = { ...needsYou.counts, finding: visibleFindings.length };
+  const shownTotal = shownCounts.question + shownCounts.permission + shownCounts.finding;
+  const hint = needsYouHint(shownCounts);
   const hasNameQuery = nameQuery.trim().length > 0;
   // Attribute the empty state to the name query only when the type-filtered set
   // was itself non-empty — so the message reads truthfully as "no name match".
@@ -546,19 +556,20 @@ export function FindingsPanel({
             )}
           </div>
         )}
-        {totalAgents > 0 && (
+        {(totalAgents > 0 || waitingOnLucy.length > 0) && (
           // "Needs you" heads the list in every state; with nothing waiting it
           // takes one line instead of holding space (#3561 slice 3). It is not a
           // toggle: findings always stay expanded.
           <div
-            className={`findings-needs-you${findings.length === 0 ? ' findings-needs-you-empty' : ''}`}
+            className={`findings-needs-you${nothingWaiting ? ' findings-needs-you-empty' : ''}`}
             data-testid="findings-needs-you-header"
           >
-            {/* The count follows the type and name filters so it matches the
+            {/* The finding count follows the type and name filters so it matches the
                 rows below (#3617); "nothing waiting" stays truthful only when
-                the unfiltered queue is empty. */}
-            <span className="findings-needs-you-label">Needs you ({visibleFindings.length})</span>
-            {findings.length === 0 && <span className="findings-needs-you-hint">nothing waiting</span>}
+                the unfiltered queue, the questions and the permission prompts are all empty. */}
+            <span className="findings-needs-you-label">Needs you ({shownTotal})</span>
+            {nothingWaiting && <span className="findings-needs-you-hint">nothing waiting</span>}
+            {!nothingWaiting && hint && <span className="findings-needs-you-hint" data-testid="findings-needs-you-kinds">{hint}</span>}
             <OldestFindingWaitChip
               findings={findings.length}
               startedAt={oldestFindingWaitStartedAt}
@@ -566,6 +577,9 @@ export function FindingsPanel({
             />
           </div>
         )}
+        {waitingOnLucy.map((item) => (
+          <WaitingOnLucyRow key={item.id} item={item} variant="rail" />
+        ))}
         {nameFilterMatchedNothing && (
           <div className="findings-empty findings-empty-no-match" data-testid="findings-name-filter-empty">
             No findings match “{nameQuery.trim()}”.

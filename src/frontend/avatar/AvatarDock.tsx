@@ -174,6 +174,8 @@ const RAIL_WIDTH_PROPERTY = '--lucy-rail-width';
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
   attentionCount: number;
+  /** Everything waiting on the operator (findings, questions, permission prompts), from `buildNeedsYou`; the badge shows it. */
+  needsYouCount?: number;
   /**
    * Send the operator's answer to a `kookr ask` question over the dashboard socket.
    * Returns false when it could not be sent (not connected). Without it the cards are
@@ -254,6 +256,7 @@ function replayDescriptionText(newestUnheard: boolean, unavailable: string | nul
 
 export function AvatarDock({
   attentionCount,
+  needsYouCount,
   onAnswerAsk,
   onOpenTask,
   onPermissionChoice,
@@ -789,7 +792,7 @@ export function AvatarDock({
       .filter(Boolean)
       .join('. ') + (cardHasContent ? '.' : '');
     // One number on the bubble: everything that is waiting for the operator (opinion requests block nothing and are not in it).
-    const badgeCount = attentionCount + pendingAskCount;
+    const badgeCount = needsYouCount ?? attentionCount + pendingAskCount;
     const bubbleView = (
       <>
         {/* The bubble sits in the bottom-right corner (see `.avatar-bubble` in styles.css), not where a window was dragged. */}
