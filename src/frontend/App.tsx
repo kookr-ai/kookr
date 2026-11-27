@@ -1995,6 +1995,7 @@ export function App() {
             <AvatarDock
               attentionCount={findings.length}
               needsYouCount={needsYou.total}
+              permissionCount={needsYou.counts.permission}
               onAnswerAsk={answerOperatorAsk}
               onOpenTask={openAskingTask}
               onPermissionChoice={send}

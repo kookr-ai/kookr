@@ -222,6 +222,49 @@ describe('Needs you with questions and permission prompts', () => {
     expect(container.querySelector('.overview-count-attention .overview-count-value')?.textContent).toBe('2');
   });
 
+  test('pressing a row unfolds the strip of a dock that is already open and folded', () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: false }));
+    __resetAvatarPanelPrefsForTests();
+    act(() => root.render(<><Panel findings={[]} healthy={[makeWorking()]} /><AvatarDock attentionCount={0} /></>));
+    act(() => handleOperatorAsks([ask()]));
+    const toggle = () => container.querySelector('[data-testid="avatar-tray-toggle"]')!;
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    act(() => rows()[0].click());
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('a question that runs out leaves the list within 15 seconds, without a server push', () => {
+    vi.useFakeTimers();
+    try {
+      act(() => root.render(<Panel findings={[]} healthy={[makeWorking()]} />));
+      act(() => handleOperatorAsks([ask({ expiresAt: Date.now() + 20_000 })]));
+      expect(rows()).toHaveLength(1);
+      act(() => { vi.advanceTimersByTime(31_000); });
+      expect(rows()).toHaveLength(0);
+      expect(header()?.textContent).toBe('Needs you (0)nothing waiting');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('overview: the six-row cap is shared by questions and findings, and the rest is counted', () => {
+    const findings = Array.from({ length: 6 }, (_, i) => makeFinding(`o${i}`));
+    act(() => root.render(<OverviewEmptyState waiting={findings} running={[]} completed={[]} onLaunch={vi.fn()} />));
+    act(() => handleOperatorAsks([ask({ id: 'q1aaaaaaaaaa' }), ask({ id: 'q2aaaaaaaaaa' })]));
+    expect(container.querySelectorAll('.overview-waiting-list > li')).toHaveLength(6);
+    expect(container.querySelector('.overview-waiting-more')?.textContent).toContain('+2 more in the findings rail');
+  });
+
+  test('minimised, the bubble names a waiting permission prompt in its label and card', () => {
+    localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
+    __resetAvatarPanelPrefsForTests();
+    act(() => root.render(<AvatarDock attentionCount={0} needsYouCount={1} permissionCount={1} />));
+    const bubble = container.querySelector('[data-testid="avatar-bubble"]')!;
+    expect(bubble.getAttribute('aria-label')).toContain('1 permission prompt waiting');
+    act(() => { bubble.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); bubble.dispatchEvent(new FocusEvent('focus')); });
+    expect(container.querySelector('[data-testid="avatar-bubble-card-permissions"]')?.textContent).toContain('1 permission prompt waiting');
+  });
+
   test('Lucy badge and the header give the same number for the same inputs', () => {
     localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
     __resetAvatarPanelPrefsForTests();
@@ -231,7 +274,7 @@ describe('Needs you with questions and permission prompts', () => {
       return (
         <>
           <Panel findings={findings} />
-          <AvatarDock attentionCount={findings.length} needsYouCount={needsYou.total} />
+          <AvatarDock attentionCount={findings.length} needsYouCount={needsYou.total} permissionCount={needsYou.counts.permission} />
         </>
       );
     }

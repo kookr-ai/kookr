@@ -71,6 +71,12 @@ describe('buildNeedsYou', () => {
     const needs = buildNeedsYou({ ...none, findings: [blocked], permissionCards: [card()] });
     expect(needs.counts).toEqual({ question: 0, permission: 0, finding: 1 });
   });
+
+  test('a permission prompt still counts when its task has a finding of another type', () => {
+    const other = finding('f1', { taskId: 't2' });
+    const needs = buildNeedsYou({ ...none, findings: [other], permissionCards: [card()] });
+    expect(needs.counts).toEqual({ question: 0, permission: 1, finding: 1 });
+  });
 });
 
 describe('wording', () => {
