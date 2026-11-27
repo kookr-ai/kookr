@@ -5,9 +5,9 @@ describe('deriveSubagentTranscriptPath', () => {
   test('places the subagent under the session folder, as Claude Code does', () => {
     // Paths taken from a real SubagentStart / SubagentStop pair.
     expect(deriveSubagentTranscriptPath(
-      '/home/op/.claude/projects/-home-op-git-app/ebcdd83d-d80a-4c0f-a958-719ef385c0d6.jsonl',
+      '/srv/claude/projects/-srv-app/ebcdd83d-d80a-4c0f-a958-719ef385c0d6.jsonl',
       'a001d0fe78c042e33',
-    )).toBe('/home/op/.claude/projects/-home-op-git-app/ebcdd83d-d80a-4c0f-a958-719ef385c0d6/subagents/agent-a001d0fe78c042e33.jsonl');
+    )).toBe('/srv/claude/projects/-srv-app/ebcdd83d-d80a-4c0f-a958-719ef385c0d6/subagents/agent-a001d0fe78c042e33.jsonl');
   });
 
   test('gives nothing when either part is missing', () => {

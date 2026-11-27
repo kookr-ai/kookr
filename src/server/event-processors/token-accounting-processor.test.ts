@@ -76,8 +76,8 @@ describe('TokenAccountingProcessor', () => {
   });
 
   describe('following a subagent from its start', () => {
-    const PARENT = '/home/op/.claude/projects/-repo/5e55.jsonl';
-    const GUESSED = '/home/op/.claude/projects/-repo/5e55/subagents/agent-a1b2.jsonl';
+    const PARENT = '/srv/claude/projects/-repo/5e55.jsonl';
+    const GUESSED = '/srv/claude/projects/-repo/5e55/subagents/agent-a1b2.jsonl';
 
     function build(task: Task | null = mockTask('parent-task')) {
       const tokenTracker = { register: vi.fn(), unregister: vi.fn() };
@@ -120,7 +120,7 @@ describe('TokenAccountingProcessor', () => {
 
     test('a wrong guess is dropped once the real path is reported', () => {
       const { tokenTracker, start, stop } = build();
-      const real = '/home/op/.claude/projects/-repo/5e55/subagents/workflows/wf_1/agent-a1b2.jsonl';
+      const real = '/srv/claude/projects/-repo/5e55/subagents/workflows/wf_1/agent-a1b2.jsonl';
       start();
       stop(real);
       expect(tokenTracker.unregister).toHaveBeenCalledWith(GUESSED);
