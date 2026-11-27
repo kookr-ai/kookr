@@ -178,6 +178,20 @@ export type {
   WorkspaceView,
   WorktreeLease,
 } from './contracts/workspace.js';
+export {
+  FLEET_VITALS_HISTORY_POINTS,
+  fleetVitalsHistoryPoint,
+} from './contracts/fleet-vitals.js';
+export type {
+  FleetVitalsFleet,
+  FleetVitalsGpu,
+  FleetVitalsGpuUnavailable,
+  FleetVitalsHistoryPoint,
+  FleetVitalsMachine,
+  FleetVitalsSample,
+  FleetVitalsTokenRates,
+  FleetVitalsToolShare,
+} from './contracts/fleet-vitals.js';
 export type {
   ClientMessage,
   DrainStatusSnapshot,

@@ -21,6 +21,8 @@ import type {
   CleanupDiagnosticLaunch,
   WorkspaceView,
   CleanupResultSummary,
+  FleetVitalsHistoryPoint,
+  FleetVitalsSample,
   SystemResourceStatus,
   CollaborationCapabilities,
   CoordinatorSnapshotState,
@@ -766,7 +768,23 @@ export interface SystemStatusSlice {
   /** LLM task-namer health from `/api/health.taskNamer` (issue #3616). */
   taskNamer: TaskNamerStatus | null;
 
+  /** Latest machine + fleet vitals sample; `null` until the first one arrives (or on an older server). */
+  fleetVitals: FleetVitalsSample | null;
+  /** The last few minutes of vitals, oldest first, for trend lines. Held in memory only. */
+  fleetVitalsHistory: FleetVitalsHistoryPoint[];
+  /** Browser time the latest vitals sample arrived, for the "no fresh data" state. */
+  fleetVitalsReceivedAtMs: number | null;
+
   handleResourceStatus: (status: SystemResourceStatus, receivedAtMs?: number) => void;
+  /**
+   * Store a vitals sample. With `history` (sent once, when the dashboard
+   * connects) the trend buffer is replaced; without it the sample is appended.
+   */
+  handleFleetVitals: (
+    sample: FleetVitalsSample,
+    history?: FleetVitalsHistoryPoint[],
+    receivedAtMs?: number,
+  ) => void;
   /** Update smoke-tick / resource-watchdog / capacity residual / pipeline-starvation / launch-deps / paused-schedules / lesson-yield / timer-health / task-namer projections. */
   handleOpsHealth: (payload: OpsHealthPayload) => void;
 }

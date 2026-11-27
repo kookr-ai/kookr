@@ -196,6 +196,13 @@ export interface EventPipelineDeps {
    * pre-#2409 behavior (shed decided solely by the instantaneous p95).
    */
   getLoadShedActive?: () => boolean;
+  /**
+   * Called once for every tool call an agent starts, for any session parentage
+   * (a subagent's or a child session's tool call is still fleet activity), but
+   * not for hook history replayed after a restart. Feeds the fleet vitals
+   * tool-call rate. Must be cheap and must not throw.
+   */
+  onToolCall?: (toolName: string) => void;
 }
 
 /** Idle / healthy floor for adaptive snapshot coalesce (one display frame). */
@@ -558,6 +565,10 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
 
   const handleEvent = (tmuxName: string, event: AgentEvent, meta: EventMeta) => {
     tokenAccountingProcessor.process({ tmuxName, event });
+    // Replayed hook history (after a server restart) is not activity happening
+    // now: counting it would report every past tool call of every live session
+    // as made in the last minute.
+    if (event.type === 'tool_use' && meta.origin !== 'replay') deps.onToolCall?.(event.toolName);
 
     // Cross-session child events do not drive parent anomaly detection,
     // watchdog liveness, completion summaries, autonomy decisions, or the Ralph

@@ -14,7 +14,7 @@ import type { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import type { SkillDiscoveryStateHolder } from '../core/skill-tracked-repo-discovery.js';
 import type { PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
 import type { AchievementWatcher } from './achievement-watcher.js';
-import type { DrainStatusSnapshot, ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
+import type { DrainStatusSnapshot, ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus, FleetVitalsHistoryPoint, FleetVitalsSample } from '../shared/protocol.js';
 import { ClientMessageSchema, summarizeZodIssues } from '../shared/contracts/client-message-schema.js';
 import { MessageRouter } from './ws.js';
 import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
@@ -153,6 +153,8 @@ export interface WsConnectionDeps {
   getDiagnosticStatus?: () => { report: import('../core/self-diagnostic.js').DiagnosticReport | null; lastError: string | null };
   /** Get latest server-host resource status for the initial connection burst. */
   getLatestResourceStatus?: () => SystemResourceStatus | null;
+  /** Latest fleet vitals sample plus the in-memory trend history, for the initial connection burst. */
+  getFleetVitals?: () => { sample: FleetVitalsSample; history: FleetVitalsHistoryPoint[] } | null;
   /** Startup alerts replayed to every dashboard connection until restart. */
   startupAlerts?: ServerMessage[];
   /** Workspace services (Phase 1a). */
@@ -341,6 +343,13 @@ export function handleWsConnection(
   const latestResourceStatus = deps.getLatestResourceStatus?.();
   if (latestResourceStatus && ws.readyState === 1) {
     ws.send(JSON.stringify({ type: 'resourceStatus', status: latestResourceStatus }));
+  }
+
+  // Fleet vitals: the latest sample and the last few minutes, so the trend
+  // lines are drawn at once instead of filling in over five minutes.
+  const fleetVitals = deps.getFleetVitals?.();
+  if (fleetVitals && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'fleetVitals', sample: fleetVitals.sample, history: fleetVitals.history }));
   }
 
   // Send initial GitHub state for all tasks with references

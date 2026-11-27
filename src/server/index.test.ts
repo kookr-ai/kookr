@@ -8,6 +8,7 @@ import { createKookrServerInternal, notifyBootReconciledTaskOutcomes } from './i
 import type { KookrServerInternal } from './server-test-helpers.js';
 import type { ResourceStatusSampler } from './resource-status-service.js';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
+import { ServerMessageSchema } from '../shared/contracts/server-message-schema.js';
 import {
   readDataDirectoryDiskUsageWithStatfs,
   SystemResourceSampler,
@@ -255,11 +256,15 @@ describe('createKookrServer', () => {
   let baseUrl: string;
   let serverClosed: boolean;
   let terminalBackend: FakeTerminalBackend;
+  // A stand-in for the `nvidia-smi` probe, so this suite neither runs the
+  // host's GPU command nor depends on the host having a GPU.
+  let gpuProbeRefreshes: number;
 
   beforeEach(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-test-'));
     serverClosed = false;
     terminalBackend = new FakeTerminalBackend();
+    gpuProbeRefreshes = 0;
 
     server = await createKookrServerInternal({
       port: 0,
@@ -275,6 +280,10 @@ describe('createKookrServer', () => {
       terminalBackend,
       claudeDir: join(tempDir, 'claude'),
       agentPreflight: HERMETIC_AGENT_PREFLIGHT,
+      fleetVitalsGpuProbe: {
+        refresh: async () => { gpuProbeRefreshes += 1; },
+        snapshot: () => ({ devices: [], ageMs: null, unavailable: 'not_installed' }),
+      },
     });
     port = getActualPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -2634,6 +2643,44 @@ Review daily work.
       await new Promise<void>((r) => ws.on('close', () => r()));
     });
 
+    test('sends the latest fleet vitals and their history when a dashboard connects', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+
+      type VitalsMessage = {
+        type: string;
+        sample?: { sampledAtMs: number; machine: Record<string, unknown>; fleet: Record<string, unknown> };
+        history?: Array<{ t: number }>;
+      };
+      const burst = await new Promise<VitalsMessage>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+        ws.on('message', (data) => {
+          const parsed = JSON.parse(data.toString()) as VitalsMessage;
+          // Only the connection burst carries `history`; later ticks do not.
+          if (parsed.type === 'fleetVitals' && parsed.history) {
+            clearTimeout(timer);
+            resolve(parsed);
+          }
+        });
+        ws.on('error', reject);
+      });
+
+      expect(ServerMessageSchema.safeParse(burst).success).toBe(true);
+      expect(burst.sample?.machine).toEqual(expect.objectContaining({
+        memoryUsedPercent: expect.any(Number),
+      }));
+      expect(burst.sample?.fleet).toEqual(expect.objectContaining({
+        agents: expect.any(Number),
+        subagents: expect.any(Number),
+        toolCallsPerMin: 0,
+      }));
+      // The history ends with the sample that came with it.
+      expect(burst.history!.length).toBeGreaterThan(0);
+      expect(burst.history![burst.history!.length - 1].t).toBe(burst.sample!.sampledAtMs);
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
     test('launch creates task and broadcasts snapshot', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
 
@@ -2958,6 +3005,48 @@ Review daily work.
   });
 
   describe('Adapter event wiring', () => {
+    test('a tool call reported by a hook is counted in the fleet vitals, and the GPU is probed only once a dashboard is connected', async () => {
+      // The server has been sampling since it started, with nobody connected.
+      expect(gpuProbeRefreshes).toBe(0);
+
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      type Vitals = { type: string; sample?: { machine: { gpuUnavailable: string | null }; fleet: { agents: number; toolCallsPerMin: number; topTools: Array<{ tool: string; calls: number }> } } };
+      const seen: Vitals[] = [];
+      ws.on('message', (data) => {
+        const parsed = JSON.parse(data.toString()) as Vitals;
+        if (parsed.type === 'fleetVitals') seen.push(parsed);
+      });
+      await new Promise<void>((resolve) => ws.on('open', () => ws.once('message', () => resolve())));
+
+      ws.send(JSON.stringify({ type: 'launch', prompt: 'Count my tool calls', cwd: CWD }));
+      await vi.waitFor(() => {
+        expect(server.taskStore.listTasks({ status: 'inProgress' }).length).toBeGreaterThan(0);
+      }, { timeout: 4_000 });
+      const tmuxName = server.taskStore.listTasks({ status: 'inProgress' })[0].sessions[0].tmuxSession;
+
+      server.adapter.injectHookEvent(tmuxName, JSON.stringify({
+        session_id: 'sess-vitals',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: CWD,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        permission_mode: 'acceptEdits',
+      }));
+
+      // The next sample (within one two-second tick) carries the call and the running agent.
+      await vi.waitFor(() => {
+        const latest = seen[seen.length - 1]?.sample;
+        expect(latest?.fleet.toolCallsPerMin).toBe(1);
+        expect(latest?.fleet.topTools).toEqual([{ tool: 'Bash', calls: 1 }]);
+        expect(latest?.fleet.agents).toBe(1);
+        expect(latest?.machine.gpuUnavailable).toBe('not_installed');
+      }, { timeout: 6_000, interval: 100 });
+      expect(gpuProbeRefreshes).toBeGreaterThan(0);
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    }, 15_000);
+
     test('adapter events trigger broadcast to connected clients', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
 

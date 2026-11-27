@@ -148,6 +148,7 @@ const DEBUG_MESSAGE_TYPES = new Set([
   'achievement:reset:ack',
   'quotaStatus',
   'resourceStatus',
+  'fleetVitals',
   'circuitBreakerStatus',
   'diagnosticReport',
   'schedules',

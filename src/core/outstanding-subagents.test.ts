@@ -60,6 +60,25 @@ describe('OutstandingSubagentTracker', () => {
     expect(after.remaining).toBe(0);
   });
 
+  test('totalFresh counts live subagents across parents and leaves expired ones in place', () => {
+    const tracker = new OutstandingSubagentTracker();
+    const t0 = 1_000_000;
+    tracker.updateFromEvent('parent-a', makeStart('a1'), t0);
+    tracker.updateFromEvent('parent-a', makeStart('a2'), t0 + 60_000);
+    tracker.updateFromEvent('parent-b', makeStart('b1'), t0 + 60_000);
+    expect(tracker.totalFresh(t0 + 61_000)).toBe(3);
+
+    tracker.updateFromEvent('parent-a', makeStopEvent('a2'), t0 + 62_000);
+    expect(tracker.totalFresh(t0 + 62_000)).toBe(2);
+
+    // a1 is now older than the TTL: it is no longer counted as running...
+    const afterTtl = t0 + SUBAGENT_TTL_MS + 1;
+    expect(tracker.totalFresh(afterTtl)).toBe(1);
+    // ...but the read did not evict it, so the suppression path still sees and counts it.
+    expect(tracker.totalOutstanding()).toBe(2);
+    expect(tracker.evictStale('parent-a', afterTtl)).toEqual({ remaining: 0, evicted: 1 });
+  });
+
   test('holds suppression until all outstanding subagents clear', () => {
     const tracker = new OutstandingSubagentTracker();
     const t0 = 1_000_000;

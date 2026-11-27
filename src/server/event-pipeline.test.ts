@@ -164,6 +164,25 @@ function snapshotBroadcasts(
   );
 }
 
+describe('event-pipeline: tool-call reporting for fleet vitals', () => {
+  test('reports every started tool call, from a child session too, and nothing else', () => {
+    _resetLifecycles();
+    const { deps, fireEvent } = createMockDeps();
+    const toolCalls: string[] = [];
+    deps.onToolCall = (toolName) => toolCalls.push(toolName);
+    wireEventPipeline(deps);
+
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Bash', toolUseId: 'tu-1' } as AgentEvent);
+    fireEvent('agent-1', { type: 'tool_result', toolName: 'Bash', toolUseId: 'tu-1' } as AgentEvent);
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-2' } as AgentEvent, { parentage: 'child' });
+    fireEvent('agent-1', { type: 'stop', lastMessage: 'done' } as AgentEvent);
+    // Hook history replayed after a restart is past activity, not a call made now.
+    fireEvent('agent-1', { type: 'tool_use', toolName: 'Write', toolUseId: 'tu-old' } as AgentEvent, { origin: 'replay' });
+
+    expect(toolCalls).toEqual(['Bash', 'Read']);
+  });
+});
+
 describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
   let deps: EventPipelineDeps;
   let fireEvent: (tmuxName: string, event: AgentEvent, meta?: Partial<EventMeta>) => void;

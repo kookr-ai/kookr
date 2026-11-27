@@ -984,6 +984,15 @@ export class Monitor {
   }
 
   /**
+   * Subagents that agents have started and not yet finished, across the whole
+   * fleet, for the fleet vitals readout. Approximate by nature: an entry whose
+   * SubagentStop was lost stays counted until its 30-minute TTL passes.
+   */
+  getFleetSubagentCount(now: number = Date.now()): number {
+    return this.outstandingSubagents.totalFresh(now);
+  }
+
+  /**
    * Forward one event into the outstanding-subagent tracker. session_end flushes
    * via {@link flushAndDeleteSubagents} so orphan telemetry stays on the Monitor
    * write path; start/stop/zero-background Stop live in the tracker.

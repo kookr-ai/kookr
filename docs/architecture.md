@@ -236,7 +236,7 @@ stateDiagram-v2
 > - Playbook surface: `playbooks`
 > - Multi-project surface: `projectSummaries`, `contributionWarning`
 > - Achievements: `achievement:unlocked`, `achievement:reset:ack`
-> - Infrastructure health: `quotaStatus`, `resourceStatus`, `circuitBreakerStatus`, `diagnosticReport`
+> - Infrastructure health: `quotaStatus`, `resourceStatus`, `fleetVitals`, `circuitBreakerStatus`, `diagnosticReport`
 > - Scheduled tasks: `schedules`, `scheduleFired`
 > - GitHub PR/issue awareness: `githubUpdate`
 > - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepProgress`, `workspaceSweepComplete`, `workspaceSweepBusy`, `workspaceSweepReport`

@@ -304,6 +304,7 @@ function normalizeHookPayload(parsed: RawHookPayload): AgentEvent | null {
         agentId: parsed.agent_id ?? '',
         agentType: parsed.agent_type ?? '',
         cwd: parsed.cwd,
+        ...(parsed.transcript_path ? { transcriptPath: parsed.transcript_path } : {}),
       };
 
     case 'SubagentStop':

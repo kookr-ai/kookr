@@ -41,6 +41,8 @@ export type AgentEvent = (
       agentId: string;
       agentType: string;
       cwd?: string;
+      /** Transcript of the session that started the subagent (not the subagent's own). */
+      transcriptPath?: string;
     }
   | {
       type: 'subagent_stop';

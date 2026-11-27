@@ -3,6 +3,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { initTelemetry, track } from '../telemetry.js';
 import type { ClientMessage, ServerMessage } from '../../shared/protocol.js';
 import { isSystemResourceStatus } from '../resource-status.js';
+import { isFleetVitalsSample, sanitizeFleetVitalsHistory } from '../fleet-vitals.js';
 import type { TransportSessionSlice, TriageNavigationSlice } from '../store/store-types.js';
 import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
@@ -379,6 +380,16 @@ export function useWebSocket() {
             case 'resourceStatus':
               if (isSystemResourceStatus(msg.status)) {
                 store.handleResourceStatus(msg.status, Date.now());
+              }
+              break;
+            case 'fleetVitals':
+              // A malformed sample is dropped; the previous one stays until it goes stale.
+              if (isFleetVitalsSample(msg.sample)) {
+                store.handleFleetVitals(
+                  msg.sample,
+                  msg.history === undefined ? undefined : sanitizeFleetVitalsHistory(msg.history),
+                  Date.now(),
+                );
               }
               break;
             case 'circuitBreakerStatus':
