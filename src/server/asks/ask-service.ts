@@ -56,6 +56,8 @@ const SWEEP_INTERVAL_MS = 30_000;
 const MAC_HEX_CHARS = 16;
 const STALE_EXPIRY_NOTICE_MS = 5 * 60 * 1000;
 const MAX_ANSWER_TEXT_CHARS = ASK_LIMITS.maxAnswerTextChars;
+/** The sentence Kookr writes when it applied a default, cut here so a runaway text cannot fill a card. */
+const MAX_EXPIRY_OUTCOME_CHARS = 200;
 /** A `kookr ask --wait` poll counts as attached for this long after it: five of its polls, room for a slow one on a busy host. */
 export const ASK_WAIT_ATTACHED_MS = 5 * ASK_WAIT_POLL_INTERVAL_MS;
 /**
@@ -276,11 +278,31 @@ export class AskService {
    */
   async createSystem(input: CreateSystemAskInput): Promise<CreateAskResult> {
     if (!/^[a-z0-9-]{1,40}$/.test(input.system)) return invalid('system must be 1..40 lowercase letters, digits or dashes');
-    const { system, ...rest } = input;
-    return this.createAsk({ ...rest, taskId: systemAskTaskId(system) }, system);
+    const { system, defaultOption, ...rest } = input;
+    return this.createAsk({ ...rest, taskId: systemAskTaskId(system) }, system, defaultOption);
   }
 
-  private async createAsk(input: CreateAskInput, system: string | undefined): Promise<CreateAskResult> {
+  /**
+   * Close a question Kookr asks itself because nobody answered and Kookr applied its default, and
+   * record what it did (`expiryOutcome`). The question ends `expired` (it is not "withdrawn": the time
+   * ran out) whether it was still pending or the ask service's own sweep had already expired it first;
+   * either way the dashboard list is sent again so the card shows the sentence. Only server code calls
+   * this, and only for a system ask: a task's question never carries an outcome.
+   */
+  async expireWithOutcome(id: string, outcome: string): Promise<{ ok: true; ask: AskRecord } | { ok: false; reason: 'not_found' | 'not_system' | 'not_open' }> {
+    const ask = this.deps.store.get(id);
+    if (!ask) return { ok: false, reason: 'not_found' };
+    if (ask.system === undefined) return { ok: false, reason: 'not_system' };
+    const text = oneLine(outcome).slice(0, MAX_EXPIRY_OUTCOME_CHARS);
+    if (ask.state === 'answered' || ask.state === 'cancelled' || text.length === 0) return { ok: false, reason: 'not_open' };
+    this.deps.store.update(id, (a) => { a.expiryOutcome = text; });
+    if (!this.transition(id, 'expired', 'expired')) this.emit('updated', id);
+    const done = this.deps.store.get(id) as AskRecord;
+    await this.finalize(done, `⌛ ${text}`);
+    return { ok: true, ask: done };
+  }
+
+  private async createAsk(input: CreateAskInput, system: string | undefined, defaultOption?: string): Promise<CreateAskResult> {
     const notifier = this.deps.getNotifier();
     if (!notifier) return { ok: false, error: { code: 'not_configured' } };
 
@@ -352,6 +374,9 @@ export class AskService {
       return { ok: false, error: { code: 'rate_limited', scope: limited } };
     }
 
+    if (defaultOption !== undefined && !options.includes(defaultOption.trim())) {
+      return invalid('defaultOption must be one of the options');
+    }
     const scrub = (text: string): string => (redactCredentials(text) === text ? text : REDACTED_PLACEHOLDER);
     const safeQuestion = scrub(question);
     const safeContext = context === undefined ? undefined : scrub(context);
@@ -365,6 +390,7 @@ export class AskService {
       id: randomBytes(6).toString('hex'),
       taskId: input.taskId,
       ...(system !== undefined ? { system } : {}),
+      ...(system !== undefined && defaultOption !== undefined ? { defaultOption: defaultOption.trim() } : {}),
       question: safeQuestion,
       ...(safeContext !== undefined ? { context: safeContext } : {}),
       options,

@@ -51,6 +51,8 @@ export function toOperatorAskView(ask: AskRecord, taskName: TaskNameLookup, task
     ...(name !== undefined ? { taskName: name } : {}),
     ...(ask.system !== undefined ? { system: ask.system } : {}),
     taskEnded,
+    ...(ask.defaultOption !== undefined ? { defaultOption: ask.defaultOption } : {}),
+    ...(ask.expiryOutcome !== undefined ? { expiryOutcome: ask.expiryOutcome } : {}),
     question: ask.question,
     ...(ask.context !== undefined ? { context: ask.context } : {}),
     options: [...ask.options],

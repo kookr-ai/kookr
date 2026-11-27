@@ -128,6 +128,14 @@ export interface Anomaly {
   severity: AnomalySeverity;
   explanation: string;
   detectedAt: Date;
+  /**
+   * `budget_exceeded` only: what the task had cost when this fired, and the alert threshold the
+   * check was made against (the base alert, also for the 2x level, which `severity: 'critical'`
+   * tells apart), as numbers. Read by Lucy's line about the task; the `explanation` holds the same
+   * figures as text and is not parsed. Absent on other findings and on older ones.
+   */
+  costUsd?: number;
+  alertUsd?: number;
   count?: number;
   /** Discriminates needs_input sub-types (stop vs explicit ask_user_question). */
   subType?: 'stop' | 'ask_user_question';

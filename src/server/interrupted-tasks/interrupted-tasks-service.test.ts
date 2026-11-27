@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   InterruptedTasksService,
+  expiryOutcomeOf,
   resolveInterruptedTasksPolicy,
   type InterruptedBatch,
   type InterruptedTaskEntry,
@@ -20,7 +21,7 @@ interface Harness {
   service: InterruptedTasksService;
   reopened: string[];
   raised: InterruptedBatch[];
-  closed: Array<{ askId: string; text: string }>;
+  closed: Array<{ askId: string; text: string; expiryOutcome?: string }>;
   /** Each task's current status and session count, as the task store would report it. */
   tasks: Map<string, { status: string; sessions: number }>;
   resumable: Set<string>;
@@ -47,7 +48,7 @@ function harness(overrides: Partial<InterruptedTasksServiceDeps> = {}, opts: { w
   const h = {
     reopened: [] as string[],
     raised: [] as InterruptedBatch[],
-    closed: [] as Array<{ askId: string; text: string }>,
+    closed: [] as Array<{ askId: string; text: string; expiryOutcome?: string }>,
     tasks: new Map([[RESUMABLE.taskId, { status: 'terminated', sessions: 1 }], [FRESH.taskId, { status: 'terminated', sessions: 1 }]]),
     resumable: new Set([RESUMABLE.taskId]),
     answers: new Map(),
@@ -63,7 +64,7 @@ function harness(overrides: Partial<InterruptedTasksServiceDeps> = {}, opts: { w
       askSeq += 1;
       return { askId: `ask-${askSeq}` };
     },
-    close: async (askId, text) => { h.closed.push({ askId, text }); },
+    close: async (askId, text, expiryOutcome) => { h.closed.push({ askId, text, ...(expiryOutcome !== undefined ? { expiryOutcome } : {}) }); },
     answerOf: (askId) => h.answers.get(askId),
   };
   h.service = new InterruptedTasksService({
@@ -150,7 +151,11 @@ describe('InterruptedTasksService', () => {
     await settle(h);
     expect(h.reopened).toEqual([RESUMABLE.taskId]);
     expect(h.decided[0]?.decision).toMatchObject({ choice: 'resume', by: 'timeout' });
-    expect(h.closed).toEqual([{ askId: 'ask-1', text: 'No answer in time: 1 resumed, 1 left stopped.' }]);
+    expect(h.closed).toEqual([{
+      askId: 'ask-1',
+      text: 'No answer in time: 1 resumed, 1 left stopped.',
+      expiryOutcome: 'No answer, so 1 of the 2 tasks was resumed and the rest stayed stopped.',
+    }]);
   });
 
   test('a batch is decided once: an answer after the timeout changes nothing', async () => {
@@ -388,6 +393,23 @@ describe('resolveInterruptedTasksPolicy', () => {
       .toEqual({ mode: 'auto', timeoutMs: 3 * MIN });
     expect(resolveInterruptedTasksPolicy({ KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN: '0' }).timeoutMs).toBe(10 * MIN);
     expect(resolveInterruptedTasksPolicy({ KOOKR_INTERRUPTED_TASKS: 'bogus' }).mode).toBe('ask');
+  });
+});
+
+describe('expiryOutcomeOf: what the card says when nobody answered', () => {
+  const outcomes = (...kinds: Array<'resumed' | 'restarted' | 'left_stopped' | 'skipped' | 'failed'>): InterruptedBatch =>
+    ({ id: 'b', source: 'restart', createdAt: 0, deadlineAt: 0, state: 'decided', tasks: [], decision: { choice: 'resume', by: 'timeout', at: 0, outcomes: kinds.map((outcome, i) => ({ taskId: `t${i}`, outcome })) } });
+
+  test.each([
+    [['resumed', 'resumed', 'resumed', 'resumed'], 'No answer, so the 4 tasks were resumed.'],
+    [['resumed'], 'No answer, so the task was resumed.'],
+    [['resumed', 'failed', 'left_stopped'], 'No answer, so 1 of the 3 tasks was resumed and the rest stayed stopped.'],
+    [['resumed', 'resumed', 'left_stopped'], 'No answer, so 2 of the 3 tasks were resumed and the rest stayed stopped.'],
+    [['left_stopped', 'skipped'], 'No answer, but none of the 2 tasks were resumed.'],
+    [['failed'], 'No answer, but the task was not resumed.'],
+    [[], 'No answer, and no task was left to resume.'],
+  ] as const)('%j', (kinds, text) => {
+    expect(expiryOutcomeOf(outcomes(...kinds))).toBe(text);
   });
 });
 

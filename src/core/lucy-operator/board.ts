@@ -320,6 +320,7 @@ export function orderPendingAsks(asks: readonly OperatorAskView[]): OperatorAskV
 /** The task that asked, as she may name it aloud: its short name, or "a task" when it has none. The code lets her tools find it. */
 export function askWho(ask: OperatorAskView, handles: ReadonlyMap<string, string>): string {
   const handle = handles.get(ask.taskId);
+  if (ask.system !== undefined) return handle ? `[${handle}] Kookr` : 'Kookr';
   const name = ask.taskName ? `"${boardText(ask.taskName, 40)}"` : 'a task';
   return handle ? `[${handle}] ${name}` : name;
 }
@@ -331,7 +332,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
     const where = ask.answeredVia === 'dashboard' ? 'in Kookr' : 'on Telegram';
     return `the operator answered "${boardText(chosen, MAX_ASK_ANSWER_CHARS)}" ${where} ${at}`;
   }
-  if (ask.state === 'expired') return `it expired with no answer ${at}`;
+  if (ask.state === 'expired') return `it expired with no answer ${at}${ask.expiryOutcome ? `; ${boardText(ask.expiryOutcome, 200)}` : ''}`;
   if (ask.resolution === 'task_gone') return `the session that asked ended before an answer was given ${at}`;
   return `the task withdrew it ${at}`;
 }

@@ -201,6 +201,7 @@ function buildTrainBriefingLines(train: BriefingTrainHealth | null | undefined, 
 }
 
 function askWho(ask: OperatorAskView): string {
+  if (ask.system !== undefined) return 'Kookr';
   return ask.taskName ? `The task "${ask.taskName}"` : 'A task';
 }
 
@@ -211,7 +212,7 @@ function askOutcome(ask: OperatorAskView, nowMs: number): string {
     const where = ask.answeredVia === 'dashboard' ? 'in Kookr' : 'on Telegram';
     return `the operator answered "${oneLine(chosen, 80)}" ${where} ${when}`;
   }
-  if (ask.state === 'expired') return `it expired with no answer ${when}`;
+  if (ask.state === 'expired') return `it expired with no answer ${when}${ask.expiryOutcome ? `; ${oneLine(ask.expiryOutcome, 200)}` : ''}`;
   if (ask.resolution === 'task_gone') return `the session that asked ended before an answer was given ${when}`;
   return `the task withdrew it ${when}`;
 }

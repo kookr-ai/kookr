@@ -70,6 +70,8 @@ export class BudgetChecker {
         severity: 'critical',
         explanation: buildExplanation(costUsd, criticalThresholdUsd, 'critical'),
         detectedAt: now,
+        costUsd,
+        alertUsd: thresholdUsd,
       };
     }
 
@@ -81,6 +83,8 @@ export class BudgetChecker {
         severity: 'warning',
         explanation: buildExplanation(costUsd, thresholdUsd, 'warning'),
         detectedAt: now,
+        costUsd,
+        alertUsd: thresholdUsd,
       };
     }
 

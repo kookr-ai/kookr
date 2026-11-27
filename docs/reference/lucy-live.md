@@ -429,12 +429,16 @@ answer one ([What she said unprompted](lucy-operator.md#what-she-said-unprompted
 not: the browser decides whether to write it, so the server does not know it was shown.
 
 **A briefing.** The first time her panel is on screen after the page loads, she writes what is waiting
-on you, in at most about 45 words: what is stopped until you act first ("Three tasks are stopped on a
-question; Billing migration's closes first. Two others are waiting for a permission."), then questions
-left by tasks that have ended ("Two finished tasks would like your opinion."), then how many tasks
-are working. When nothing needs you it is one line: "All clear: nothing needs you. Four tasks are
-working." Under it the entry carries up to three follow-up requests chosen from the state ("Walk me
-through the questions", "What should I do first?", "What finished while I was away?"). She writes it
+on you, in at most about 45 words, naming each task: what is stopped until you act first ("Earnings
+Watch UX review is stopped on a question, 117 minutes left. Two more are stopped on a question. Two
+others are waiting for a permission."; the question that closes soonest is named with its time left,
+the others are counted, and a question Kookr asks itself reads "Kookr is waiting for your answer about
+the interrupted tasks"), then questions left by tasks that have ended ("Two finished tasks would like
+your opinion."), then how many tasks are working. A title too long to be said whole is cut to its first
+four words. The text of a question is never in the briefing: the question card has it. When nothing
+needs you she writes nothing. Under the text the entry carries up to three follow-up requests that are
+next moves ("Walk me through the question", "What should I do first?", "What went wrong with Cache
+warmup?", "What finished while I was away?"). She writes it
 again when you come back after 10 minutes or more away (the tab was hidden, or nothing was typed or
 moved), but only if what waits on you changed in the meantime. A page reloaded within 30 minutes of
 the last briefing does not repeat it unless it changed. "Changed" means which tasks wait, why, and
@@ -443,7 +447,11 @@ from `GET /api/lucy/briefing` and needs Lucy's operator conversation to be on (t
 are turns of it); with the conversation off she writes none.
 
 **A word about a task.** When a task she did not launch fails, goes quiet or loses contact with
-Kookr, she writes one line at once: "Docs link audit failed." A task that says it is finished is
+Kookr, she writes one line at once: "Docs link audit failed." A task that goes over its spend alert
+carries the two amounts: "Test Inkling 2 Mini is at $51.25, over its $50.00 alert." (at twice the alert:
+"is at $101.00, twice its $50.00 alert."); when an amount is missing the line keeps the name and says
+"has gone over its budget." A task whose title cannot be said at all is named by its project and the
+first characters of its id ("A task in billing (0f3a9c1e) failed."), never only "a task". A task that says it is finished is
 different: Kookr closes almost every such task by itself within a few minutes, so she waits ten
 minutes and writes "Docs link audit says it is finished and wants your review." only if the task is
 then still open and still waiting. Further events within two minutes of a line are written together

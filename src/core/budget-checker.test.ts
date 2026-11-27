@@ -37,6 +37,21 @@ describe('BudgetChecker', () => {
     );
   });
 
+  test('carries the cost and the base alert as numbers, for both levels', () => {
+    const checker = new BudgetChecker(25);
+    const warning = checker.check('task-1', 'agent-1', 26.5);
+    expect(warning).toMatchObject({ severity: 'warning', costUsd: 26.5, alertUsd: 25 });
+    // The 2x level names the base alert, not the doubled figure the explanation prints.
+    const critical = checker.check('task-1', 'agent-1', 51.25);
+    expect(critical).toMatchObject({ severity: 'critical', costUsd: 51.25, alertUsd: 25 });
+    expect(critical?.explanation).toContain('2x threshold ($50.00)');
+  });
+
+  test('uses the per-project threshold it is given as the alert', () => {
+    const checker = new BudgetChecker(5);
+    expect(checker.check('task-1', 'agent-1', 12, new Date(), 10)).toMatchObject({ severity: 'warning', costUsd: 12, alertUsd: 10 });
+  });
+
   test('jumps straight to critical when cost skips past warning', () => {
     const checker = new BudgetChecker(5);
     const anomaly = checker.check('task-1', 'agent-1', 20);

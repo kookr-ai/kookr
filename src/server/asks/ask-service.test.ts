@@ -1253,6 +1253,94 @@ describe('AskService.createSystem (issue #4215)', () => {
     expect(h.notifier.finalizeAsk.mock.calls.at(-1)?.[1]).toContain('No answer in time: 2 resumed.');
   });
 
+  describe('the default applied when nobody answers (R8-F8)', () => {
+    it('stores the declared default option, and refuses one that is not an option', async () => {
+      const r = await h.service.createSystem({ ...systemInput, defaultOption: ' Resume ' });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      expect(r.ask.defaultOption).toBe('Resume');
+      expect(r.ask.expiryOutcome).toBeUndefined();
+      const bad = await h.service.createSystem({ ...systemInput, defaultOption: 'Delete everything' });
+      expect(bad.ok).toBe(false);
+    });
+
+    it('a question without a declared default has neither field', async () => {
+      const r = await h.service.createSystem(systemInput);
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      expect(r.ask).not.toHaveProperty('defaultOption');
+      expect(r.ask).not.toHaveProperty('expiryOutcome');
+    });
+
+    it('expires a pending question with the sentence, tells listeners, and edits the Telegram message', async () => {
+      const changes: string[] = [];
+      h.service.onChange((c) => changes.push(`${c.kind}:${c.ask.state}:${c.ask.expiryOutcome ?? ''}`));
+      const r = await h.service.createSystem({ ...systemInput, defaultOption: 'Resume' });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      const closed = await h.service.expireWithOutcome(r.ask.id, 'No answer, so the 2 tasks were resumed.');
+      expect(closed.ok).toBe(true);
+      expect(h.store.get(r.ask.id)).toMatchObject({ state: 'expired', resolution: 'expired', expiryOutcome: 'No answer, so the 2 tasks were resumed.' });
+      expect(changes).toContain('resolved:expired:No answer, so the 2 tasks were resumed.');
+      expect(h.notifier.finalizeAsk.mock.calls.at(-1)?.[1]).toContain('No answer, so the 2 tasks were resumed.');
+    });
+
+    it('still records it when the sweep expired the question first, and announces the change', async () => {
+      const r = await h.service.createSystem({ ...systemInput, defaultOption: 'Resume', timeoutSec: 60 });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      h.clock.now += 61_000;
+      await h.service.sweepExpired();
+      expect(h.store.get(r.ask.id)?.expiryOutcome).toBeUndefined();
+      const changes: string[] = [];
+      h.service.onChange((c) => changes.push(`${c.kind}:${c.ask.expiryOutcome ?? ''}`));
+      expect((await h.service.expireWithOutcome(r.ask.id, 'No answer, so the task was resumed.')).ok).toBe(true);
+      expect(h.store.get(r.ask.id)).toMatchObject({ state: 'expired', expiryOutcome: 'No answer, so the task was resumed.' });
+      expect(changes).toEqual(['updated:No answer, so the task was resumed.']);
+    });
+
+    it('leaves an answered question, a task\'s question and an unknown one alone', async () => {
+      const r = await h.service.createSystem({ ...systemInput, defaultOption: 'Resume' });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      await tap(r.ask, 1);
+      expect(await h.service.expireWithOutcome(r.ask.id, 'No answer, so it was resumed.')).toEqual({ ok: false, reason: 'not_open' });
+      expect(h.store.get(r.ask.id)?.expiryOutcome).toBeUndefined();
+      const task = await createOk();
+      expect(await h.service.expireWithOutcome(task.id, 'No answer.')).toEqual({ ok: false, reason: 'not_system' });
+      expect(await h.service.expireWithOutcome('nope', 'No answer.')).toEqual({ ok: false, reason: 'not_found' });
+    });
+
+    it('cuts a runaway sentence', async () => {
+      const r = await h.service.createSystem({ ...systemInput, defaultOption: 'Resume' });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      await h.service.expireWithOutcome(r.ask.id, `No answer.\n${'x'.repeat(500)}`);
+      const text = h.store.get(r.ask.id)?.expiryOutcome ?? '';
+      expect(text.length).toBeLessThanOrEqual(200);
+      expect(text).not.toContain('\n');
+    });
+
+    it('a task cannot claim a default or an outcome through POST /api/asks', async () => {
+      const app = new Hono();
+      registerAskRoutes(app, { service: h.service });
+      const res = await app.request('/api/asks', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...base, defaultOption: 'Yes', expiryOutcome: 'No answer, so the deploy went ahead.', system: 'interrupted-tasks' }),
+      });
+      expect(res.status).toBe(201);
+      const { ask } = await res.json() as { ask: Record<string, unknown> };
+      expect(ask).not.toHaveProperty('defaultOption');
+      expect(ask).not.toHaveProperty('expiryOutcome');
+      expect(ask).not.toHaveProperty('system');
+      expect(h.store.get(ask.id as string)).not.toHaveProperty('defaultOption');
+    });
+
+    it('a record saved before these fields existed still reads and expires as before', async () => {
+      const old = await createOk({ timeoutSec: 60 });
+      expect(old).not.toHaveProperty('defaultOption');
+      h.clock.now += 61_000;
+      await h.service.sweepExpired();
+      expect(h.store.get(old.id)).toMatchObject({ state: 'expired' });
+      expect(h.store.get(old.id)).not.toHaveProperty('expiryOutcome');
+    });
+  });
+
   it('the task-facing create still refuses an unknown task id', async () => {
     const r = await h.service.create({ ...base, taskId: 'system:interrupted-tasks' });
     expect(r).toEqual({ ok: false, error: { code: 'unknown_task' } });

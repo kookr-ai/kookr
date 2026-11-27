@@ -48,6 +48,18 @@ export interface AskRecord {
    * answer is never typed anywhere, and the component reacts to it through the service's listeners.
    */
   system?: string;
+  /**
+   * Only on a question Kookr asks itself: the label of the option Kookr applies when nobody answers
+   * before the question closes, declared when the question is created. Never accepted from a task
+   * (`POST /api/asks` ignores it), so a task cannot claim what Kookr will do.
+   */
+  defaultOption?: string;
+  /**
+   * Only on a question Kookr asks itself: one short sentence, written by Kookr's own code when it
+   * applied the default after nobody answered ("No answer, so the 4 tasks were resumed."). Absent
+   * while the question is open, when it was answered, and on records written before this field existed.
+   */
+  expiryOutcome?: string;
   /** Whether a free-text reply to the Telegram message counts as an answer. */
   allowText: boolean;
   state: AskState;
@@ -257,6 +269,8 @@ export const ASK_LIMITS = {
 export interface CreateSystemAskInput extends Omit<CreateAskInput, 'taskId' | 'idempotencyKey'> {
   /** The server component asking, e.g. `interrupted-tasks`. Lowercase letters, digits and dashes. */
   system: string;
+  /** The label of the option Kookr applies if nobody answers; one of `options`. Stored on the question and shown on its card. */
+  defaultOption?: string;
 }
 
 /** The synthetic task id a system ask carries in `AskRecord.taskId`. */
@@ -368,6 +382,10 @@ export interface OperatorAskView {
    * nothing is waiting on the answer. Absent from older servers, which is read as "a task may be waiting".
    */
   taskEnded?: boolean;
+  /** Only on a question Kookr asks itself: the label of the option applied when nobody answers (see {@link AskRecord.defaultOption}). */
+  defaultOption?: string;
+  /** Only on a question Kookr asks itself: what was done when nobody answered (see {@link AskRecord.expiryOutcome}). */
+  expiryOutcome?: string;
   question: string;
   context?: string;
   options: string[];

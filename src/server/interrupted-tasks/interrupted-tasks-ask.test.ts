@@ -61,16 +61,43 @@ describe('createInterruptedTasksAskPort', () => {
         return { ok: true, ask: { id: 'x1' } as never, deduped: false, redacted: [] };
       },
       cancel: async () => undefined,
+      expireWithOutcome: async () => undefined,
       all: () => [],
     }, () => NOW);
     expect(await port.raise(batch([{ taskId: 'a', name: 'A', mode: 'resume' }], 7))).toEqual({ askId: 'x1' });
-    expect(calls[0]).toMatchObject({ system: INTERRUPTED_TASKS_SYSTEM, allowText: false, timeoutSec: 7 * 60 });
+    expect(calls[0]).toMatchObject({ system: INTERRUPTED_TASKS_SYSTEM, allowText: false, timeoutSec: 7 * 60, defaultOption: 'Resume' });
+  });
+
+  test('declares no default when no task can resume, because nothing happens at the deadline', async () => {
+    const calls: CreateSystemAskInput[] = [];
+    const port = createInterruptedTasksAskPort({
+      createSystem: async (input) => { calls.push(input); return { ok: true, ask: { id: 'x1' } as never, deduped: false, redacted: [] }; },
+      cancel: async () => undefined,
+      expireWithOutcome: async () => undefined,
+      all: () => [],
+    }, () => NOW);
+    await port.raise(batch([{ taskId: 'b', name: 'B', mode: 'fresh' }]));
+    expect(calls[0]).not.toHaveProperty('defaultOption');
+  });
+
+  test('closes a question nobody answered as expired with the outcome, and any other as withdrawn', async () => {
+    const log: string[] = [];
+    const port = createInterruptedTasksAskPort({
+      createSystem: async () => ({ ok: false, error: { code: 'not_configured' } }),
+      cancel: async (id, note) => { log.push(`cancel ${id} ${note}`); },
+      expireWithOutcome: async (id, outcome) => { log.push(`expire ${id} ${outcome}`); },
+      all: () => [],
+    }, () => NOW);
+    await port.close('x1', 'No answer in time: 2 resumed.', 'No answer, so the 2 tasks were resumed.');
+    await port.close('x2', 'Decided from the terminal (leave): 1 left stopped.');
+    expect(log).toEqual(['expire x1 No answer, so the 2 tasks were resumed.', 'cancel x2 Decided from the terminal (leave): 1 left stopped.']);
   });
 
   test('reports why the question could not be raised', async () => {
     const port = createInterruptedTasksAskPort({
       createSystem: async () => ({ ok: false, error: { code: 'not_configured' } }),
       cancel: async () => undefined,
+      expireWithOutcome: async () => undefined,
       all: () => [],
     }, () => NOW);
     expect(await port.raise(batch([{ taskId: 'a', name: 'A', mode: 'resume' }]))).toEqual({ error: 'not_configured' });
