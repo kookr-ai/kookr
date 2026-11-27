@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { type LucyModelEvent, type LucyModelRequest } from '../../core/lucy-operator/model-port.js';
+import { type LucyModelError, type LucyModelEvent, type LucyModelRequest } from '../../core/lucy-operator/model-port.js';
 import { plainFailureReason } from '../../core/lucy-operator/model-failure.js';
 import { buildBasetenChatBody, createBasetenChatStream, type BasetenChatStreamConfig } from './baseten-chat-stream.js';
 
@@ -164,5 +164,27 @@ describe('createBasetenChatStream', () => {
       return Promise.resolve(new Response(body, { status: 200 }));
     }) as typeof fetch;
     await expect(collect(createBasetenChatStream({ ...CONFIG, stallTimeoutMs: 20 }, fetchImpl)(REQUEST))).rejects.toMatchObject({ kind: 'timeout' });
+  });
+});
+
+describe('the log keeps Baseten\'s own explanation, the operator sentence never has it', () => {
+  const text = `Upstream said:\n\u0007 queue full at internal-host-17 ${'y'.repeat(400)}`;
+
+  test('in-stream: control characters are cleaned and the text is capped', async () => {
+    const failure = await run([data({ error: { code: 429, message: text } })]).then(() => null, (err: unknown) => err as LucyModelError);
+    expect(failure!.message.startsWith('Baseten answered 429: Upstream said: queue full at internal-host-17 yyy')).toBe(true);
+    // eslint-disable-next-line no-control-regex
+    expect(failure!.message).not.toMatch(/[\u0000-\u001f]/);
+    expect(failure!.message.length).toBeLessThan(200 + 80);
+    expect(plainFailureReason(failure)).toBe('My language model is not answering: Baseten is rate-limited (429).');
+  });
+
+  test('non-2xx: the body text reaches the log line, and the sentence is built from the fields only', async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ error: { message: text } }), { status: 500 })) as typeof fetch;
+    const failure = await collect(createBasetenChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err as LucyModelError);
+    expect(failure!.message).toMatch(/^Baseten answered 500: .*internal-host-17/);
+    const sentence = plainFailureReason(failure);
+    expect(sentence).toBe('My language model is not answering: Baseten had a server error (500).');
+    expect(sentence).not.toContain('internal-host-17');
   });
 });
