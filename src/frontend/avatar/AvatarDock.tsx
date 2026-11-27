@@ -31,7 +31,7 @@
  * conversation starts (`--lucy-desk-left`), so the dashboard's toasts stand above the composer.
  *
  * From top to bottom the column holds:
- *  - the header: her name, what she is doing, Replay last, Expand, Minimise;
+ *  - the header: her name, what she is doing, Replay last, Desk, Minimise;
  *  - the 3D view, 120 px tall (it gives up height only when an unfolded "Waiting on you" list needs the room);
  *  - the strip "Waiting on you" (`WaitingTray.tsx`), one line until it is unfolded: permission cards, the
  *    questions tasks ask the operator (`kookr ask`, the same question that goes to Telegram; Lucy reads one
@@ -741,7 +741,7 @@ export function AvatarDock({
     return () => document.removeEventListener('keydown', onKey);
   }, [talkShortcut, shortcutsBlocked]);
   const roomShortcutHint = roomShortcut ? ` (${formatShortcutBinding(roomShortcut)})` : '';
-  // The room's shortcut presses the Expand / Back to dashboard button, also while she is minimised (it then
+  // The room's shortcut presses the Desk / Back to dashboard button, also while she is minimised (it then
   // opens her in the room). In a ref for the same reason as Talk's.
   const roomShortcutRef = useRef<() => void>(() => {});
   roomShortcutRef.current = () => {
@@ -1115,7 +1115,7 @@ export function AvatarDock({
           {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
         </button>
         {/* The same button in both layouts, so keyboard focus stays on it across the switch. A full-width sheet
-            already is the whole window, so it has no Expand. */}
+            already is the whole window, so it has no Desk button. */}
         {(inRoom || !sheet) && (
           <button
             type="button"

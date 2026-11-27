@@ -219,6 +219,23 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     __resetLucyPermissionForTests();
   });
 
+  test('hands the dock the dashboard\u2019s own buckets for the desk: findings, running and finished tasks', async () => {
+    const base = { events: [], startedAt: new Date().toISOString(), cwd: '/work/p' };
+    await act(async () => {
+      useKookrStore.setState({
+        agents: [
+          { ...base, agentId: 'run1', taskId: 'trun', taskName: 'Running one', anomaly: null, taskStatus: 'inProgress' },
+          { ...base, agentId: 'find1', taskId: 'tfind', taskName: 'Stuck one', taskStatus: 'inProgress', anomaly: { agentId: 'find1', type: 'stale_agent', severity: 'warning', explanation: 'Quiet.', detectedAt: new Date() } },
+          { ...base, agentId: 'done1', taskId: 'tdone', taskName: 'Done one', anomaly: null, taskStatus: 'completed', finishedAt: new Date().toISOString() },
+        ] as never,
+      });
+    });
+    await renderApp();
+    expect(dock.props!.running!.map((agent) => agent.agentId)).toEqual(['run1']);
+    expect(dock.props!.findings!.map((agent) => agent.agentId)).toEqual(['find1']);
+    expect(dock.props!.completed!.map((agent) => agent.agentId)).toEqual(['done1']);
+  });
+
   test('passes the platform’s binding for Lucy’s room', async () => {
     await renderApp();
     expect(dock.props!.roomShortcut).toEqual(getDefaultShortcutBindings(detectShortcutPlatform()).lucy_room_toggle);

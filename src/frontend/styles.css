@@ -17890,7 +17890,7 @@ button.coordinator-chain-member:focus-visible {
    with her 3D view above what waits on the operator. Narrower, it is the column's own stack at full width.
    It sits where the column does (z-index 90), so dialogs, menus and toasts stay above it, and it does not set
    `--lucy-column-width`: it covers the page instead of taking room from it. */
-/* The button that enters and leaves the room: "Expand" in the column's header, "Back to dashboard" in the room's. */
+/* The button that enters and leaves the desk: "Desk" in the column's header, "Back to dashboard" in the desk's. */
 .avatar-room-toggle {
   flex: none;
   display: inline-flex;
@@ -17965,18 +17965,18 @@ button.coordinator-chain-member:focus-visible {
 /* The opinion requests stay folded under their one line, in a box of their own. */
 .avatar-tray-rail .avatar-tray-list > .avatar-asks > .avatar-opinions { border: 1px solid var(--border-dim); border-radius: 8px; overflow: hidden; font-size: 13px; }
 .avatar-tray-rail .avatar-opinions-toggle { padding: 9px 12px; }
-/* The switch between column and room, over a moment. Entering, the room covers the page at once (so the page
-   is never seen settling to its full width underneath) and the conversation and the composer arrive from the
-   side where the column stood; her view and what waits stay put on the right, where they were. Leaving, the
-   column fades back in. Only opacity and a small shift: the room's own size never animates, so the 3D view is
+/* The switch between column and desk, over a moment. Entering, the desk covers the page at once (so the page
+   is never seen settling to its full width underneath) and the thread and the composer, which sit inside the
+   conversation column (`.avatar-desk-conversation`), arrive from the side where the column stood; Decisions and
+   Fleet stay put. Leaving, the column fades back in. Only opacity and a small shift: the room's own size never animates, so the 3D view is
    resized once. Nothing plays on a page that loads in the room or never enters it (AvatarDock.tsx). */
 @keyframes avatar-room-enter { from { opacity: 0; transform: translateX(16px); } }
 @keyframes avatar-room-leave { from { opacity: 0; } }
-.avatar-dock[data-room-switch="enter"] > .avatar-thread,
-.avatar-dock[data-room-switch="enter"] > .avatar-composer { animation: avatar-room-enter 180ms ease-out; }
+.avatar-dock[data-room-switch="enter"] .avatar-desk-conversation > .avatar-thread,
+.avatar-dock[data-room-switch="enter"] .avatar-desk-conversation > .avatar-composer { animation: avatar-room-enter 180ms ease-out; }
 .avatar-dock[data-room-switch="leave"] { animation: avatar-room-leave 160ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .avatar-dock[data-room-switch], .avatar-dock[data-room-switch] > * { animation: none; }
+  .avatar-dock[data-room-switch], .avatar-dock[data-room-switch] > *, .avatar-dock[data-room-switch] .avatar-desk-conversation > * { animation: none; }
 }
 /* A room in a narrow window: the header keeps its controls and drops their words (the names stay for a screen reader). */
 @media (max-width: 560px) {

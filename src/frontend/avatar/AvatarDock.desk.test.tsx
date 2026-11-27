@@ -18,6 +18,12 @@ vi.mock('./avatar-stage.js', () => ({
 }));
 vi.mock('./assets/lucy-bust.glb?url', () => ({ default: '/lucy-bust.glb' }));
 vi.mock('../telemetry.js', () => ({ track: vi.fn() }));
+// Counts how often a Fleet ROW draws: each draw builds its one-line meta.
+const rowDraws = vi.hoisted(() => ({ n: 0 }));
+vi.mock('./desk.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./desk.js')>();
+  return { ...original, fleetRowMeta: (...args: Parameters<typeof original.fleetRowMeta>) => { rowDraws.n += 1; return original.fleetRowMeta(...args); } };
+});
 // Counts how often the Fleet column works out a row's "how long": that happens only when it draws again.
 const durationCalls = vi.hoisted(() => ({ n: 0 }));
 vi.mock('../presentation.js', async (importOriginal) => {
@@ -52,6 +58,7 @@ import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, getAvatarRoom } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests, appendConversationEntry } from '../store/lucy-conversation.js';
 import { __resetLucyPermissionForTests, handleLucyPermissionCards } from '../store/lucy-permission.js';
+import { ASK_PRESS_GUARD_MS } from './WaitingTray.js';
 import { __resetOperatorAsksForTests, handleOperatorAsks } from '../store/operator-asks.js';
 import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 import { __resetLucyBriefingForTests } from './useLucyBriefing.js';
@@ -216,6 +223,18 @@ describe('AvatarDock: the desk', () => {
       expect(content().hasAttribute('data-opening')).toBe(false);
     });
 
+    test('the page is told where the conversation starts while the desk is shown, and forgets it afterwards', () => {
+      const root_ = document.documentElement;
+      render();
+      expect(root_.hasAttribute('data-lucy-desk')).toBe(true);
+      expect(root_.style.getPropertyValue('--lucy-desk-left')).toBe('998px');
+      setWindowWidth(1280);
+      expect(root_.style.getPropertyValue('--lucy-desk-left')).toBe('400px');
+      click(q('avatar-room-toggle'));
+      expect(root_.hasAttribute('data-lucy-desk')).toBe(false);
+      expect(root_.style.getPropertyValue('--lucy-desk-left')).toBe('');
+    });
+
     test('the button that opens it is called Desk, with the same tooltip', () => {
       sessionStorage.clear();
       localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: false }));
@@ -247,6 +266,37 @@ describe('AvatarDock: the desk', () => {
       expect(text('avatar-desk-next')).toBe('Next: Billing migration wants your permission to use Bash');
       pushPermissions([]);
       expect(text('avatar-desk-next')).toBe('Next: review Package release, it says it is finished');
+    });
+
+    test('Next works when a finding comes first, and when a permission prompt does', () => {
+      render({ findings: [finishedFinding()] });
+      const finding = q('avatar-desk-finding')!;
+      const scroll = vi.fn();
+      finding.scrollIntoView = scroll;
+      click(q('avatar-desk-next'));
+      expect(scroll).toHaveBeenCalledOnce();
+      expect(finding.classList.contains('avatar-desk-flash')).toBe(true);
+      pushPermissions([permission()]);
+      const card = q('avatar-permission')!;
+      const scrollCard = vi.fn();
+      card.scrollIntoView = scrollCard;
+      click(q('avatar-desk-next'));
+      expect(scrollCard).toHaveBeenCalledOnce();
+      expect(card.classList.contains('avatar-desk-flash')).toBe(true);
+    });
+
+    test('Approve once ignores a press right after a question above it closed, and works after the guard', () => {
+      const sent = vi.fn(() => true);
+      pushAsks([ask('q1')]);
+      pushPermissions([permission()]);
+      render({ onPermissionChoice: sent });
+      // The question above the prompt closes: the prompt's buttons move.
+      pushAsks([ask('q1', { state: 'answered', answeredVia: 'dashboard', answer: { kind: 'option', label: 'Yes' }, resolvedAt: NOW })]);
+      click(q('avatar-permission-approve'));
+      expect(sent).not.toHaveBeenCalled();
+      act(() => { vi.setSystemTime(Date.now() + ASK_PRESS_GUARD_MS + 50); });
+      click(q('avatar-permission-approve'));
+      expect(sent).toHaveBeenCalledOnce();
     });
 
     test('Next scrolls its card into view and lights it, without taking focus', () => {
@@ -378,6 +428,26 @@ describe('AvatarDock: the desk', () => {
       // New buckets do draw it again.
       act(() => { root!.render(<AvatarDock attentionCount={0} onOpenTask={onOpenTask} running={[...running, agent('c')]} />); });
       expect(durationCalls.n).toBeGreaterThan(drawn);
+    });
+
+    test('when one agent changes and the dashboard hands over a new open handler, only that row is drawn again', () => {
+      const tool = (command: string) => ({ type: 'tool_use', toolName: 'Bash', toolInput: { command }, timestamp: new Date(NOW).toISOString() });
+      const a = agent('a');
+      const b = agent('b');
+      const c = agent('c');
+      rowDraws.n = 0;
+      render({ running: [a, b, c] });
+      const drawn = rowDraws.n;
+      expect(drawn).toBe(3);
+      const opened = vi.fn((_taskId: string) => true);
+      const b2 = agent('b', { events: [tool('pnpm lint')] });
+      act(() => { root!.render(<AvatarDock attentionCount={0} onOpenTask={opened} running={[a, b2, c]} />); });
+      expect(rowDraws.n).toBe(drawn + 1);
+      expect(all('avatar-desk-row')[1]!.textContent).toContain('pnpm lint');
+      // The new handler is the one a press reaches.
+      click(all('avatar-desk-row')[0]);
+      expect(opened).toHaveBeenCalledWith('task-a');
+      expect(onOpenTask).not.toHaveBeenCalled();
     });
 
     test('with nothing running it says so', () => {

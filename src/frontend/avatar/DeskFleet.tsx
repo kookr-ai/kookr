@@ -11,10 +11,10 @@
  * The dashboard pushes state often, so a row is memoised on the few strings it shows: it draws again only when
  * one of them changes, and "how long" is refreshed once a minute, not on every push.
  */
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentState } from '../../shared/protocol.js';
 import { formatCost, formatDuration, formatRelativeTimeAgo, healthyCurrentToolLabel, projectLabel } from '../presentation.js';
-import { finishedToday } from './desk.js';
+import { finishedToday, fleetRowMeta } from './desk.js';
 
 /** "How long" and "when" labels are refreshed this often. */
 const CLOCK_MS = 60_000;
@@ -33,7 +33,7 @@ interface RowProps {
 }
 
 const FleetRow = memo(function FleetRow({ taskId, name, project, when, cost, doing, needsYou, onOpen }: RowProps) {
-  const meta = [project, when, cost].filter(Boolean).join(' · ');
+  const meta = fleetRowMeta(project, when, cost);
   const body = (
     <>
       <span className="avatar-desk-row-line">
@@ -64,13 +64,19 @@ const costText = (agent: AgentState): string => {
   return usd !== undefined && usd > 0 ? formatCost(usd) : '';
 };
 
-export const DeskFleet = memo(function DeskFleet({ running, completed, needsTaskIds, onOpenTask }: {
+export const DeskFleet = memo(function DeskFleet({ running, completed, needsTaskIds, onOpenTask: latestOpenTask }: {
   running: readonly AgentState[];
   completed: readonly AgentState[];
   /** The tasks that wait on the operator (a question, a permission prompt or a finding). */
   needsTaskIds: readonly string[];
   onOpenTask?: (taskId: string) => boolean;
 }) {
+  // The rows are given one handler for good that calls the latest `onOpenTask`: the dashboard builds a new one
+  // whenever any agent changes, and a new handler would draw every row again.
+  const openRef = useRef(latestOpenTask);
+  openRef.current = latestOpenTask;
+  const canOpen = latestOpenTask !== undefined;
+  const onOpenTask = useMemo(() => (canOpen ? (taskId: string): boolean => openRef.current?.(taskId) ?? false : undefined), [canOpen]);
   const [minute, setMinute] = useState(() => Math.floor(Date.now() / CLOCK_MS));
   useEffect(() => {
     const timer = setInterval(() => setMinute(Math.floor(Date.now() / CLOCK_MS)), CLOCK_MS);
@@ -98,7 +104,7 @@ export const DeskFleet = memo(function DeskFleet({ running, completed, needsTask
           {running.length === 0 ? (
             <p className="avatar-tray-empty" data-testid="avatar-desk-fleet-empty">No tasks are running.</p>
           ) : (
-            <ul className="avatar-desk-rows" aria-label={`Running (${running.length})`} data-testid="avatar-desk-running">
+            <ul className="avatar-desk-rows" role="list" aria-label={`Running (${running.length})`} data-testid="avatar-desk-running">
               {ordered.map(({ agent, needsYou }) => (
                 <FleetRow
                   key={agent.agentId}
@@ -117,7 +123,7 @@ export const DeskFleet = memo(function DeskFleet({ running, completed, needsTask
           {finished.length > 0 && (
             <>
               <h3 className="avatar-desk-subtitle">Finished today</h3>
-              <ul className="avatar-desk-rows" aria-label={`Finished today (${finished.length})`} data-testid="avatar-desk-finished">
+              <ul className="avatar-desk-rows" role="list" aria-label={`Finished today (${finished.length})`} data-testid="avatar-desk-finished">
                 {finished.map((agent) => (
                   <FleetRow
                     key={agent.agentId}

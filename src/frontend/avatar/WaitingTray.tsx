@@ -25,11 +25,16 @@
  * unfolded or a card opens. It is not shown when there is nothing to put in it. The count in the strip is
  * permissions plus questions a task may be waiting for: opinions are counted apart, because they block nothing.
  *
- * In Lucy's room (`rail`) the same tray is the side rail beside the conversation, and it has the room to show
- * things whole: it cannot be folded, every permission card and every question a task is waiting for is an
- * open card, and only the opinion requests stay folded under their one line. It scrolls by itself, its height
- * is not animated, and when nothing waits (opinion requests block nothing, so they do not count) it says so in
- * one quiet line instead of disappearing, so the rail keeps its place. The fold the operator chose for the strip is left alone and comes back with the column.
+ * In Lucy's desk (`rail`, her room) the same tray is the Decisions column, and it has the room to show things
+ * whole: it cannot be folded, and it lists everything that waits on the operator in `buildNeedsYou`'s order:
+ * every question a task is waiting for and every permission prompt as an open card, then the findings as
+ * compact cards with one "Open task" button. A permission prompt stands in for the finding of its own task.
+ * On top, "Next:" names the first item and scrolls its card into view on a press. Only the opinion requests
+ * stay folded under their one line. The count in the title is everything that waits, findings included. It
+ * scrolls by itself, its height is not animated, and when nothing waits (opinion requests block nothing, so
+ * they do not count) it says "Nothing waits on you." and lists up to five questions closed today ("Decided
+ * today"). The permission buttons have the press guard below too, since a question above them closing or
+ * arriving moves them. The fold the operator chose for the strip is left alone and comes back with the column.
  *
  * It also keeps the three rules that stop a wrong answer being sent, which moved here with the cards:
  *  - a press on an answer is ignored for a moment after the cards change (a card closing, a row opening or
@@ -296,12 +301,15 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
     flashTimerRef.current = setTimeout(() => target.classList.remove('avatar-desk-flash'), FLASH_MS);
   };
 
-  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
-    // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+  // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+  const pressGuarded = useCallback((): boolean => {
     const sinceChange = Date.now() - cardsChangedAtRef.current;
-    if (sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS) return;
+    return sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS;
+  }, []);
+  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
+    if (pressGuarded()) return;
     markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
-  }, [onAnswerAsk]);
+  }, [onAnswerAsk, pressGuarded]);
 
   const open = (askId: string): void => {
     scrollToRef.current = askId;
@@ -376,6 +384,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
       card={card}
       pressed={pressedPrompts.has(card.promptId)}
       nowMs={permissionClock}
+      pressGuard={pressGuarded}
       {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
       {...(onOpenTask ? { onOpenTask } : {})}
     />
@@ -464,7 +473,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
               {decided.length > 0 && (
                 <section className="avatar-desk-decided" aria-labelledby="avatar-desk-decided-title" data-testid="avatar-desk-decided">
                   <h3 className="avatar-desk-subtitle" id="avatar-desk-decided-title">Decided today</h3>
-                  <ul className="avatar-desk-decided-list">
+                  <ul className="avatar-desk-decided-list" role="list">
                     {decided.map((ask) => (
                       <li key={ask.id} className="avatar-desk-decided-row" title={ask.question}>
                         <span className="avatar-desk-decided-who">{ask.system ? 'Kookr' : (ask.taskName ?? 'A task')}</span>

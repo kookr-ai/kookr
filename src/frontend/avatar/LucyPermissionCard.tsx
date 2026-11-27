@@ -52,12 +52,15 @@ export function PermissionCard({
   nowMs,
   onChoice,
   onOpenTask,
+  pressGuard,
 }: {
   card: LucyPermissionCardView;
   pressed: boolean;
   nowMs: number;
   onChoice?: PermissionChoiceSender;
   onOpenTask?: (taskId: string) => boolean;
+  /** True while presses must be ignored (the list above the card just changed and moved its buttons). */
+  pressGuard?: () => boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const live = permissionButtonsLive(card, nowMs);
@@ -66,7 +69,7 @@ export function PermissionCard({
   const titleId = `avatar-permission-title-${card.promptId.slice(0, 16)}`;
 
   const press = (choice: 'approve' | 'deny'): void => {
-    if (!onChoice) return;
+    if (!onChoice || pressGuard?.()) return;
     const sent = sendPermissionChoice(card, choice, onChoice);
     if (sent !== null) setFailed(!sent);
   };

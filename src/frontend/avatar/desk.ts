@@ -77,9 +77,9 @@ export function deskSummaryText(running: number, needYou: number): string {
   ].filter(Boolean).join(' · ');
 }
 
-/** The Fleet column's title count: "7 running". */
-export function fleetTitleCount(running: number): string {
-  return `${running} running`;
+/** The one line under a Fleet row's name: project, how long or when, cost; whatever the data lacks is left out. */
+export function fleetRowMeta(project: string, when: string, cost: string): string {
+  return [project, when, cost].filter(Boolean).join(' \u00b7 ');
 }
 
 /** Local midnight that starts the day `nowMs` is in. */
