@@ -9,7 +9,7 @@
 // The hook is now role-agnostic: it fires for EVERY session (there is no NB_ROLE
 // gate), blocking the first stop once per session via a per-session sentinel.
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, readdirSync, utimesSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync, utimesSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
@@ -346,6 +346,43 @@ describe('nb-retro Stop hook (SubagentStop is let through)', () => {
       // once per session still holds, and an already-nudged session writes no new stamp
       expect(runRetro(env, waiting('sess-hung'))).toEqual({ code: 0, err: '' });
       expect(existsSync(join(dir, '.retrowait-sess-hung'))).toBe(false);
+    });
+
+    test('a subagent started after an earlier one finished gets its own clock (the old wait does not carry over)', () => {
+      const env = { NB_DIR: dir };
+      const stamp = join(dir, '.retrowait-sess-chain');
+      const a = { ...runningSubagent, id: 'A' };
+      const b = { ...runningSubagent, id: 'B' };
+      expect(runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-chain', background_tasks: [a] }).code).toBe(0);
+      backdate(stamp, BOUND_MS + 10 * 60_000);
+      // A came back and the lead started B in the same turn: no idle stop in between.
+      const chained = runRetro(env, {
+        hook_event_name: 'Stop',
+        session_id: 'sess-chain',
+        background_tasks: [{ ...a, status: 'completed' }, b],
+      });
+      expect(chained).toEqual({ code: 0, err: '' });
+      expect(JSON.parse(readFileSync(stamp, 'utf-8'))).toEqual(['B']);
+      expect(existsSync(join(dir, '.retro-sess-chain'))).toBe(false);
+      // B itself stuck past the bound: the nudge fires
+      backdate(stamp, BOUND_MS + 60_000);
+      expect(runRetro(env, { hook_event_name: 'Stop', session_id: 'sess-chain', background_tasks: [b] }).code).toBe(2);
+    });
+
+    test('an unreadable stamp starts a new wait instead of cutting it short', () => {
+      const stamp = join(dir, '.retrowait-sess-junk');
+      writeFileSync(stamp, 'not json');
+      backdate(stamp, BOUND_MS + 60_000);
+      expect(runRetro({ NB_DIR: dir }, waiting('sess-junk')).code).toBe(0);
+      expect(JSON.parse(readFileSync(stamp, 'utf-8'))).toEqual([runningSubagent.id]);
+    });
+
+    test('a running subagent with no id is still bounded', () => {
+      const env = { NB_DIR: dir };
+      const ev = { hook_event_name: 'Stop', session_id: 'sess-noid', background_tasks: [{ type: 'subagent', status: 'running' }] };
+      expect(runRetro(env, ev).code).toBe(0);
+      backdate(join(dir, '.retrowait-sess-noid'), BOUND_MS + 60_000);
+      expect(runRetro(env, ev).code).toBe(2);
     });
 
     test('a SubagentStop writes no wait stamp', () => {

@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — JS module without bundled types.
-import { resolveBaseUrl, markerPath, waitStampPath, isTerminalStatus, parseMinAge, waitingOnSubagent, SUBAGENT_WAIT_BOUND_MS, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
+import { resolveBaseUrl, markerPath, waitStampPath, isTerminalStatus, parseMinAge, waitingOnSubagent, runningSubagentIds, SUBAGENT_WAIT_BOUND_MS, NUDGE_REASON, LESSON_DECISION_TEMPLATE as NUDGE_LESSON_TEMPLATE } from '../../bin/kookr-stop-nudge.js';
 import { LESSON_DECISION_TEMPLATE } from '../core/lesson-decision.js';
 
 const NUDGE = resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'bin', 'kookr-stop-nudge.js');
@@ -73,6 +73,15 @@ describe('kookr-stop-nudge pure helpers', () => {
     expect(m).not.toBeNull();
     expect(Function(`return (${m![1]});`)()).toBe(SUBAGENT_WAIT_BOUND_MS);
     expect(SUBAGENT_WAIT_BOUND_MS).toBe(30 * 60_000);
+  });
+  it('runningSubagentIds lists running subagents only, with a placeholder for a missing id', () => {
+    expect(runningSubagentIds([
+      { id: 'a', type: 'subagent', status: 'running' },
+      { id: 'b', type: 'subagent', status: 'completed' },
+      { id: 'c', type: 'shell', status: 'running' },
+      { type: 'subagent', status: 'running' },
+    ])).toEqual(['a', '(no id)']);
+    for (const odd of [undefined, null, 'running', {}, [null]]) expect(runningSubagentIds(odd)).toEqual([]);
   });
   it('waitStampPath never names a task marker', () => {
     expect(waitStampPath('t-1')).toBe(`${markerPath('t-1')}.waiting`);
@@ -197,6 +206,38 @@ describe('kookr-stop-nudge behavior (subprocess, hard fail-open)', () => {
       expect(existsSync(stamp())).toBe(false);
       expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
       expect(existsSync(stamp())).toBe(true);
+    });
+
+    it('a subagent started after an earlier one finished gets its own clock (the old wait does not carry over)', async () => {
+      const a = { ...subagent, id: 'A' };
+      const b = { ...subagent, id: 'B' };
+      expect(blocked((await run({ stdin: JSON.stringify({ background_tasks: [a] }), env: baseEnv() })).stdout)).toBe(false);
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 10 * 60_000);
+      // A came back and the lead started B in the same turn: no idle stop in between.
+      const chained = await run({ stdin: JSON.stringify({ background_tasks: [{ ...a, status: 'completed' }, b] }), env: baseEnv() });
+      expect(blocked(chained.stdout)).toBe(false);
+      expect(JSON.parse(readFileSync(stamp(), 'utf-8'))).toEqual(['B']);
+      expect(existsSync(marker())).toBe(false);
+      // B itself stuck past the bound: the reminder fires
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 60_000);
+      expect(blocked((await run({ stdin: JSON.stringify({ background_tasks: [b] }), env: baseEnv() })).stdout)).toBe(true);
+    });
+
+    it('a stamp left by an earlier run (other ids, or the old format) does not cut a new wait short', async () => {
+      mkdirSync(join(home, '.kookr', 'stop-nudge'), { recursive: true });
+      for (const old of ['["gone"]', '2026-11-27T00:00:00.000Z']) {
+        writeFileSync(stamp(), old);
+        backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 60_000);
+        expect(blocked((await run({ stdin: waitingStdin, env: baseEnv() })).stdout)).toBe(false);
+        expect(JSON.parse(readFileSync(stamp(), 'utf-8'))).toEqual([subagent.id]);
+      }
+    });
+
+    it('a running subagent with no id is still bounded', async () => {
+      const noId = JSON.stringify({ background_tasks: [{ type: 'subagent', status: 'running' }] });
+      expect(blocked((await run({ stdin: noId, env: baseEnv() })).stdout)).toBe(false);
+      backdate(stamp(), SUBAGENT_WAIT_BOUND_MS + 60_000);
+      expect(blocked((await run({ stdin: noId, env: baseEnv() })).stdout)).toBe(true);
     });
 
     it('writes no stamp outside a managed task or once the task was already reminded', async () => {

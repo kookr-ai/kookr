@@ -19,15 +19,15 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, writeFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, realpathSync, statSync, unlinkSync, readFileSync, renameSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const STDIN_TIMEOUT_MS = 2000;
 const API_TIMEOUT_MS = 2500;
 const DEFAULT_MIN_TASK_AGE_MS = 45_000;
 const KILL_MARKER = '/dev/shm/.kookr-nudge-disabled';
-// How long a task may keep deferring the reminder because a background subagent is
-// still `running`, counted from its first deferred stop (issue #4261). Same value as
+// How long one background subagent may stay `running` before the task stops deferring
+// the reminder for it (issue #4261). Same value as
 // plugin/hooks/nb-retro.mjs (kept in step by hand; a test pins the two together).
 const SUBAGENT_WAIT_BOUND_MS = 30 * 60_000;
 
@@ -184,13 +184,14 @@ async function main(env = process.env) {
   // 4b. The agent is waiting on delegated work, not finishing (issue #4231): a
   // background subagent is still running. Stay silent WITHOUT writing the marker,
   // so the once-per-task reminder lands at a later stop, after the work is back.
-  // Bounded (issue #4261): once the first deferred stop is SUBAGENT_WAIT_BOUND_MS
-  // old, a hung or abandoned subagent no longer defers it; the stop then goes
-  // through the usual gates below. A stop with no running subagent clears the
-  // stamp, so a later, genuine wait starts its own clock.
+  // Bounded (issue #4261): once a subagent the task is waiting on has stayed
+  // `running` for SUBAGENT_WAIT_BOUND_MS, it no longer defers the reminder; the stop
+  // then goes through the usual gates below. A subagent started later gets its own
+  // clock, and a stop with no running subagent deletes the stamp.
   const waitStamp = waitStampPath(taskId);
-  if (waitingOnSubagent(payload && payload.background_tasks)) {
-    if (withinWaitBound(waitStamp)) return done(false);
+  const runningIds = runningSubagentIds(payload && payload.background_tasks);
+  if (runningIds.length > 0) {
+    if (withinWaitBound(waitStamp, runningIds)) return done(false);
   } else {
     removeQuietly(waitStamp);
   }
@@ -254,23 +255,56 @@ function waitStampPath(taskId) {
 }
 
 /**
- * True while this stop should still defer: the first deferred stop writes the stamp
- * (`wx`, so racing stops agree on one start time) and later ones read its age. If
- * the stamp cannot be written or read, keep deferring (the #4231 behaviour).
+ * The ids of the background subagents a Stop payload lists as running. An entry with
+ * no id gets a placeholder, so it still counts and is still bounded.
  */
-function withinWaitBound(stamp) {
+function runningSubagentIds(tasks) {
+  if (!Array.isArray(tasks)) return [];
+  return tasks
+    .filter((t) => t && t.type === 'subagent' && t.status === 'running')
+    .map((t) => (typeof t.id === 'string' && t.id !== '' ? t.id : '(no id)'));
+}
+
+/**
+ * True while this stop should still defer (issue #4261). The stamp holds the ids of
+ * the subagents that were running when it was written, and its mtime is when that
+ * wait began. While one of those ids is still running, the wait goes on, and once
+ * the stamp is SUBAGENT_WAIT_BOUND_MS old that subagent has run at least that long:
+ * it is treated as hung and the stop no longer defers. When none of them is running
+ * any more (they finished and new ones started, or the stamp is from an earlier run
+ * or unreadable), the stamp is rewritten for the subagents running now, so a fresh
+ * subagent always gets its own clock. If the stamp cannot be written or its age
+ * read, keep deferring (the #4231 behaviour).
+ */
+function withinWaitBound(stamp, running) {
+  let recorded = [];
+  try {
+    const parsed = JSON.parse(readFileSync(stamp, 'utf-8'));
+    if (Array.isArray(parsed)) recorded = parsed;
+  } catch {
+    /* absent or unreadable: a new wait */
+  }
+  if (recorded.some((id) => running.includes(id))) {
+    try {
+      return Date.now() - statSync(stamp).mtimeMs < SUBAGENT_WAIT_BOUND_MS;
+    } catch {
+      return true;
+    }
+  }
+  // Write-then-rename, so a racing stop never reads a half-written stamp.
+  const tmp = `${stamp}.tmp-${process.pid}`;
   try {
     mkdirSync(markerDir(), { recursive: true });
-    writeFileSync(stamp, new Date().toISOString(), { flag: 'wx' });
-    return true;
-  } catch (e) {
-    if (!e || e.code !== 'EEXIST') return true;
-  }
-  try {
-    return Date.now() - statSync(stamp).mtimeMs < SUBAGENT_WAIT_BOUND_MS;
+    writeFileSync(tmp, JSON.stringify(running));
+    renameSync(tmp, stamp);
   } catch {
-    return true;
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* nothing to clean */
+    }
   }
+  return true;
 }
 
 function removeQuietly(path) {
@@ -289,8 +323,7 @@ function removeQuietly(path) {
  * kept in step by hand).
  */
 function waitingOnSubagent(tasks) {
-  if (!Array.isArray(tasks)) return false;
-  return tasks.some((t) => t && t.type === 'subagent' && t.status === 'running');
+  return runningSubagentIds(tasks).length > 0;
 }
 
 function parseMinAge(raw) {
@@ -316,4 +349,4 @@ if (isInvokedDirectly()) {
   main().catch(() => done(false));
 }
 
-export { resolveBaseUrl, markerPath, waitStampPath, isTerminalStatus, parseMinAge, waitingOnSubagent, SUBAGENT_WAIT_BOUND_MS, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };
+export { resolveBaseUrl, markerPath, waitStampPath, isTerminalStatus, parseMinAge, waitingOnSubagent, runningSubagentIds, SUBAGENT_WAIT_BOUND_MS, NUDGE_REASON, LESSON_DECISION_TEMPLATE, done, main };
