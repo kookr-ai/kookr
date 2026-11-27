@@ -36,6 +36,7 @@ import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import { __resetLastClipForTests } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
+import { BUBBLE_GROWN_KEY } from './bubble-decision.js';
 import { AVATAR_PANEL_KEY, AVATAR_TRAY_EXPANDED_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
 import { __resetLucyPermissionForTests, handleLucyPermissionCards } from '../store/lucy-permission.js';
@@ -127,17 +128,39 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     const three = () => [ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN }), ask('c', { expiresAt: NOW + 15 * MIN })];
     const opinions = () => [ask('op1', { taskEnded: true }), ask('op2', { taskEnded: true })];
 
-    test('starts folded to one line that counts what waits and the opinions wanted; no row and no card is on screen', () => {
+    test('with only opinions wanted it starts folded to one line: no row and no card is on screen', () => {
       render();
-      pushFolded([...three(), ...opinions()]);
+      pushFolded(opinions());
       expect(strip()!.tagName).toBe('BUTTON');
       expect(strip()!.getAttribute('aria-expanded')).toBe('false');
-      expect(strip()!.textContent!.replace(/\s+/g, ' ').trim()).toBe('3 waiting on you · 2 opinions wanted');
-      expect(q('avatar-tray')!.classList.contains('avatar-tray-waiting')).toBe(true);
+      expect(strip()!.textContent!.replace(/\s+/g, ' ').trim()).toBe('0 waiting on you · 2 opinions wanted');
       expect(all('avatar-ask-row')).toHaveLength(0);
       expect(all('avatar-ask')).toHaveLength(0);
       expect(q('avatar-asks')).toBeNull();
       expect(q('avatar-opinions-toggle')).toBeNull();
+    });
+
+    test('with a question waiting it is unfolded: the soonest is whole, the others are one line each, opinions folded under them', () => {
+      render();
+      pushFolded([...three(), ...opinions()]);
+      expect(strip()!.getAttribute('aria-expanded')).toBe('true');
+      expect(strip()!.textContent!.replace(/\s+/g, ' ').trim()).toBe('3 waiting on you · 2 opinions wanted');
+      expect(q('avatar-tray')!.classList.contains('avatar-tray-waiting')).toBe(true);
+      expect(openCardId()).toBe('a');
+      expect(all('avatar-ask-row').map((row) => row.closest<HTMLElement>('[data-ask-id]')!.dataset.askId)).toEqual(['b', 'c']);
+      expect(q('avatar-opinions-toggle')!.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    test('a fold saved for this tab does not hide a waiting question, and is not changed by it', () => {
+      sessionStorage.removeItem(AVATAR_TRAY_EXPANDED_KEY);
+      render();
+      pushFolded([ask('a')]);
+      expect(strip()!.getAttribute('aria-expanded')).toBe('true');
+      expect(sessionStorage.getItem(AVATAR_TRAY_EXPANDED_KEY)).toBeNull();
+      // Folded by hand while it waits: the saved choice is still not touched.
+      click(strip());
+      expect(strip()!.getAttribute('aria-expanded')).toBe('false');
+      expect(sessionStorage.getItem(AVATAR_TRAY_EXPANDED_KEY)).toBeNull();
     });
 
     test('says nothing about opinions when none is wanted, and one opinion is singular', () => {
@@ -155,41 +178,44 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       expect(q('avatar-tray')!.classList.contains('avatar-tray-waiting')).toBe(false);
     });
 
-    test('unfolding shows the rows, and still no card: nothing opens until a row is pressed', () => {
+    test('with nothing waiting, pressing the strip unfolds it and nothing opens by itself', () => {
       render();
-      pushFolded(three());
+      pushFolded(opinions());
       click(strip());
       expect(strip()!.getAttribute('aria-expanded')).toBe('true');
       expect(strip()!.getAttribute('aria-controls')).toBe(q('avatar-tray')!.querySelector('.avatar-tray-body')!.id);
-      expect(all('avatar-ask-row')).toHaveLength(3);
+      expect(q('avatar-opinions-toggle')).not.toBeNull();
       expect(all('avatar-ask')).toHaveLength(0);
-      open('b');
-      expect(openCardId()).toBe('b');
-      // Folding it again takes the rows and the card off the screen.
       click(strip());
-      expect(all('avatar-ask-row')).toHaveLength(0);
-      expect(all('avatar-ask')).toHaveLength(0);
+      expect(q('avatar-opinions-toggle')).toBeNull();
     });
 
-    test('a question that arrives while it is folded does not unfold it or open a card', () => {
+    test('folded by hand while a question waits, the strip stays folded until a NEW item arrives', () => {
       render();
       pushFolded([ask('a')]);
-      pushFolded([ask('a'), ask('urgent', { expiresAt: NOW + MIN })]);
+      click(strip());
       expect(strip()!.getAttribute('aria-expanded')).toBe('false');
-      expect(q('avatar-tray-count')!.textContent).toBe('2');
       expect(all('avatar-ask')).toHaveLength(0);
+      // The same question again (a new list from the server) changes nothing.
+      pushFolded([ask('a')]);
+      expect(strip()!.getAttribute('aria-expanded')).toBe('false');
+      pushFolded([ask('a'), ask('urgent', { expiresAt: NOW + MIN })]);
+      expect(strip()!.getAttribute('aria-expanded')).toBe('true');
+      expect(q('avatar-tray-count')!.textContent).toBe('2');
+      // The card that was open stays open: a new question never takes its place.
+      expect(openCardId()).toBe('a');
     });
 
     test('the choice is remembered for the browser tab: unfolded stays unfolded after the panel is rebuilt, folded stays folded', () => {
       render();
-      pushFolded(three());
+      pushFolded(opinions());
       click(strip());
       expect(sessionStorage.getItem(AVATAR_TRAY_EXPANDED_KEY)).toBe('1');
       expect(localStorage.getItem(AVATAR_TRAY_EXPANDED_KEY)).toBeNull();
       act(() => root!.unmount());
       render();
       expect(strip()!.getAttribute('aria-expanded')).toBe('true');
-      expect(all('avatar-ask-row')).toHaveLength(3);
+      expect(q('avatar-opinions-toggle')).not.toBeNull();
       // Still no card by itself.
       expect(all('avatar-ask')).toHaveLength(0);
 
@@ -203,7 +229,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('a half-typed answer survives folding the strip and unfolding it again', () => {
       render();
       push([ask('a')]);
-      open('a');
       const input = q<HTMLInputElement>('avatar-ask-input')!;
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'my own words');
@@ -219,7 +244,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('unfolding counts as the cards changing: an answer pressed in the next 400 ms is ignored', () => {
       render();
       push([ask('a')]);
-      open('a');
       click(strip()); // fold
       later(500);
       act(() => { strip()!.dispatchEvent(new MouseEvent('click', { bubbles: true })); }); // unfold: the card is back under the pointer
@@ -234,7 +258,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('keyboard focus inside the list goes to the strip when the list is folded away under it', () => {
       render();
       push([ask('a')]);
-      open('a');
       const input = q<HTMLInputElement>('avatar-ask-input')!;
       act(() => { input.focus(); });
       expect(document.activeElement).toBe(input);
@@ -245,30 +268,30 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
   });
 
   describe('questions a task may be waiting for', () => {
-    test('are ordered by the time they close, soonest first; none is open and each is one line', () => {
+    test('are ordered by the time they close, soonest first; the first is open and the others are one line each', () => {
       render();
       push([
         ask('late', { expiresAt: NOW + 50 * MIN }),
         ask('soon', { expiresAt: NOW + 5 * MIN }),
         ask('mid', { expiresAt: NOW + 20 * MIN }),
       ]);
-      expect(openCardId()).toBeUndefined();
+      // The one closing soonest is whole; the others are one line each.
+      expect(openCardId()).toBe('soon');
       expect(idsOf('[data-ask-id]')).toEqual(['soon', 'mid', 'late']);
       const rows = all('avatar-ask-row');
-      expect(rows).toHaveLength(3);
-      expect(rows.map((row) => row.getAttribute('aria-expanded'))).toEqual(['false', 'false', 'false']);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
       // One line: who asks, the start of the question, the time left. Real buttons, so the keyboard reaches them.
-      expect(rows[1].tagName).toBe('BUTTON');
-      expect(rows[1].textContent).toContain('Task mid asks');
-      expect(rows[1].textContent).toContain('Question mid?');
-      expect(rows[1].textContent).toContain('20 min left');
-      expect(rows[1].querySelector('[data-testid="avatar-ask-option"]')).toBeNull();
+      expect(rows[0].tagName).toBe('BUTTON');
+      expect(rows[0].textContent).toContain('Task mid asks');
+      expect(rows[0].textContent).toContain('Question mid?');
+      expect(rows[0].textContent).toContain('20 min left');
+      expect(rows[0].querySelector('[data-testid="avatar-ask-option"]')).toBeNull();
     });
 
     test('pressing a row opens its card and folds the one that was open', () => {
       render();
       push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN })]);
-      open('a');
       expect(openCardId()).toBe('a');
       click(all('avatar-ask-row')[0]);
       expect(openCardId()).toBe('b');
@@ -285,7 +308,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('a question that arrives later, even one closing sooner, does not take the open card away', () => {
       render();
       push([ask('a', { expiresAt: NOW + 30 * MIN })]);
-      open('a');
       const input = q<HTMLInputElement>('avatar-ask-input')!;
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'half an answ');
@@ -301,7 +323,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('a half-typed answer survives folding the card and opening it again', () => {
       render();
       push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN })]);
-      open('a');
       const input = q<HTMLInputElement>('avatar-ask-input')!;
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'my own words');
@@ -313,46 +334,46 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       expect(q<HTMLInputElement>('avatar-ask-input')!.value).toBe('my own words');
     });
 
-    test('when the open question closes, no other card opens by itself: the rest stay one line each', () => {
+    test('when the open question closes, the one closing soonest of the rest opens: a waiting question is never folded', () => {
       render();
       push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN }), ask('c', { expiresAt: NOW + 15 * MIN })]);
       open('c');
       expect(openCardId()).toBe('c');
       push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN }), { ...closed('c') }]);
-      expect(openCardId()).toBeUndefined();
-      expect(all('avatar-ask-row')).toHaveLength(2);
+      expect(openCardId()).toBe('a');
+      expect(all('avatar-ask-row')).toHaveLength(1);
       // The operator's next press opens the one they chose.
       open('b');
       expect(openCardId()).toBe('b');
     });
 
-    test('after the open question is answered and none is left, the next one that arrives is a row, not an open card', () => {
+    test('after the open question is answered and none is left, the next one that arrives opens whole', () => {
       render();
       push([ask('a')]);
-      open('a');
       expect(openCardId()).toBe('a');
       push([closed('a')]);
       expect(all('avatar-ask-collapse')).toHaveLength(0);
       push([closed('a'), ask('b')]);
-      expect(openCardId()).toBeUndefined();
-      expect(all('avatar-ask-row')).toHaveLength(1);
+      expect(openCardId()).toBe('b');
+      expect(all('avatar-ask-row')).toHaveLength(0);
     });
 
-    test('a card the operator folded stays folded when another question arrives', () => {
+    test('a card the operator folded stays folded until a NEW question arrives, then the soonest opens', () => {
       render();
       push([ask('a')]);
-      open('a');
       click(q('avatar-ask-collapse'));
       expect(all('avatar-ask')).toHaveLength(0);
-      push([ask('a'), ask('b', { expiresAt: NOW + MIN })]);
+      push([ask('a')]);
       expect(all('avatar-ask')).toHaveLength(0);
-      expect(all('avatar-ask-row')).toHaveLength(2);
+      push([ask('a'), ask('b', { expiresAt: NOW + MIN })]);
+      expect(openCardId()).toBe('b');
+      expect(all('avatar-ask-row')).toHaveLength(1);
     });
 
     test('an older server that does not say taskEnded is read as "a task may be waiting"', () => {
       render();
       push([ask('a')]);
-      expect(all('avatar-ask-row')).toHaveLength(1);
+      expect(openCardId()).toBe('a');
       expect(q('avatar-tray-count')!.textContent).toBe('1');
       expect(q('avatar-opinions')).toBeNull();
     });
@@ -380,10 +401,10 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       expect(toggle.textContent).toContain('first closes in 4 h');
       expect(toggle.getAttribute('aria-expanded')).toBe('false');
       expect(q('avatar-opinion-list')).toBeNull();
-      // Only the live question has a row; no opinion has a card or a row yet.
+      // Only the live question is on show, whole; no opinion has a card or a row yet.
       expect(idsOf('[data-testid="avatar-asks"] > [data-ask-id]')).toEqual(['live']);
-      expect(all('avatar-ask-row')).toHaveLength(1);
-      expect(all('avatar-ask')).toHaveLength(0);
+      expect(all('avatar-ask-row')).toHaveLength(0);
+      expect(all('avatar-ask')).toHaveLength(1);
     });
 
     test('unfolded, the rows run from the one closing soonest to the one closing last', () => {
@@ -405,7 +426,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       render();
       push(fifteen());
       click(q('avatar-opinions-toggle'));
-      open('live');
       expect(openCardId()).toBe('live');
       click(container.querySelector('[data-ask-id="op01"] [data-testid="avatar-ask-row"]'));
       expect(idsOf('[data-testid="avatar-ask"]')).toEqual(['op01']);
@@ -429,7 +449,7 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
       // The permission card comes before the questions.
       const tray = q('avatar-tray')!;
       const permission = tray.querySelector('[data-testid="avatar-permission"]')!;
-      const question = tray.querySelector('[data-testid="avatar-ask-row"]')!;
+      const question = tray.querySelector('[data-testid="avatar-ask"]')!;
       expect(permission.compareDocumentPosition(question) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
@@ -443,6 +463,8 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
 
     test('the minimised bubble counts only questions a task may wait for; opinions get their own words and add nothing to the badge', () => {
       localStorage.setItem(AVATAR_PANEL_KEY, JSON.stringify({ enabled: true, minimized: true }));
+      // The question already grew the bubble once; this test is about the small hover card.
+      sessionStorage.setItem(BUBBLE_GROWN_KEY, JSON.stringify(['a:live']));
       __resetAvatarPanelPrefsForTests();
       root = createRoot(container);
       act(() => { root!.render(<AvatarDock attentionCount={2} />); });
@@ -487,7 +509,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('opening or folding a row counts as the cards changing: an answer pressed in the next 400 ms is ignored', () => {
       render();
       push([ask('a', { expiresAt: NOW + 5 * MIN }), ask('b', { expiresAt: NOW + 10 * MIN })]);
-      open('a');
       later(500);
       act(() => { all('avatar-ask-row')[0].dispatchEvent(new MouseEvent('click', { bubbles: true })); });
       // The pointer is now over a button of the card that just opened, not the one it was aimed at.
@@ -503,7 +524,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('a permission card arriving above the questions also counts: an answer pressed in the next 400 ms is ignored', () => {
       render();
       push([ask('a')]);
-      open('a');
       later(500);
       act(() => {
         handleLucyPermissionCards({ type: 'lucyPermissionCards', serverNow: Date.now(), cards: [{
@@ -532,7 +552,6 @@ describe('AvatarDock: the "Waiting on you" tray', () => {
     test('focus on the open card\'s top line returns to its row when it is folded', () => {
       render();
       push([ask('a')]);
-      open('a');
       const collapse = q<HTMLButtonElement>('avatar-ask-collapse')!;
       act(() => { collapse.focus(); });
       click(collapse);

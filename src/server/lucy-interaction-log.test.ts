@@ -256,6 +256,17 @@ describe('LucyInteractionLog hardening (client-controlled input)', () => {
     expect(events().map((event) => event.action)).toEqual(['expand', 'collapse', 'other']);
   });
 
+  it('records what the operator did with the card the minimised bubble grows into, not as "other"', async () => {
+    const log = createLucyInteractionLog({ filePath: file, now });
+    for (const action of ['bubble_card_shown', 'bubble_card_answered', 'bubble_card_dismissed', 'bubble_card_opened', 'bubble_card_other']) {
+      log.recordUi('s1', { ...base, type: 'lucy_panel_action', action });
+    }
+    await log.flush();
+    expect(events().map((event) => event.action)).toEqual([
+      'bubble_card_shown', 'bubble_card_answered', 'bubble_card_dismissed', 'bubble_card_opened', 'other',
+    ]);
+  });
+
   it('drops events whose type is not a documented lucy_ type', async () => {
     const log = createLucyInteractionLog({ filePath: file, now });
     log.recordUi('s1', { ...base, type: 'lucy_made_up', clipId: 'c' });

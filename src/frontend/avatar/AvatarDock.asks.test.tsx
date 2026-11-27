@@ -36,6 +36,7 @@ import { __resetSoundPreferenceForTests } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests } from '../audio/speech-bus.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
 import { __resetLucyConversationForTests } from '../store/lucy-conversation.js';
+import { BUBBLE_GROWN_KEY } from './bubble-decision.js';
 import { __resetLucyTypedForTests } from './LucyTypedInput.js';
 import { __resetOperatorAsksForTests, handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
 
@@ -493,7 +494,8 @@ describe('AvatarDock: questions from tasks (kookr ask)', () => {
     expect(speech.announceAsk).not.toHaveBeenCalled();
   });
 
-  test('the minimised bubble says in its card that a question is waiting', () => {
+  test('the minimised bubble says in its small hover card that a question is waiting (once the question has already grown the bubble)', () => {
+    sessionStorage.setItem(BUBBLE_GROWN_KEY, JSON.stringify([`a:${ASK}`]));
     render({ minimized: true });
     push([ask()]);
     const bubble = q('avatar-bubble')!;

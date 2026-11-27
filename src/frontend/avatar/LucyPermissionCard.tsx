@@ -26,7 +26,22 @@ export const EXPIRED_TEXT = 'These buttons have timed out. Answer it in the task
 export const SENT_TEXT = 'Sent. The card goes once the task moves on.';
 export const NOT_SENT_TEXT = 'Not sent: the connection is down. Try again.';
 
-function waitedText(sinceMs: number, nowMs: number): string {
+/**
+ * Send Approve once or Deny for a card: the same message, bound to the same prompt, whichever card has the
+ * button (the strip's or the minimised bubble's). Returns null when the button cannot answer this prompt
+ * (nothing was sent), else whether the message went out.
+ */
+export function sendPermissionChoice(card: LucyPermissionCardView, choice: 'approve' | 'deny', onChoice: PermissionChoiceSender): boolean | null {
+  const msg = buildPermissionChoice(card, choice, Date.now());
+  if (!msg) return null;
+  markPermissionPressed(card.promptId, true);
+  track({ type: 'quick_action_clicked', agentId: card.agentId, actionLabel: `lucy_permission:${msg.keystroke}` });
+  const sent = onChoice(msg);
+  if (!sent) markPermissionPressed(card.promptId, false);
+  return sent;
+}
+
+export function waitedText(sinceMs: number, nowMs: number): string {
   const minutes = Math.max(1, Math.floor((nowMs - sinceMs) / 60_000));
   return `waiting ${minutes} min`;
 }
@@ -51,13 +66,9 @@ function PermissionCard({
   const titleId = `avatar-permission-title-${card.promptId.slice(0, 16)}`;
 
   const press = (choice: 'approve' | 'deny'): void => {
-    const msg = buildPermissionChoice(card, choice, Date.now());
-    if (!msg || !onChoice) return;
-    markPermissionPressed(card.promptId, true);
-    track({ type: 'quick_action_clicked', agentId: card.agentId, actionLabel: `lucy_permission:${msg.keystroke}` });
-    const sent = onChoice(msg);
-    setFailed(!sent);
-    if (!sent) markPermissionPressed(card.promptId, false);
+    if (!onChoice) return;
+    const sent = sendPermissionChoice(card, choice, onChoice);
+    if (sent !== null) setFailed(!sent);
   };
 
   let note: string;

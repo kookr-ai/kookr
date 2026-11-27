@@ -19,7 +19,7 @@
  * do for itself, because it is replaced or removed when its question closes:
  * telling a screen reader the outcome, and keeping keyboard focus in the panel.
  */
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { ASK_LIMITS, DEFAULT_ASK_LINK_LABEL, type OperatorAskView } from '../../shared/contracts/asks.js';
 import type { AskAnswerChoice, AskSubmitState } from '../store/operator-asks.js';
@@ -45,6 +45,24 @@ export interface AskCardProps {
   onCollapse?: () => void;
   /** The text typed into the answer box, kept by the caller so it survives the card being folded away. */
   draft?: { value: string; set: (value: string) => void };
+  /**
+   * The compact variant the minimised bubble's card uses (`BubbleDecisionCard.tsx`): the question is cut to five
+   * lines with "Show all"; there is no background, no links, no "Open task" and no text box; and when the
+   * answers cannot be shown as a few short buttons they are replaced by one "Open Lucy to answer" button.
+   * `answersLocked` makes the answer buttons ignore presses (the card has only just appeared or changed).
+   */
+  compact?: { answersLocked: boolean; onOpenLucy: () => void };
+}
+
+/** The compact card shows at most this many answer buttons, and none longer than this: past that it sends the operator to the full card. */
+export const COMPACT_MAX_OPTIONS = 4;
+export const COMPACT_MAX_OPTION_CHARS = 40;
+/** A question that is probably longer than five lines of the compact card, for where the browser cannot measure. */
+const COMPACT_LONG_QUESTION_CHARS = 200;
+
+/** Whether the answers fit the compact card as buttons. */
+export function optionsFitCompactCard(options: readonly string[]): boolean {
+  return options.length > 0 && options.length <= COMPACT_MAX_OPTIONS && options.every((label) => label.length <= COMPACT_MAX_OPTION_CHARS);
 }
 
 /** Shown when "Open task" could not select the task. */
@@ -104,12 +122,24 @@ export function askOutcome(ask: OperatorAskView): { text: string; answered: bool
   return { text: 'The task withdrew this question', answered: false };
 }
 
-export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, onCollapse, draft }: AskCardProps) {
+export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, onCollapse, draft, compact }: AskCardProps) {
   const [ownText, setOwnText] = useState('');
   const text = draft ? draft.value : ownText;
   const setText = draft ? draft.set : setOwnText;
   const [openTaskFailed, setOpenTaskFailed] = useState(false);
   const questionId = useId();
+  // Compact variant: the question is cut to five lines; "Show all" shows the rest.
+  const [showAll, setShowAll] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const questionRef = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    if (!compact || showAll) return;
+    const element = questionRef.current;
+    // Where nothing can be measured (a test browser), a long question is assumed to be cut.
+    setOverflowing(element && element.clientHeight > 0
+      ? element.scrollHeight > element.clientHeight + 1
+      : ask.question.length > COMPACT_LONG_QUESTION_CHARS || ask.question.split('\n').length > 5);
+  }, [compact, showAll, ask.question]);
   const who = ask.system ? 'Kookr asks' : ask.taskName ? `${ask.taskName} asks` : 'A task asks';
   // The server only accepts https links; this guards against an old or hand-edited record all the same.
   const links = (ask.links ?? []).filter((link) => isOpenableUrl(link.url));
@@ -124,7 +154,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
           {/* Not a live region: this card is mounted with its text already in it, which screen readers
               announce unreliably. The outcome is announced from the panel's always-present status region. */}
           <span className="avatar-ask-outcome" data-testid="avatar-ask-outcome">{outcome.text}</span>
-          <button
+          {!compact && <button
             type="button"
             className="avatar-dock-button avatar-ask-dismiss"
             onClick={() => onDismiss(ask.id)}
@@ -133,7 +163,7 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
             data-testid="avatar-ask-dismiss"
           >
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-          </button>
+          </button>}
         </div>
         <p className="avatar-ask-question avatar-ask-question-closed">{ask.question}</p>
         {ask.state === 'answered' && ask.taskDelivery === 'failed' && (
@@ -149,8 +179,9 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
   const sending = submit?.status === 'sending';
   const refusal = submit?.status === 'refused' ? submit.message : null;
   const trimmed = text.trim();
+  const locked = compact?.answersLocked === true;
   const answer = (choice: AskAnswerChoice): void => {
-    if (sending) return;
+    if (sending || locked) return;
     onAnswer(ask.id, choice);
   };
   const onSubmitText = (event: FormEvent<HTMLFormElement>): void => {
@@ -179,14 +210,30 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
   return (
     <li className="avatar-ask avatar-ask-pending" tabIndex={-1} data-testid="avatar-ask" data-ask-id={ask.id} data-ask-state="pending">
       {head}
-      <p className="avatar-ask-question" id={questionId} data-testid="avatar-ask-question"><TextWithLinks text={ask.question} /></p>
-      {ask.context && (
+      <p
+        className={`avatar-ask-question${compact && !showAll ? ' lucy-bubble-clamp' : ''}`}
+        id={questionId}
+        ref={questionRef}
+        data-testid="avatar-ask-question"
+      ><TextWithLinks text={ask.question} /></p>
+      {compact && (overflowing || showAll) && (
+        <button
+          type="button"
+          className="avatar-launch-link lucy-bubble-showall"
+          onClick={() => setShowAll(!showAll)}
+          aria-expanded={showAll}
+          data-testid="avatar-ask-show-all"
+        >
+          {showAll ? 'Show less' : 'Show all'}
+        </button>
+      )}
+      {!compact && ask.context && (
         <details className="avatar-ask-context">
           <summary>Background</summary>
           <p><TextWithLinks text={ask.context} /></p>
         </details>
       )}
-      {(links.length > 0 || (onOpenTask && !ask.system)) && (
+      {!compact && (links.length > 0 || (onOpenTask && !ask.system)) && (
         // What the question is about, one click away: the pages it links to, and the task that asked.
         <div className="avatar-ask-links">
           {links.map((link, index) => (
@@ -217,6 +264,12 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
       {/* One group named by the question, so with several cards open each choice, text box and Send
           button is announced with the question it belongs to. */}
       <div className="avatar-ask-answers" role="group" aria-labelledby={questionId}>
+      {compact && !optionsFitCompactCard(ask.options) ? (
+        // Too many answers, or one too long to read on a small card: the full card has room for them.
+        <button type="button" className="avatar-ask-option" onClick={compact.onOpenLucy} data-testid="avatar-ask-open-lucy">
+          Open Lucy to answer
+        </button>
+      ) : (
       <div className="avatar-ask-options">
         {ask.options.map((label, index) => (
           <button
@@ -225,14 +278,15 @@ export function AskCard({ ask, submit, nowMs, onAnswer, onDismiss, onOpenTask, o
             className="avatar-ask-option"
             onClick={() => answer({ optionIndex: index })}
             // aria-disabled, like the panel's other buttons: focus stays put while the answer is on its way.
-            aria-disabled={sending ? 'true' : undefined}
+            aria-disabled={sending || locked ? 'true' : undefined}
             data-testid="avatar-ask-option"
           >
             {label}
           </button>
         ))}
       </div>
-      {ask.allowText && (
+      )}
+      {!compact && ask.allowText && (
         <form className="avatar-ask-text" onSubmit={onSubmitText}>
           <input
             type="text"
