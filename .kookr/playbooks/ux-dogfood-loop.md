@@ -226,9 +226,11 @@ Screenshot/automation notes that save an hour:
 - **Read a setting's value, not its name.** Run 8 reported "speech failed to start" because
   `KOOKR_TTS` was present in `.env`; its value was `false`. Six designers were briefed with the
   wrong sentence. Check the server's own log line or status route for what it concluded.
-- **Lucy's interaction log holds earlier runs' probes.** Of 30 typed turns, 26 were this
-  playbook's own (`conversationId` starting `dogfood-`, `r7-`, `r8-`). Filter them out before
-  counting what the operator did, and give this run's probes an id of the same kind.
+- **Lucy's interaction log holds earlier runs' probes.** Of 30 typed turns before run 8, 26 were
+  this playbook's own (`conversationId` starting `dogfood-`; run 8's start `r8-`). Filter them
+  out before counting what the operator did, and give this run's probes an id of the same kind.
+  A gap in that log is not the host being off: check the server log and the ask store before
+  writing that it was.
 - **When the brief asks for a fleet of designers**, run two rounds: several blind to each other,
   each with one lens and the same evidence file, then critics on the written synthesis (what to
   cut, failure modes, delivery, a walkthrough as the operator). Give them screenshots and file

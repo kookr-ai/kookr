@@ -42,7 +42,7 @@ the room was used for seven seconds. So this run did not start from her size.
 2. With her minimised, which is where she lives, the dashboard said "nothing waiting" and "All
    clear" while a task's question was waiting (R8-F3).
 3. Opened, she hid that question behind a folded 31 px strip: today the operator looked at her
-   for nine seconds while "Resume the 4 interrupted tasks?" was live, and it expired (R8-F2).
+   for nine seconds while "Kookr restarted and found 4 interrupted tasks. Resume them?" was live, and it expired (R8-F2).
 4. What she wrote first named no task and no amount (R8-F5).
 5. Her full window was one sentence in 1459 x 928 px of black (R8-F6).
 
@@ -65,7 +65,8 @@ own first version of the checklist fix) and about forty small ones, all fixed be
 | A server test no longer calls a real model with the shell's keys | #4281 | merged |
 
 **What the operator has to know.** None of this is on the dashboard yet: the integration train,
-which moves `main` and so production, has not run since 26 November (R8-F13). The question
+which moves `main` and so production, has been halted since 26 November and stopped since the
+restart (R8-F13). The question
 "Start the train now?" (ask `a9dc08691266`) was still unanswered when this document was closed;
 this run did not start it, because the train pushes to `main` and production then restarts
 itself among the operator's running tasks. Two other questions were answered during the run:
@@ -76,8 +77,10 @@ itself among the operator's running tasks. Two other questions were answered dur
 ### R8-F1. Since the column and the room shipped, the operator has not used her once (adoption) — severity: high
 
 **Evidence.** `~/.kookr/lucy-interactions.jsonl`, from 18 November 12:00 (the day #4148 and #4153
-reached production) to 27 November 17:30. The host was off from 23 November 20:46 to 27 November
-17:21, so the window holds about five and a half days of running time.
+reached production) to 27 November 17:30. The log has no row between 23 November 20:46 and
+27 November 17:26, but the server was running on 24, 26 and 27 November (questions were asked and
+answered on Telegram then); the only stop its log shows in that gap is from about 27 November
+07:00 to 17:21. The silence is the operator's, not the host's.
 
 | Measure | 18 to 27 November |
 |---|---|
@@ -85,27 +88,29 @@ reached production) to 27 November 17:30. The host was off from 23 November 20:4
 | Spoken exchanges | 0 |
 | Tasks launched through her | 0 |
 | Times her panel was opened | 8 |
-| How long it stayed open | 2 h 52 min once (left open), 1 min 47 s, 4 min 05 s, then five visits of 14, 3, 7, 3 and 9 seconds |
+| How long it stayed open | 2 h 52 min once (left open), 1 min 47 s, 4 min 05 s, then five visits of 17, 3, 7, 3 and 9 seconds |
 | Visits to the room | 2, lasting 5.8 s and 1.2 s |
 | Questions asked (the ones still in the ask store) | 6: two answered, both from Telegram; two expired; one cancelled; one waiting |
 | Questions answered from her panel | 0 |
-| Lines she said aloud | 3 (one restart question, two permission notices), each while the panel was minimised and the tab hidden |
+| Lines she said aloud | 3 (one question about resuming interrupted tasks, two permission notices), each while the panel was minimised and the tab hidden |
 
-Six is a floor: the ask store keeps a closed question only for a while. The restart question of
-18 November 23:53 ("You asked about 9 interrupted tasks. Resume them?", in
-`~/.kookr/interrupted-tasks.json` and in her spoken log) has left it; nobody answered that one
+Six is a floor: the ask store keeps a closed question only for a while. The question of 18 November
+23:53 about interrupted tasks ("You asked about 9 interrupted tasks. Resume them?", raised by the
+operator's own request and not by a restart; in `~/.kookr/interrupted-tasks.json` and in her
+spoken log) has left it; nobody answered that one
 either, and the tasks were resumed at its deadline.
 
 The baseline needs a correction that earlier runs did not make. The log holds 30 typed turns
 before 18 November, but 26 of them carry conversation ids `dogfood-r5-*`, `dogfood-r6-*` and
-`r7-*`: they are the earlier runs' own probes. The operator has typed to her **four times in
+`dogfood-r7-*`: they are the earlier runs' own probes. The operator has typed to her **four times in
 all** (once on 16 November, three times on 17 November). Two of the four failed ("Which task do
-you mean?", "Which project?"; both fixed since by #4150). Of 13 spoken exchanges (11 to 15
+you mean?", "Which project?"; both fixed since by #4150). Of 13 spoken exchanges (12 to 15
 November), 7 have no transcript at all. What the operator asked in the ones that have one: "Can
 you tell me which tasks require my attention right now?", "What can you do?", "Suggest some
 solutions based on your findings and implement them."
 
-So there was never a habit to lose. The operator tried her about ten times in the first week,
+So there was never a habit to lose. The operator tried her seventeen times in the first week (four typed, thirteen spoken, ten of
+them with words),
 got a useful answer about half the time, and stopped. The larger panel changed nothing in that,
 because the operator has spent seven seconds in the room and has not typed in the column.
 
@@ -127,7 +132,8 @@ column it is one line, 31 px tall, that reads "N waiting on you" with a chevron
 (`/tmp/kookr-ux-shots/r8/live/column-1920-dock.png`, measured: `avatar-tray` 379 x 31 px); the
 question, its two buttons and its deadline are behind that chevron. It expired at 17:31:47.
 
-The room shows the same question at full size (`room-1920.png`), which is the layout the
+The room shows a waiting question at full size (`room-1920.png`: the task's question of R8-F3,
+with the restart question, by then expired, as a small card under it), which is the layout the
 operator has seen for seven seconds in nine days.
 
 **Root cause.** The strip starts folded in every tab and unfolds only on a click:
@@ -151,7 +157,7 @@ console. Can you sign in on this PC so I can run the browser fleet?", 117 minute
 - Lucy: a 58 px circle with a badge "1".
 
 Minimised is the state she is in almost all the time (R8-F1). In that state the only sign of a
-task's question on the whole dashboard is a digit on a circle. One minute earlier, with a budget
+task's question on the whole dashboard is a digit on a circle. Ten seconds later, once a budget
 finding raised (`column-1920.png`), the two lists both said "1" and meant different things: the
 dashboard's "Waiting on you" held the budget finding and not the question, Lucy's "1 waiting on
 you" held the question and not the budget finding.
@@ -171,8 +177,8 @@ name, and pressing one opens Lucy on that card. One count, used by the dashboard
 **Evidence.** Production's `.env` has `KOOKR_TTS=false`; the file was last saved at 17:21:31, twelve
 seconds before today's restart. The server log says "[tts] Text-to-speech disabled" and `GET
 /api/lucy-live/status` answers "Lucy live needs the speech service (enable KOOKR_TTS or set
-KOOKR_TTS_URL)", which is true. She said nothing aloud today: not the restart question (the same
-question was spoken on 18 November), not the task's question.
+KOOKR_TTS_URL)", which is true. She said nothing aloud today: not the restart question (a question
+of the same kind was spoken on 18 November), not the task's question.
 
 A first draft of this finding said the speech service had failed to start and that the panel's
 message was wrong. It was not: I had read the setting's presence in `.env` as "enabled" without
@@ -202,7 +208,7 @@ finetuning LFM3 contexte 128k has gone quiet. Six more are working." (`GET /api/
 tasks in trouble are named, the question is not.
 
 **Root cause.** The briefing is assembled from fixed phrases per kind of need
-(`src/core/lucy-operator/operator-briefing.ts:107-124`, `:200`), and a question is only ever
+(`src/core/lucy-operator/operator-briefing.ts:107-124`), and a question is only ever
 counted. The budget line falls back to "A task" when the event carries no name she can say
 (`src/server/lucy-says.ts:155-167`, `singleEventSentence`), and no line carries an amount.
 
@@ -210,15 +216,15 @@ counted. The budget line falls back to "A task" when the event carries no name s
 do about it in one press: the question's own sentence with its answers, the budget line with
 the two figures and the finding's own buttons. A line that can name nothing is not written.
 
-### R8-F6. The room is nine tenths empty, and the column is two thirds empty (layout) — severity: high
+### R8-F6. The room is nine tenths empty, and the column is four fifths empty (layout) — severity: high
 
 **Evidence.** Measured on the live dashboard (`measurements.json`):
 
 | Window | Room: conversation area | What is in it | Column: thread area | What is in it |
 |---|---|---|---|---|
-| 1440 x 900 | 1040 x 748 | one bubble and three chips, about 100 px tall | 379 x 646 | two bubbles, about 150 px |
-| 1920 x 1080 | 1459 x 928 | the same | 379 x 826 | the same |
-| 2560 x 1300 | 2040 x 1148 | the same | 379 x 1046 | the same |
+| 1440 x 900 | 1040 x 748 | one bubble and three chips, about 100 px tall | 379 x 646 | one bubble and three chips |
+| 1920 x 1080 | 1459 x 928 | the same | 379 x 826 | two bubbles, about 150 px |
+| 2560 x 1300 | 2040 x 1148 | the same | 379 x 1046 | one bubble and three chips |
 
 The room's right rail holds her 3D view (460 x 281 at 1920) and one question card; under the
 card it is empty too (`room-1920.png`, `room-2560.png`). Nothing in the room says what the fleet
@@ -270,7 +276,7 @@ for the dashboard.
 
 ### R8-F10. Her chat is down in production, and nothing on the dashboard says so (chat) — severity: high
 
-**Evidence.** Every question sent to her on the live server today fails. Five of five, from this
+**Evidence.** Every question sent to her on the live server today fails. Four of four, from this
 run's own conversation ids (`r8-conv-chat1` to `3`, `r8-lead-1`), for example:
 
 > `POST /api/lucy/turn` "What needs me right now?" → `{"type":"done","end":"error","reason":"The
@@ -351,9 +357,9 @@ variables), so no test can reach a paid model by accident. With cluster J applie
 core, adapters and CLI tests pass in a shell that carries the keys (943 files, 21,474 tests), so
 this was the only test of those directories that reached a real model on this host.
 
-### R8-F13. Merged fixes do not reach the operator: the integration train has not run since 26 November (process) — severity: high
+### R8-F13. Merged fixes do not reach the operator: the integration train has been halted since 26 November (process) — severity: high
 
-**Evidence.** At 19:06 the five pull requests this run had merged were on `staging` and nowhere
+**Evidence.** At 19:07 the five pull requests this run had merged were on `staging` and nowhere
 else. `origin/main` is still `e33d8654d`, the commit of 23 November, and production follows
 `main`. `pnpm train:status`: `running: false`, `halted: base-red` since 26 November 22:38, last
 cycle 27 November 06:59; its process id belongs to a process that died with the host's restart.
@@ -399,13 +405,13 @@ the new card is dismissed ("Later"); both are logged by cluster D.
 
 | Slice | What the operator gets | Findings | This run |
 |---|---|---|---|
-| 0. She answers when her model does not | In place of "The model provider returned an error" after 28 s: within 8 s, one sentence naming the provider and its status, then what waits and what is in trouble, from the board, marked as not written by the model. A breaker stops calling a provider that just failed twice. Her model's health in `/api/health`. | R8-F10 | cluster A |
-| 1. One list of what waits | "Needs you" and the overview count questions and permission prompts, name their tasks, and never say "nothing waiting" or "All clear" while one waits; pressing the row opens Lucy on it. The same function feeds her badge. | R8-F3 | cluster B |
-| 2. The decision comes to the bubble | Minimised, she grows once into the question with its answers (or the permission prompt with Approve once and Deny), without taking focus, not while the operator types, not under Do Not Disturb; "Later" shrinks her for good for that item. Open, the column never folds a waiting question. | R8-F2 | cluster D |
-| 3. Lines that name and offer | The briefing names the task that asks and its time left; the budget line carries both amounts; no line says "A task"; no all-clear line. An expired question with a default says what was done. | R8-F5, R8-F8 | cluster C (wording and data), cluster F (the card) |
-| 3b. A text field worth typing in | The field takes the whole row and grows; the dead Talk button goes when hands-free cannot be used. | R8-F7 | cluster E |
-| 4. The desk | The full window in three columns: decisions, the fleet with one line of what each task last did, the conversation; her 3D view as a portrait, toasts off her. | R8-F6, R8-F9 | asked (see below); not started |
-| 5. Actions that replace clicks | "Close the finished ones" (one card listing each task and why), snooze a finding, relaunch, stop; each behind a card that re-checks on press. | run 6 J-F5, run 7's list | asked; not started |
+| 0. She answers when her model does not | In place of "The model provider returned an error" after 28 s: within 12 s, one sentence naming the provider and its status, then what waits and what is in trouble, from the board, marked as not written by the model. A breaker stops calling a provider that just failed twice. Her model's health in `/api/health`. | R8-F10 | cluster A (#4272); her model moved to Baseten in cluster G (#4277) |
+| 1. One list of what waits | "Needs you" and the overview count questions and permission prompts, name their tasks, and never say "nothing waiting" or "All clear" while one waits; pressing the row opens Lucy on it. The same function feeds her badge. | R8-F3 | cluster B (#4271) |
+| 2. The decision comes to the bubble | Minimised, she grows once into the question with its answers (or the permission prompt with Approve once and Deny), without taking focus, not while the operator types, not under Do Not Disturb; "Later" shrinks her for good for that item. Open, the column never folds a waiting question. | R8-F2 | cluster D (#4273) |
+| 3. Lines that name and offer | The briefing names the task that asks and its time left; the budget line carries both amounts; no line says "A task"; no all-clear line. An expired question with a default says what was done. | R8-F5, R8-F8 | cluster C (#4275: wording and data); showing the outcome on the card: not built (#4279) |
+| 3b. A text field worth typing in | The field takes the whole row and grows; the dead Talk button goes when hands-free cannot be used. | R8-F7 | not built (#4279) |
+| 4. The desk | The full window in three columns: decisions, the fleet with one line of what each task last did, the conversation; her 3D view as a portrait, toasts off her. | R8-F6, R8-F9 | cluster H (#4280), after the operator chose "Build the desk after the 4 fixes" |
+| 5. Actions that replace clicks | "Close the finished ones" (one card listing each task and why), snooze a finding, relaunch, stop; each behind a card that re-checks on press. | run 6 J-F5, run 7's list | not started (#4279) |
 
 ### What the Sonnet fleet changed
 
@@ -462,10 +468,14 @@ disagreement is the question put to the operator.
 
 ### Asked of the operator during the run (`kookr ask`, not waited on)
 
-- `7d6f17c077c9`, her model: fix the routing rule on OpenRouter, switch her model, or let Kookr
-  retry other providers. Cluster A does not depend on the answer.
-- `3f64fe78f3ba`, the full window: desk after the four fixes (recommended), desk first, no desk,
-  or batch actions too. With the mock-up page.
+- `7d6f17c077c9`, 17:45, her model: fix the routing rule on OpenRouter, switch her model, or let
+  Kookr retry other providers. Answered on Telegram at 17:56: "Switch her to another model".
+  Cluster A did not depend on the answer; cluster G is what it led to.
+- `3f64fe78f3ba`, 17:45, the full window, with the mock-up page: desk after the four fixes
+  (recommended), desk first, no desk, or batch actions too. Answered at 17:57: "Build the desk
+  after the 4 fixes".
+- `a9dc08691266`, 19:10, the integration train: start it now (recommended), "I will start it
+  myself", or leave it stopped. Not answered when this document was closed.
 
 ## Suggested priority order
 
@@ -475,9 +485,10 @@ disagreement is the question put to the operator.
    works with her closed and costs the operator nothing.
 3. **The decision at the bubble, the question unfolded** (R8-F2): cluster D.
 4. **Lines that name the task and the amount; expired questions that say what was done**
-   (R8-F5, R8-F8): clusters C and F.
-5. **The text field and the dead button** (R8-F7): cluster E.
-6. **The desk** (R8-F6, R8-F9) and **batch actions**: the operator's call; not started.
+   (R8-F5, R8-F8): cluster C; showing the outcome on the card is in #4279.
+5. **The text field and the dead button** (R8-F7): not built (#4279).
+6. **The desk** (R8-F6, R8-F9): built at the operator's choice (cluster H, #4280). **Batch
+   actions**: not started (#4279).
 7. Carried over and still open: R7-F5 (a permission card's buttons die after five minutes), R7-F8
    (the top bar at 1000 px), approving through Lucy (the last slice of #3632), #4149, #4183.
 
@@ -490,7 +501,7 @@ request. All were merged with `kookr merge`, into `staging`.
 
 | Cluster | Pull request | Review | What the review changed |
 |---|---|---|---|
-| A. She answers when her model fails (R8-F10) | #4272 | 2 rounds, no correctness defect | Before review I sent it back myself: its 8-second deadline would have cut healthy turns (the slowest healthy first text in the operator's history was 9.4 s) and could not see reasoning arrive. The reviewer added the wiring test that fails when the breaker is not connected. |
+| A. She answers when her model fails (R8-F10) | #4272 | 2 rounds, no correctness defect | Before review I sent it back myself: its 8-second deadline would have cut healthy turns (the slowest healthy first text in the operator's history was 9.4 s) and could not see reasoning arrive. The review led to the wiring test that fails when the breaker is not connected. |
 | B. One list of what waits (R8-F3) | #4271 | 2 rounds | The bubble's accessible label did not mention permission prompts that its number counted; four behaviours had no test. |
 | C. Lines that name the task and the amount (R8-F5, R8-F8) | #4275 | 4 rounds and a delta check | Twelve small defects: "twice its $25 alert" at $180, "iOS build" re-cased to "IOS build", a chip with no text, titles cut on "for the". The delta check after rebasing onto A found that the two together would answer "From the board:" followed by nothing. |
 | D. The decision at the bubble (R8-F2) | #4273 | 2 rounds and a delta check | One critical defect: a second question arriving inserted "+1 more waiting" above the live answer buttons and moved them under the pointer. Also: an outcome shown to a hidden tab, focus thrown to the page, a task's URL as a live link on a card that appears by itself. |
@@ -547,7 +558,7 @@ times git's; the others are to the nearest few minutes.
   without asking (#4156); this run follows the current one. `implement` is true.
 - 17:30 Worktree `kookr-dogfood-202611-run8` from `origin/main` @ `e33d8654d`. No unpushed work
   from earlier runs: run 7's document names #4148, #4150 and #4153 as merged, and the follow-ups
-  #4151, #4154 and #4166 are merged since.
+  #4151, #4154 and #4166 are closed since.
 - 17:31 to 17:33 Live read-only probe (nine page loads, about 80 s in all, no click). Screenshots
   and `measurements.json` in `/tmp/kookr-ux-shots/r8/live/`.
 - 17:34 Read `~/.kookr/lucy-interactions.jsonl` and `~/.kookr/asks/asks.json`: R8-F1, R8-F2. Six
@@ -588,7 +599,7 @@ times git's; the others are to the nearest few minutes.
 - 18:50 Rebasing C onto the merged A showed that the two together would answer "From the board:"
   followed by nothing; fixed in C with a test, delta-checked. 19:07 #4275 merged (C).
 - 19:06 `origin/main` has not moved since 23 November: the integration train is not running
-  (R8-F13). 19:10 the operator asked whether to start it (ask `a9dc08691266`).
+  (R8-F13). 19:10 the operator was asked whether to start it (ask `a9dc08691266`).
 - 19:18 #4277 merged (G, Baseten), after a rebase onto C and a delta check.
 - 19:00 to 19:40 The desk (H): built and photographed; its review found it functionally right
   with five small defects and a stale Playwright spec; fixed, the spec rewritten and run (4
