@@ -94,7 +94,7 @@ const MAX_SHORTENABLE_WORDS = 9;
 const MAX_SHORTENABLE_CHARS = 64;
 /** A cut shorter than this names too little to be worth writing. */
 const MIN_CUT_CHARS = 10;
-/** Words a shortened title must not end on: they begin a phrase that the cut removed. */
+/** Words dropped from the end of a shortened title, unless too little would be left: they begin a phrase that the cut removed. */
 const DANGLING_WORDS: ReadonlySet<string> = new Set(['a', 'an', 'the', 'of', 'for', 'to', 'in', 'on', 'with', 'and', 'or']);
 
 /**
@@ -119,7 +119,7 @@ export function sayableTaskName(name: string | undefined): string | undefined {
   const words = cleaned.split(' ');
   // A title already this short that still failed is cut off, unpronounceable or too long in letters: not shortened.
   if (words.length <= SHORTENED_NAME_WORDS || words.length > MAX_SHORTENABLE_WORDS || cleaned.length > MAX_SHORTENABLE_CHARS) return undefined;
-  // The cut must not end on a word that leads into the next one ("Add support for").
+  // Trailing words that lead into the next one are dropped ("Add support for"), unless too little would be left.
   const dangling = (word: string): boolean => DANGLING_WORDS.has(word.replace(/[,;:.…]+$/u, '').toLowerCase());
   const firstWords = words.slice(0, SHORTENED_NAME_WORDS);
   if (firstWords.every(dangling)) return undefined;

@@ -262,12 +262,13 @@ describe('buildOperatorBriefing: nothing that should not be written', () => {
     expect(sayableTaskName('can you check which of the tasks is terminated unexpectedly and tell me why please')).toBeUndefined();
   });
 
-  it('does not end the cut on a word that leads into the next one', () => {
+  it('drops trailing words that lead into the next one, unless too little would be left', () => {
     expect(sayableTaskName('Add support for the new export format')).toBe('Add support');
     expect(sayableTaskName('Migrate billing to the new cluster today')).toBe('Migrate billing');
     expect(sayableTaskName('Review the whole billing migration plan today')).toBe('Review the whole billing');
     expect(sayableTaskName('The of and to in on a')).toBeUndefined();
     // Too little would be left (fewer than two other words, or under ten characters): the first four words are kept.
+    expect(sayableTaskName('Comparison of a and b model outputs')).toBe('Comparison of a and');
     expect(sayableTaskName('Port it to an ARM build box')).toBe('Port it to an');
     expect(sayableTaskName('Update The Of And thing now please')).toBe('Update The Of And');
   });
