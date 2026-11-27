@@ -4,6 +4,8 @@ import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { emptyClaudeAccountRegistry, withAccount, withDefaultAccount, type ClaudeAccountRegistry } from '../../core/claude-accounts.js';
 import { switchClaudeAccount, type SwitchClaudeAccountDeps } from './switch-claude-account.js';
+import { AdapterRegistry } from '../../adapters/agent-adapter.js';
+import { promotePendingTasks } from '../agent-lifecycle.js';
 
 const TOKEN_WORK = 'sk-ant-oat01-' + 'w'.repeat(40);
 
@@ -83,7 +85,68 @@ describe('switchClaudeAccount', () => {
     expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(true);
     // The fence is released so promotion can launch it.
     expect(taskStore.hasFreshLaunchReservation(taskId)).toBe(false);
+    // Promotion is told to hand the freed slot back to this task (issue #4235).
     expect(deps.tryPromotePending).toHaveBeenCalledTimes(1);
+    expect(deps.tryPromotePending).toHaveBeenCalledWith({ firstTaskId: taskId });
+  });
+
+  test('on a full host the switched task takes back its slot, not an older pending task (issue #4235)', async () => {
+    const taskStore = new TaskStore();
+    // Pending tasks that were waiting before the switch: an older ask-first
+    // one (FIFO would pick it) and a self-releasing one (the last-slot
+    // posture preference would pick it).
+    const older = taskStore.createTask('Waiting longer', '/repo');
+    taskStore.pendTask(older.id);
+    taskStore.getTaskForMutation(older.id)!.createdAt = new Date(Date.now() - 120_000);
+    const selfReleasing = taskStore.createTask({ prompt: 'Self-releasing', cwd: '/repo', autoCloseOnSignal: true });
+    taskStore.pendTask(selfReleasing.id);
+    taskStore.getTaskForMutation(selfReleasing.id)!.createdAt = new Date(Date.now() - 90_000);
+    const taskId = runningTask(taskStore); // the only slot is this one: the host is full
+    expect(taskStore.getActiveCount()).toBe(1);
+
+    const launch = vi.fn(async (id: string, _prompt: string, cwd: string, _resume: unknown, options?: { onSessionCreated?: (name: string) => void }) => {
+      const name = `kookr-new-${id}`;
+      options?.onSessionCreated?.(name);
+      taskStore.addSession(id, { tmuxSession: name, agentType: 'claude-code', cwd, createdAt: new Date() });
+      return name;
+    });
+    const adapterRegistry = new AdapterRegistry();
+    adapterRegistry.register({ agentType: 'claude-code', launch } as never);
+    const promotionLifecycleDeps = {
+      monitor: { registerAgent: vi.fn(), getSnapshot: vi.fn(() => []) },
+      watchdog: { registerAgent: vi.fn() },
+      hookWatcher: { isWatching: vi.fn(() => false), watch: vi.fn() },
+      interactionLog: { append: vi.fn() },
+      githubScanner: { isActive: vi.fn(() => false) },
+      autoNameTask: vi.fn(),
+      flushTasks: vi.fn().mockResolvedValue(undefined),
+    } as never;
+    const { deps } = makeDeps(taskStore, {
+      // The real promotion pass, wired the way the task routes wire it.
+      tryPromotePending: async (opts) => {
+        await promotePendingTasks({
+          taskStore,
+          adapterRegistry,
+          lifecycleDeps: promotionLifecycleDeps,
+          broadcastToAll: vi.fn(),
+          serverCwd: '/repo',
+          getMaxActiveTasks: () => 1,
+          ...(opts?.firstTaskId ? { firstTaskId: opts.firstTaskId } : {}),
+        });
+      },
+    });
+
+    const result = await switchClaudeAccount(deps, taskId, 'work');
+
+    expect(result).toMatchObject({ outcome: 'relaunched', from: 'host', to: 'work' });
+    expect(taskStore.getTask(taskId)!.status).toBe('inProgress');
+    expect(taskStore.getTask(older.id)!.status).toBe('pending');
+    expect(taskStore.getTask(selfReleasing.id)!.status).toBe('pending');
+    // It relaunched resuming its conversation, and the in-memory request is spent.
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch.mock.calls[0]![0]).toBe(taskId);
+    expect(launch.mock.calls[0]![3]).toMatchObject({ sessionId: 'conv-1' });
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(false);
   });
 
   test('reports relaunched when promotion started the new agent', async () => {

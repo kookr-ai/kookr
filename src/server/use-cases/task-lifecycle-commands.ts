@@ -13,7 +13,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { LaunchOpts, LaunchResult } from '../launch-service.js';
 import type { ScheduleService } from '../schedule-service.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
-import type { LifecycleDeps } from '../agent-lifecycle.js';
+import type { LifecycleDeps, TryPromotePending } from '../agent-lifecycle.js';
 import {
   cleanupSessionResources,
   completeTask as completeTaskImpl,
@@ -55,7 +55,8 @@ export interface TaskLifecycleCommandDeps {
    */
   broadcastSnapshot?: () => void;
   getLifecycleDeps: () => RuntimeLifecycleDeps;
-  tryPromotePending?: () => Promise<void>;
+  /** Promotion pass; forward `firstTaskId` (the account switch relies on it, issue #4235). */
+  tryPromotePending?: TryPromotePending;
   feedbackDir?: string;
   taskSnapshotDir?: string;
   /**

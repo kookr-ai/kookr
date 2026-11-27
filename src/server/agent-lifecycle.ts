@@ -967,7 +967,20 @@ export interface PromotionDeps {
   getMaxActiveTasks?: () => number;
   /** True when promoted launches should be audited as running without permission prompts. */
   bypassAllPermissions?: boolean;
+  /**
+   * A pending task that takes the first free slot of this pass, ahead of FIFO
+   * order and the last-slot posture preference (issue #4235). The Claude
+   * account switch passes the task it just stopped: that task freed the slot,
+   * and its resume request lives only in memory, so letting an older pending
+   * task take the slot would leave it queued with a request a restart loses.
+   * Used for the first pick only; skipped when the task is not pending, is
+   * reserved by another launcher, or was parked by dependency admission.
+   */
+  firstTaskId?: string;
 }
+
+/** Run a promotion pass; `firstTaskId` as in {@link PromotionDeps.firstTaskId}. */
+export type TryPromotePending = (opts?: { firstTaskId?: string }) => Promise<void>;
 
 /**
  * Whether a pending task can be expected to release its slot without a human
@@ -1012,7 +1025,12 @@ export function pickNextPendingForPromotion(
   taskStore: TaskStore,
   freeSlots: number,
   excludedTaskIds: ReadonlySet<string> = new Set(),
+  firstTaskId?: string,
 ): Task | undefined {
+  if (firstTaskId !== undefined && !excludedTaskIds.has(firstTaskId)) {
+    const first = taskStore.getTask(firstTaskId);
+    if (first?.status === 'pending' && !taskStore.hasFreshLaunchReservation(firstTaskId)) return first;
+  }
   if (freeSlots > 1) {
     const next = taskStore.getNextPending();
     if (next && excludedTaskIds.has(next.id)) {
@@ -1101,13 +1119,16 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   const seen = new Set<string>();
   const blockedByDependency = new Set<string>();
   const dependencyFindingsCache = new Map<string, Promise<Array<{ dependency: string; category: string; summary?: string }>>>();
+  let firstTaskId = deps.firstTaskId;
 
   for (;;) {
     const activeCount = taskStore.getActiveCount();
     if (!(activeCount < maxActive)) break;
     // Posture guard (issue #1526 Phase C / C3): the pick prefers
     // self-releasing tasks when this promotion would fill the last free slot.
-    const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount, blockedByDependency);
+    // A caller-named first task (issue #4235) goes ahead of both, once.
+    const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount, blockedByDependency, firstTaskId);
+    firstTaskId = undefined;
     if (!pending) break;
 
     // Reserve before the asynchronous health collection. Without this CAS,

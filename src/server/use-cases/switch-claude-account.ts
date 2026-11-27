@@ -19,9 +19,15 @@
  *      "all sessions done -> terminate" rule, so stopping the old session
  *      below cannot end the task;
  *   2. stop every live session (tail persisted first, as on cancel);
- *   3. release the reservation and run promotion. With a free slot the task
- *      relaunches at once; with a full fleet it waits in the queue like any
- *      pending task, and the result says so.
+ *   3. release the reservation and run promotion with this task first, so it
+ *      takes back the slot it freed (issue #4235). Plain FIFO promotion would
+ *      hand that slot to an older pending task on a full host, leaving this
+ *      one queued with a resume request that lives only in memory: a restart
+ *      would then launch it fresh from its prompt. The release and the pick
+ *      happen in one synchronous run, so no other promoter can take the slot
+ *      in between. The task still ends up queued if promotion cannot launch
+ *      it (dependency admission parks it, or the cap was lowered meanwhile),
+ *      and the result says so.
  */
 
 import { appendFile, mkdir } from 'node:fs/promises';
@@ -35,7 +41,7 @@ import {
   effectiveClaudeAccount,
   type ClaudeAccountRegistry,
 } from '../../core/claude-accounts.js';
-import type { LifecycleDeps } from '../agent-lifecycle.js';
+import type { LifecycleDeps, TryPromotePending } from '../agent-lifecycle.js';
 import { cleanupSessionResources } from '../agent-lifecycle.js';
 import { describeReopenResume } from '../resume-context.js';
 
@@ -43,7 +49,8 @@ export interface SwitchClaudeAccountDeps {
   taskStore: TaskStore;
   loadClaudeAccounts: () => ClaudeAccountRegistry;
   getLifecycleDeps: () => LifecycleDeps;
-  tryPromotePending?: () => Promise<void>;
+  /** Must pass `firstTaskId` on to the promotion pass (see step 3 above). */
+  tryPromotePending?: TryPromotePending;
   auditLogPath?: string;
 }
 
@@ -54,7 +61,11 @@ export type SwitchClaudeAccountResult =
   | { outcome: 'pinned'; task: Task; from: string; to: string }
   /** Running: stopped and relaunched on the new account, resuming its conversation. */
   | { outcome: 'relaunched'; task: Task; from: string; to: string }
-  /** Running: stopped and queued on the new account; it relaunches when a slot frees. */
+  /**
+   * Running: stopped and queued on the new account, because promotion could
+   * not launch it straight away (no slot, or dependency admission parked it);
+   * it relaunches when a slot frees.
+   */
   | { outcome: 'queued'; task: Task; from: string; to: string }
   | { outcome: 'not_found'; error: string }
   | { outcome: 'invalid'; code: string; error: string };
@@ -169,11 +180,13 @@ async function switchInner(
       taskStore.updateSession(taskId, session.tmuxSession, { lastStatus: 'aborted' });
     }
   } finally {
-    // Step 3 — let promotion launch the new session.
+    // Step 3 — hand the slot back: release the reservation and let promotion
+    // launch this task before any other pending one. Nothing awaits between
+    // the release and the promotion's own pick-and-reserve.
     if (reservation) taskStore.endLaunch(taskId, reservation);
   }
   console.log(`[claude-accounts] task ${taskId} switched from Claude account "${from}" to "${account}"`);
-  await deps.tryPromotePending?.();
+  await deps.tryPromotePending?.({ firstTaskId: taskId });
 
   const after = taskStore.getTask(taskId) ?? task;
   if (after.status === 'cancelled' && after.terminalReceipt?.reason === 'launch_failure') {
