@@ -83,7 +83,7 @@ function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
-/** A title too long to be said whole is shortened to this many of its first words. */
+/** A title too long to be said whole is shortened to at most this many of its first words. */
 export const SHORTENED_NAME_WORDS = 4;
 /**
  * Only a title up to this long is shortened. Beyond it the title is a request pasted in as a name
@@ -92,15 +92,20 @@ export const SHORTENED_NAME_WORDS = 4;
  */
 const MAX_SHORTENABLE_WORDS = 9;
 const MAX_SHORTENABLE_CHARS = 64;
+/** A cut shorter than this names too little to be worth writing. */
+const MIN_CUT_CHARS = 10;
 /** Words a shortened title must not end on: they begin a phrase that the cut removed. */
 const DANGLING_WORDS: ReadonlySet<string> = new Set(['a', 'an', 'the', 'of', 'for', 'to', 'in', 'on', 'with', 'and', 'or']);
 
 /**
  * The task's title as she may write it, otherwise undefined. A title that may be said whole (the rules
  * of `spokenLabel`) is returned as it is. A title that is only too long ("Test Inkling 2 Mini Unsloth
- * Context Throughput") is cut to its first {@link SHORTENED_NAME_WORDS} words (a request pasted in as a
- * title is not: see {@link MAX_SHORTENABLE_WORDS}), because a line that names
- * nothing is worse than one that names the start of the title. The cut text goes through the same
+ * Context Throughput") is cut to at most its first {@link SHORTENED_NAME_WORDS} words (a request pasted
+ * in as a title is not: see {@link MAX_SHORTENABLE_WORDS}), because a line that names nothing is worse
+ * than one that names the start of the title. The cut drops trailing words such as "for" and "the"
+ * ({@link DANGLING_WORDS}), unless that would leave fewer than two other words or fewer than
+ * {@link MIN_CUT_CHARS} characters ("Port it to an ARM build box" would become "Port it"); then the
+ * first four words are kept as they are. Four words that are all such words name nothing: undefined. The cut text goes through the same
  * cleaning and the same checks again, since a cut can leave a half-token or a cut-off phrase; a title
  * that still fails (an identifier, a path, a secret, a word of 40 letters) gives undefined.
  */
@@ -115,9 +120,13 @@ export function sayableTaskName(name: string | undefined): string | undefined {
   // A title already this short that still failed is cut off, unpronounceable or too long in letters: not shortened.
   if (words.length <= SHORTENED_NAME_WORDS || words.length > MAX_SHORTENABLE_WORDS || cleaned.length > MAX_SHORTENABLE_CHARS) return undefined;
   // The cut must not end on a word that leads into the next one ("Add support for").
-  const kept = words.slice(0, SHORTENED_NAME_WORDS);
-  while (kept.length > 0 && DANGLING_WORDS.has(kept[kept.length - 1]!.replace(/[,;:.…]+$/u, '').toLowerCase())) kept.pop();
-  const cut = redactSpeechSecrets(kept.join(' ').replace(/[\s,;:\-–—.…]+$/u, ''));
+  const dangling = (word: string): boolean => DANGLING_WORDS.has(word.replace(/[,;:.…]+$/u, '').toLowerCase());
+  const firstWords = words.slice(0, SHORTENED_NAME_WORDS);
+  if (firstWords.every(dangling)) return undefined;
+  const kept = [...firstWords];
+  while (kept.length > 0 && dangling(kept[kept.length - 1]!)) kept.pop();
+  const tooLittle = kept.filter((word) => !dangling(word)).length < 2 || kept.join(' ').length < MIN_CUT_CHARS;
+  const cut = redactSpeechSecrets((tooLittle ? firstWords : kept).join(' ').replace(/[\s,;:\-–—.…]+$/u, ''));
   if (!cut) return undefined;
   const spoken = spokenTaskName(cut);
   return isGenericTaskName(spoken) ? undefined : spoken;

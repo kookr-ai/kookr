@@ -334,8 +334,8 @@ a fixed pattern and never from text an agent wrote:
 
 > The task "Fix the login page" is waiting for your permission to use Bash. The command is on my card.
 
-The command is never spoken. A task name that cannot be read aloud (too long, an id or a path in it)
-becomes "A task", and a tool that is not a plain word becomes "an MCP tool" or "a tool". At most one such
+The command is never spoken. A task name that is only too long is cut to its first words (the same cut as
+in her other lines); a pasted request, or a name with an id or a path in it, becomes "A task". A tool that is not a plain word becomes "an MCP tool" or "a tool". At most one such
 sentence every 2 minutes: cards that arrive in the meantime are said together once the gap is over
 ("Two more tasks are waiting for you."), leaving out the ones answered by then. The rules above apply
 (sound off, Do Not Disturb or quiet hours, or no click in the page yet: the card and an unheard clip,
@@ -434,8 +434,9 @@ Watch UX review is stopped on a question, 117 minutes left. Two more are stopped
 others are waiting for a permission."; the question that closes soonest is named with its time left,
 the others are counted, and a question Kookr asks itself reads "Kookr is waiting for your answer about
 the interrupted tasks"), then questions left by tasks that have ended ("Two finished tasks would like
-your opinion."), then how many tasks are working. A title too long to be said whole is cut to its first
-four words. The text of a question is never in the briefing: the question card has it. When nothing
+your opinion."), then how many tasks are working. A title too long to be said whole is cut to at most
+its first four words (a trailing "for", "the" and the like is dropped, unless fewer than two other
+words or ten characters would be left, and then the first four words are kept). The text of a question is never in the briefing: the question card has it. When nothing
 needs you she writes nothing. Under the text the entry carries up to three follow-up requests that are
 next moves ("Walk me through the question", "What should I do first?", "What went wrong with Cache
 warmup?", "What finished while I was away?"). She writes it
@@ -448,8 +449,8 @@ are turns of it); with the conversation off she writes none.
 
 **A word about a task.** When a task she did not launch fails, goes quiet or loses contact with
 Kookr, she writes one line at once: "Docs link audit failed." A task that goes over its spend alert
-carries the two amounts: "Test Inkling 2 Mini is at $51.25, over its $50.00 alert." (past twice the alert:
-"is at $101.00, more than twice its $50.00 alert."); when an amount is missing the line keeps the name and says
+carries the two amounts: "Test Inkling 2 Mini is at $51.25, over its $50.00 alert." (at twice the alert or more:
+"is at $101.00, at least twice its $50.00 alert."); when an amount is missing the line keeps the name and says
 "has gone over its budget." A task whose title cannot be said at all is named by its project and the
 first characters of its id ("A task in billing (0f3a9c1e) failed."), never only "a task". A task that says it is finished is
 different: Kookr closes almost every such task by itself within a few minutes, so she waits ten

@@ -221,7 +221,7 @@ export function singleEventSentence(event: Pick<LucyTaskEvent, 'kind'> & Partial
     case 'over_budget': {
       const { costUsd, alertUsd, twice } = event.budget ?? {};
       if (!isAmount(costUsd) || !isAmount(alertUsd)) return `${head} has gone over its budget.`;
-      return `${head} is at ${dollars(costUsd)}, ${twice ? 'more than twice' : 'over'} its ${dollars(alertUsd)} alert.`;
+      return `${head} is at ${dollars(costUsd)}, ${twice ? 'at least twice' : 'over'} its ${dollars(alertUsd)} alert.`;
     }
     case 'wants_review':
       return `${head} says it is finished and wants your review.`;

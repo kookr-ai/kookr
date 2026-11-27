@@ -267,6 +267,9 @@ describe('buildOperatorBriefing: nothing that should not be written', () => {
     expect(sayableTaskName('Migrate billing to the new cluster today')).toBe('Migrate billing');
     expect(sayableTaskName('Review the whole billing migration plan today')).toBe('Review the whole billing');
     expect(sayableTaskName('The of and to in on a')).toBeUndefined();
+    // Too little would be left (fewer than two other words, or under ten characters): the first four words are kept.
+    expect(sayableTaskName('Port it to an ARM build box')).toBe('Port it to an');
+    expect(sayableTaskName('Update The Of And thing now please')).toBe('Update The Of And');
   });
 
   it('cleans and caps a hostile title wherever it is named', () => {

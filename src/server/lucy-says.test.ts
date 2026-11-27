@@ -88,7 +88,8 @@ describe('the sentences', () => {
 
     test('at the alert, and at twice the alert', () => {
       expect(budget({ costUsd: 51.25, alertUsd: 50 })).toBe('Test Inkling 2 Mini is at $51.25, over its $50.00 alert.');
-      expect(budget({ costUsd: 101, alertUsd: 50, twice: true })).toBe('Test Inkling 2 Mini is at $101.00, more than twice its $50.00 alert.');
+      expect(budget({ costUsd: 101, alertUsd: 50, twice: true })).toBe('Test Inkling 2 Mini is at $101.00, at least twice its $50.00 alert.');
+      expect(budget({ costUsd: 100, alertUsd: 50, twice: true })).toBe('Test Inkling 2 Mini is at $100.00, at least twice its $50.00 alert.');
       expect(budget({ costUsd: 1234.5, alertUsd: 1000 })).toBe('Test Inkling 2 Mini is at $1,234.50, over its $1,000.00 alert.');
     });
 
@@ -113,7 +114,7 @@ describe('the sentences', () => {
       const critical = checker.check('t1', 's1', 51.25)!;
       expect(budgetDetailOfFinding(warning)).toEqual({ costUsd: 26.5, alertUsd: 25 });
       expect(budgetDetailOfFinding(critical)).toEqual({ costUsd: 51.25, alertUsd: 25, twice: true });
-      expect(budget(budgetDetailOfFinding(critical)!)).toBe('Test Inkling 2 Mini is at $51.25, more than twice its $25.00 alert.');
+      expect(budget(budgetDetailOfFinding(critical)!)).toBe('Test Inkling 2 Mini is at $51.25, at least twice its $25.00 alert.');
       expect(budgetDetailOfFinding({ type: 'stale_agent' })).toBeUndefined();
       expect(budgetDetailOfFinding({ type: 'budget_exceeded', severity: 'warning' })).toEqual({});
     });
