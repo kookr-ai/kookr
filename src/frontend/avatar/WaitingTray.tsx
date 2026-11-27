@@ -2,9 +2,12 @@
  * "Waiting on you": the strip under Lucy's 3D view that holds everything a task is waiting on the operator
  * for, so that fifteen questions cost one line and not fifteen full cards.
  *
- * Folded, which is how it starts, it is one line: "3 waiting on you · 2 opinions wanted", with an amber wash
- * when something is waiting. Pressing it unfolds the list below; the choice is remembered until the browser
- * tab is closed. Nothing is opened for the operator: no card is open until they press a row.
+ * With nothing waiting it starts folded, as one line: "0 waiting on you · 2 opinions wanted". Pressing it unfolds
+ * the list below; the choice is remembered until the browser tab is closed. While a question or a permission
+ * prompt whose buttons still work is waiting, the strip is unfolded whatever was saved, with the question that
+ * closes soonest open whole and the others as one line each, so a waiting question is never folded away. The
+ * operator can fold it by hand (the saved choice is not touched); that holds until a NEW item arrives, and a
+ * card they chose to open is never replaced by a newer one.
  *
  * Unfolded, from top to bottom:
  *  1. permission cards (`LucyPermissionCard.tsx`), as before;
@@ -38,7 +41,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { RefObject } from 'react';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import { dismissOperatorAsk, markAskSubmitting, type AskSubmitState } from '../store/operator-asks.js';
-import { useLucyPermission } from '../store/lucy-permission.js';
+import { permissionButtonsLive, useLucyPermission } from '../store/lucy-permission.js';
 import { loadTrayExpanded, saveTrayExpanded, useTrayOpenRequests } from '../store/avatar-panel-prefs.js';
 import { AskCard, closesInText, timeLeftText, type AskAnswerChoice } from './AskCard.js';
 import { LucyPermissionCards, type PermissionChoiceSender } from './LucyPermissionCard.js';
@@ -86,13 +89,37 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
 
   // Folded to one line until the operator unfolds it; remembered for this browser tab.
   const [expanded, setExpanded] = useState(loadTrayExpanded);
+  // Something waits on the operator when a task has a question open or a permission prompt can still be answered
+  // from here. Then the strip is unfolded whatever was saved (a question hidden behind a folded strip expired
+  // unseen), and the soonest question is open. The operator can still fold it by hand; that holds until a NEW
+  // item arrives. The saved choice is never changed by any of this.
+  const livePermissionCount = permissionCards.filter((card) => permissionButtonsLive(card, Date.now())).length;
+  const hasWaiting = waiting.length > 0 || livePermissionCount > 0;
+  const [foldedByHand, setFoldedByHand] = useState(false);
+  // Which cards are open: undefined until the operator chooses, then the id of a card, or null for "none".
+  const [chosen, setChosen] = useState<string | null | undefined>(undefined);
   const trayOpenRequests = useTrayOpenRequests();
   const seenTrayOpenRequests = useRef(trayOpenRequests);
   useEffect(() => {
-    // The dashboard's "Needs you" rows ask for it unfolded while the column is already open.
-    if (trayOpenRequests !== seenTrayOpenRequests.current) setExpanded(true);
+    // The dashboard's "Needs you" rows ask for it unfolded while the column is already open: a new reason to
+    // unfold, even after the operator folded it by hand.
+    if (trayOpenRequests !== seenTrayOpenRequests.current) {
+      setExpanded(true);
+      setFoldedByHand(false);
+      setChosen((previous) => (previous === null ? undefined : previous));
+    }
     seenTrayOpenRequests.current = trayOpenRequests;
   }, [trayOpenRequests]);
+  const seenWaitingRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const ids = new Set([...waiting.map((ask) => `a:${ask.id}`), ...permissionCards.map((card) => `p:${card.promptId}`)]);
+    const seen = seenWaitingRef.current;
+    seenWaitingRef.current = ids;
+    if (seen === null || ![...ids].some((id) => !seen.has(id))) return;
+    // A new item: the strip comes back, and "all folded" gives way to the soonest question. An open card the operator chose stays.
+    setFoldedByHand(false);
+    setChosen((previous) => (previous === null ? undefined : previous));
+  }, [waiting, permissionCards]);
   // A permission prompt is the one thing that unfolds the strip by itself: a task is stopped on it and Lucy
   // has just said "the command is on my card", so Approve and Deny must be on screen. The remembered choice
   // is not changed, and the operator can fold it away again.
@@ -101,9 +128,14 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
     if (permissionCount > seenPermissionCount.current) setExpanded(true);
     seenPermissionCount.current = permissionCount;
   }, [permissionCount]);
-  // Which card is open: none until the operator presses a row. A question that arrives later never opens
-  // itself or takes the place of the open one (that would throw away a half-typed answer).
-  const [chosen, setChosen] = useState<string | null>(null);
+  // The strip that opened for a waiting question stays open while the outcome of it ("You answered: ...") is on
+  // show, unless the operator folded it: folding it as the question closes would hide the very thing they pressed for.
+  const [openedForWaiting, setOpenedForWaiting] = useState(false);
+  const hasClosed = asks.some((ask) => ask.state !== 'pending');
+  useEffect(() => {
+    setOpenedForWaiting(hasWaiting ? !foldedByHand : openedForWaiting && hasClosed && !foldedByHand);
+  }, [hasWaiting, foldedByHand, hasClosed, openedForWaiting]);
+  const stripOpen = hasWaiting ? !foldedByHand : expanded || openedForWaiting;
   const [opinionsOpen, setOpinionsOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const trayRef = useRef<HTMLElement | null>(null);
@@ -113,18 +145,25 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
   const scrollToRef = useRef<string | null>(null);
 
   const pendingIds = useMemo(() => new Set(pending.map((ask) => ask.id)), [pending]);
-  // The open card went away (answered, expired): nothing is open until the operator chooses again.
-  const expandedId = chosen !== null && pendingIds.has(chosen) ? chosen : null;
+  // The open card: the one the operator chose; before they choose, the question that closes soonest. One that
+  // went away (answered, expired) leaves the choice to the soonest again, so a waiting question is never folded.
+  const expandedId = chosen === null
+    ? null
+    : chosen !== undefined && pendingIds.has(chosen)
+      ? chosen
+      : (waiting[0]?.id ?? null);
   useLayoutEffect(() => {
-    if (chosen !== null && expandedId === null) setChosen(null);
-  }, [chosen, expandedId]);
+    if (chosen !== undefined && chosen !== null && !pendingIds.has(chosen)) setChosen(undefined);
+    // The soonest question, opened for the operator, is theirs from now on: a later one that closes sooner does not take its place.
+    else if (chosen === undefined && waiting[0]) setChosen(waiting[0].id);
+  }, [chosen, pendingIds, waiting]);
 
   // After the cards change: a press that lands in the next moment may have been aimed at a card that is no
   // longer under the pointer, so it is ignored (the operator presses again).
   const cardsChangedAtRef = useRef(0);
   // Permission cards sit above the questions in the same scroll box: one arriving or leaving moves the buttons too.
   // Entering or leaving the room lays everything out again, so it counts as a change too.
-  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${expanded ? 'x' : ''}|${rail ? 'r' : ''}`;
+  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${stripOpen ? 'x' : ''}|${rail ? 'r' : ''}`;
   useLayoutEffect(() => {
     cardsChangedAtRef.current = Date.now();
   }, [signature]);
@@ -217,6 +256,11 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
 
   const waitingCount = permissionCount + waiting.length;
   const toggle = (): void => {
+    if (hasWaiting) {
+      // The saved choice is for when nothing waits; by hand, only this wait is folded or unfolded.
+      setFoldedByHand(stripOpen);
+      return;
+    }
     setExpanded(!expanded);
     saveTrayExpanded(!expanded);
   };
@@ -287,7 +331,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
         <button
           type="button"
           className="avatar-tray-head"
-          aria-expanded={expanded}
+          aria-expanded={stripOpen}
           aria-controls="avatar-tray-body"
           onClick={toggle}
           ref={toggleRef}
@@ -325,7 +369,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
           {rail && waitingCount === 0 && (
             <p className="avatar-tray-empty" data-testid="avatar-tray-empty">Nothing is waiting on you.</p>
           )}
-          {(expanded || rail) && (
+          {(stripOpen || rail) && (
             <>
             <LucyPermissionCards
               {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}

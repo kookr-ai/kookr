@@ -774,26 +774,29 @@ describe('AvatarDock: Lucy’s room', () => {
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
       click(toggle());
-      // The column's strip is folded: the card is away.
-      expect(q('avatar-ask-input')).toBeNull();
+      // The column's strip is unfolded while a question waits, and the soonest question is open in it with the text kept.
+      expect(q<HTMLInputElement>('avatar-ask-input')!.value).toBe('tonight, after the');
       click(toggle());
       expect(q<HTMLInputElement>('avatar-ask-input')!.value).toBe('tonight, after the');
     });
 
-    test('the rail leaves the strip’s own fold alone: it is neither forced open nor saved', () => {
+    test('the rail leaves the strip’s own fold alone: it never saves a fold, and the column\'s strip is back after it', () => {
       start();
       render();
       pushAsks([ask('a'), ask('b')]);
-      expect(q('avatar-tray-toggle')!.getAttribute('aria-expanded')).toBe('false');
+      // In the column a waiting question unfolds the strip by itself: the soonest is whole, the other one line.
+      expect(q('avatar-tray-toggle')!.getAttribute('aria-expanded')).toBe('true');
+      expect(waitingCards()).toHaveLength(1);
+      expect(all('avatar-ask-row')).toHaveLength(1);
 
       click(toggle());
       expect(waitingCards()).toHaveLength(2);
       expect(sessionStorage.getItem(AVATAR_TRAY_EXPANDED_KEY)).toBeNull();
 
       click(toggle());
-      expect(q('avatar-tray-toggle')!.getAttribute('aria-expanded')).toBe('false');
-      expect(waitingCards()).toHaveLength(0);
-      expect(all('avatar-ask-row')).toHaveLength(0);
+      // Back in the column, with the saved fold (nothing) never changed.
+      expect(sessionStorage.getItem(AVATAR_TRAY_EXPANDED_KEY)).toBeNull();
+      expect(waitingCards()).toHaveLength(1);
     });
 
     test('an answer pressed in the moment after the switch is ignored, like any press after the cards move', () => {
@@ -809,7 +812,7 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(onAnswerAsk).toHaveBeenCalledWith('a', { optionIndex: 0 });
     });
 
-    test('below 1100 px the room is one column: the strip is folded above the conversation, exactly as in the column', () => {
+    test('below 1100 px the room is one column: the strip sits above the conversation, exactly as in the column', () => {
       start({}, true);
       setWindowWidth(1000);
       render();
@@ -820,8 +823,9 @@ describe('AvatarDock: Lucy’s room', () => {
 
       pushAsks([ask('a'), ask('b')]);
       expect(q('avatar-tray')!.classList.contains('avatar-tray-rail')).toBe(false);
-      expect(q('avatar-tray-toggle')!.getAttribute('aria-expanded')).toBe('false');
-      expect(waitingCards()).toHaveLength(0);
+      expect(q('avatar-tray-toggle')!.getAttribute('aria-expanded')).toBe('true');
+      expect(waitingCards()).toHaveLength(1);
+      expect(all('avatar-ask-row')).toHaveLength(1);
       // The same header as the wide room.
       expect(headerButtons()).toEqual(['Replay last message', 'Back to dashboard']);
 
@@ -831,7 +835,7 @@ describe('AvatarDock: Lucy’s room', () => {
       expect(waitingCards()).toHaveLength(2);
       setWindowWidth(1099);
       expect(dock()!.getAttribute('data-room-rail')).toBe('false');
-      expect(waitingCards()).toHaveLength(0);
+      expect(waitingCards()).toHaveLength(1);
     });
   });
 
@@ -914,7 +918,7 @@ describe('AvatarDock: Lucy’s room', () => {
       start();
       render({ onOpenTask });
       pushAsks([ask('a')]);
-      clickCard(container.querySelector('[data-ask-id="a"] [data-testid="avatar-ask-row"]'));
+      // The one question is open whole already: no row to press.
       clickCard(q('avatar-ask-open-task'));
       expect(onOpenTask).toHaveBeenCalledWith('task-a');
       expect(mode()).toBe('docked');

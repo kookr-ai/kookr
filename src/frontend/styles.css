@@ -18212,3 +18212,68 @@ button.coordinator-chain-member:focus-visible {
   color: var(--text-muted);
   white-space: nowrap;
 }
+
+/* --- The minimised bubble grows into a decision (BubbleDecisionCard.tsx, bubble-decision.ts) ---
+   A card attached to the bubble, above it with its right edge on the bubble's: the 58px bubble sits 44px from the
+   bottom, so the card starts 10px above it (112px), clear of the "awaiting" pill under the bubble. It is as wide as
+   a column (390px) and never wider than the window minus 32px. z-index 99: BELOW the dashboard's modal dialogs and
+   their backdrop (.dialog-overlay, 100), so a card that appears on its own can never float over an open dialog and
+   take presses meant for it. Toasts (150) are above dialogs too, so the card cannot be above them as well; below
+   dialogs wins, and a toast may briefly cover the card's lower edge (toasts do not take the pointer). The bubble
+   itself (120) stays above dialogs, as before; the card is also not shown at all while a dialog is open
+   (AvatarDock passes `blocked` to useBubbleDecision). */
+.lucy-bubble-card-anchor { display: contents; }
+.lucy-bubble-card {
+  position: fixed;
+  z-index: 99;
+  right: 16px;
+  bottom: 112px;
+  box-sizing: border-box;
+  width: min(390px, calc(100vw - 32px));
+  max-height: calc(100vh - 128px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  color: var(--text-bright);
+  font-size: 12px;
+  animation: lucy-bubble-card-in 0.16s ease-out;
+}
+@keyframes lucy-bubble-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lucy-bubble-card { animation: none; }
+}
+.lucy-bubble-card-list { margin: 0; padding: 0; list-style: none; }
+.lucy-bubble-card .avatar-ask { padding: 10px 12px 10px 13px; gap: 7px; border-bottom: 0; }
+.lucy-bubble-card .avatar-ask-question { font-size: 14px; line-height: 20px; }
+.lucy-bubble-card .avatar-ask-option { padding: 7px 10px; }
+/* The question is cut to five lines; "Show all" takes the cut off. */
+.lucy-bubble-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+.lucy-bubble-showall { align-self: flex-start; font-size: 12px; }
+/* A permission prompt's command is whole, in a box that scrolls after about six lines. */
+.lucy-bubble-command { max-height: 100px; overflow: auto; }
+.lucy-bubble-command:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.lucy-bubble-card-more { margin-right: auto; font-size: 12px; }
+.lucy-bubble-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-dim);
+}
+.lucy-bubble-card-actions .avatar-ask-send, .lucy-bubble-card-actions .avatar-ask-option { width: auto; padding: 5px 14px; }
+.lucy-bubble-card [aria-disabled="true"] { cursor: default; }

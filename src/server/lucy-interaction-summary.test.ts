@@ -86,6 +86,17 @@ describe('summarizeLucyInteractionLines', () => {
     expect(s.ui.panelActions).toEqual({ expand: 2, collapse: 1 });
   });
 
+  it('counts the bubble card shown, answered from, put off and opened, so answers given from the bubble can be counted', () => {
+    const s = summarizeLucyInteractionLines([
+      ui({ type: 'lucy_panel_action', action: 'bubble_card_shown' }),
+      ui({ type: 'lucy_panel_action', action: 'bubble_card_shown' }),
+      ui({ type: 'lucy_panel_action', action: 'bubble_card_answered' }),
+      ui({ type: 'lucy_panel_action', action: 'bubble_card_dismissed' }),
+      ui({ type: 'lucy_panel_action', action: 'bubble_card_opened' }),
+    ], { days: 7, now: NOW });
+    expect(s.ui.panelActions).toEqual({ bubble_card_shown: 2, bubble_card_answered: 1, bubble_card_dismissed: 1, bubble_card_opened: 1 });
+  });
+
   it('counts a question Lucy read out by herself as a started clip, and its replay as a replay', () => {
     const s = summarizeLucyInteractionLines([
       said('q', { source: 'operator_ask' }),

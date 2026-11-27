@@ -11,7 +11,9 @@
  * 768 px and below it is a full-width sheet over the page (`avatarColumnLayout` decides). It minimises to a round bubble in the bottom-right
  * corner, which brings the page back to full width. While minimised the 3D view is shut down completely,
  * and the bubble shows a still image, so a minimised panel uses no GPU. Hovering or focusing the bubble
- * shows a small card that spells out what its badge and dot mean.
+ * shows a small card that spells out what its badge and dot mean. When a question or a permission prompt is
+ * waiting, the bubble grows into a card with the decision and its buttons (`BubbleDecisionCard.tsx`, when and
+ * which in `bubble-decision.ts`); it never takes focus and waits while the operator types.
  *
  * "Lucy's room" is the fourth layout: she takes the whole window and covers the dashboard, which stays mounted
  * underneath. The header's Expand button enters it and, as "Back to dashboard", leaves it; so does a keyboard
@@ -96,6 +98,8 @@ import { LucyActionCard } from './LucyActionCard.js';
 import { LucyTypedInput } from './LucyTypedInput.js';
 import { LucyThread } from './LucyThread.js';
 import { WaitingTray } from './WaitingTray.js';
+import { BubbleDecisionCard } from './BubbleDecisionCard.js';
+import { useBubbleDecision, type BubbleItem } from './bubble-decision.js';
 import { ColumnResizer } from './ColumnResizer.js';
 import { useClipThreadSync, useNoticeThreadSync, useTalkThreadSync } from './useThreadSync.js';
 import { useLucyBriefing } from './useLucyBriefing.js';
@@ -111,6 +115,7 @@ import {
   clampAvatarColumnWidth,
   leaveAvatarRoomToShowTask,
   setAvatarRoom,
+  openLucyOnWaiting,
   setAvatarPageCovered,
   updateAvatarPanelPrefs,
   useAvatarPanelPrefs,
@@ -163,6 +168,20 @@ const REPLAY_NOTICE: Partial<Record<ReplayResult, string>> = {
 function trackPanelAction(action: 'minimize' | 'restore' | 'replay', replayedClipId?: string): void {
   const clipId = replayedClipId ?? getLastClip()?.clipId;
   track({ type: 'lucy_panel_action', action, ...(clipId ? { clipId } : {}) });
+}
+
+/** What the log says about the card the bubble grows into a decision (`lucy_panel_action`). */
+type BubbleCardAction = 'bubble_card_shown' | 'bubble_card_answered' | 'bubble_card_dismissed' | 'bubble_card_opened';
+function trackBubbleCard(action: BubbleCardAction): void {
+  track({ type: 'lucy_panel_action', action });
+}
+
+/** The question on the card, cut for a screen reader's one announcement. */
+function announcedText(item: BubbleItem): string {
+  if (item.kind === 'permission') return `${item.card.taskName ?? 'A task'} is waiting for your permission to use ${item.card.toolName}. The buttons are on the card beside Lucy.`;
+  const flat = item.ask.question.replace(/\s+/g, ' ').trim();
+  const question = flat.length > 140 ? `${flat.slice(0, 139).trimEnd()}…` : flat;
+  return `${item.ask.system ? 'Kookr' : (item.ask.taskName ?? 'A task')} asks: ${question} The answers are on the card beside Lucy.`;
 }
 
 /** The name of the CSS custom property on the page's root element that tells the dashboard how much room the open column takes. */
@@ -338,6 +357,7 @@ export function AvatarDock({
   const talkFocusedRef = useRef(false);
   const bubbleStopFocusedRef = useRef(false);
   const dockRef = useRef<HTMLElement | null>(null);
+  const decisionCardRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLButtonElement | null>(null);
   // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
   const restoreFocusRef = useRef(false);
@@ -465,6 +485,34 @@ export function AvatarDock({
   // so they are not "questions for you" and add nothing to the badge).
   const pendingAskCount = asks.reduce((n, ask) => (ask.state === 'pending' && ask.taskEnded !== true ? n + 1 : n), 0);
   const opinionCount = asks.reduce((n, ask) => (ask.state === 'pending' && ask.taskEnded === true ? n + 1 : n), 0);
+
+  // The card the minimised bubble grows into when a question or a permission prompt waits (`bubble-decision.ts`).
+  // It is announced through the status region below, never by moving focus.
+  // A modal dialog open over the page (App's modals, or a dashboard component's own): no card over it. The
+  // component dialogs are not state the dock sees, so the page is asked at every render, and watched for one
+  // opening or closing while minimised (the render that follows then reads the answer): this is how a card
+  // that was held back for a dialog appears when the dialog closes.
+  const [, setDialogWatch] = useState(0);
+  const decisionBlocked = dialogOpen || (minimized && (dashboardDialogOpen?.() ?? false));
+  const blockedRef = useRef(decisionBlocked);
+  blockedRef.current = decisionBlocked;
+  useEffect(() => {
+    if (!minimized || !dashboardDialogOpen || typeof MutationObserver === 'undefined') return undefined;
+    const observer = new MutationObserver(() => {
+      if ((dialogOpen || dashboardDialogOpen()) !== blockedRef.current) setDialogWatch((n) => n + 1);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [minimized, dialogOpen, dashboardDialogOpen]);
+  const decision = useBubbleDecision({
+    minimized,
+    asks: operatorAsks.asks,
+    blocked: decisionBlocked,
+    onShown: (item) => {
+      trackBubbleCard('bubble_card_shown');
+      setAskNotice((previous) => ({ seq: (previous?.seq ?? 0) + 1, text: announcedText(item) }));
+    },
+  });
 
   // A replay must not keep talking after the panel is gone.
   useEffect(() => () => stopReplay('user_stop'), []);
@@ -745,7 +793,8 @@ export function AvatarDock({
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
   const cardHasContent = attentionCount > 0 || permissionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0 || opinionCount > 0;
-  const cardVisible = minimized && cardHasContent && (hovered || focused) && !cardDismissed;
+  // While the bubble has grown into a decision, the small hover card would only sit on top of it.
+  const cardVisible = minimized && cardHasContent && (hovered || focused) && !cardDismissed && (decision.item === null || decisionBlocked);
   useEffect(() => {
     if (!cardVisible) return undefined;
     const onKey = (event: KeyboardEvent): void => {
@@ -755,6 +804,30 @@ export function AvatarDock({
     return () => document.removeEventListener('keydown', onKey);
   }, [cardVisible]);
 
+  // "Open Lucy" on the decision card (and "+N more waiting"): the column opens with the waiting strip unfolded.
+  const openFromDecisionCard = (): void => {
+    trackBubbleCard('bubble_card_opened');
+    // Focus follows to the column's minimise button, as for the bubble itself.
+    restoreFocusRef.current = true;
+    openLucyOnWaiting();
+  };
+  const dismissDecisionCard = (): void => {
+    trackBubbleCard('bubble_card_dismissed');
+    // Focus inside the card goes back to the bubble, not to the top of the page.
+    if (decisionCardRef.current?.contains(document.activeElement)) bubbleRef.current?.focus();
+    decision.dismiss();
+  };
+  // The card is replaced or removed under the operator (their answer closed the question, or it ended elsewhere):
+  // a control in it that had keyboard focus is gone and focus would fall to the top of the page; it goes to the
+  // bubble. Only when focus was already inside the card, so this never takes focus on appearance.
+  const focusInCardRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const focused = focusInCardRef.current;
+    if (!focused || focused.isConnected) return;
+    focusInCardRef.current = null;
+    const active = document.activeElement;
+    if (!active || active === document.body) bubbleRef.current?.focus();
+  });
   const onBubbleEnter = (): void => {
     setHovered(true);
     setCardDismissed(false);
@@ -840,6 +913,23 @@ export function AvatarDock({
               <path className="avatar-bubble-stop-slash" d="M2.5 2.5l11 11" />
             </svg>
           </button>
+        )}
+        {decision.item !== null && !decisionBlocked && (
+          <div
+            ref={decisionCardRef}
+            className="lucy-bubble-card-anchor"
+            onFocus={(event) => { focusInCardRef.current = event.target as HTMLElement; }}
+            onBlur={(event) => { if ((event.target as HTMLElement).isConnected) focusInCardRef.current = null; }}
+          >
+            <BubbleDecisionCard
+              decision={decision}
+              {...(onAnswerAsk ? { onAnswerAsk } : {})}
+              {...(onPermissionChoice ? { onPermissionChoice } : {})}
+              onOpenLucy={openFromDecisionCard}
+              onLater={dismissDecisionCard}
+              onAnswered={() => trackBubbleCard('bubble_card_answered')}
+            />
+          </div>
         )}
         {cardVisible && (
           <div className="avatar-bubble-card" aria-hidden="true" data-testid="avatar-bubble-card">

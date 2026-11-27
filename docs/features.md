@@ -507,15 +507,17 @@ question and its choices aloud once, and the **Waiting on you** strip counts it.
 press the question to get its card: one button per choice, the background the task gave, and a box for a
 typed answer when the task accepts one.
 
-- **One line, not a pile of cards.** Folded, which is how it starts, the strip reads "3 waiting on you ·
-  2 opinions wanted", with an amber tint when something is waiting. Press it to unfold the list; your
-  choice is remembered until you close the browser tab. Questions are listed in the order they close,
-  soonest first, one line each (who asks, the start of the question, the time left). Nothing opens by
-  itself: pressing a line opens that card and folds the one that was open, and a question that arrives
-  later never takes the open card away from you (what you were typing stays). Permission cards come
-  first. A card never scrolls inside itself: the list scrolls as one area when it is taller than the room
-  it has, and in a window 800 px tall or more a card with three choices is shown whole. The number in the
-  strip counts the permission cards and the questions a task may still be waiting for.
+- **One line, not a pile of cards.** With nothing waiting, the strip starts folded: "0 waiting on you ·
+  2 opinions wanted", and pressing it unfolds the list (your choice is remembered until you close the
+  browser tab). While a question or a live permission prompt waits, the strip is unfolded whatever you
+  saved: the question that closes soonest is shown whole and the others are one line each (who asks, the
+  start of the question, the time left), so a waiting question is never hidden behind a folded strip.
+  You can still fold it by hand; it stays folded until a new question or prompt arrives. Pressing a line
+  opens that card and folds the one that was open, and a question that arrives later never takes the open
+  card away from you (what you were typing stays). Permission cards come first. A card never scrolls
+  inside itself: the list scrolls as one area when it is taller than the room it has, and in a window 800
+  px tall or more a card with three choices is shown whole. The number in the strip counts the permission
+  cards and the questions a task may still be waiting for.
 - **Opinions from finished tasks.** A question whose task has already ended blocks nothing, so these
   fold into one row ("15 opinions wanted by finished tasks · first closes in 4 h"). Press it to
   unfold one line per question, again soonest first, and press a line to answer. They are counted apart
@@ -537,7 +539,22 @@ typed answer when the task accepts one.
   times), and once 10 minutes before it closes. None come during your quiet hours, and one comes
   when they end. The reminders disappear once the question is answered. The `askReminders` setting
   changes the schedule; an empty one turns them off.
-- **Minimised**, the bubble's badge counts the questions still waiting and the permission prompts, with the findings.
+- **Minimised**, the bubble's badge counts the questions still waiting and the permission prompts, with the findings, and the bubble
+  grows into the decision itself. A card appears above it (about 390 px wide) with who asks, the time left,
+  the question, its answers as buttons, "Open Lucy" and "Later". A permission prompt whose Approve once and
+  Deny still work gets the same treatment, with the whole command in a scrolling box; a prompt whose buttons
+  have timed out does not. With several waiting, a live permission prompt comes first, then the question
+  that closes soonest, one at a time, with "+2 more waiting" under it (it opens her column). Long questions
+  are cut to five lines with "Show all"; with more than four answers, or one too long to fit, a single
+  "Open Lucy to answer" button replaces them (the typed answer, the background and "Open task" are in the
+  open column). After you answer, or when the question is answered on Telegram, expires or is withdrawn,
+  the card says what happened for 4 seconds, then shows the next one or goes. "Later" (or Escape inside
+  the card) puts it away, and that item never grows the bubble again in this browser tab. The card never
+  takes keyboard focus (it is announced to screen readers instead), its buttons ignore presses for the first
+  0.6 s, and it waits while you are typing (until 2 seconds after the last key, or 2 seconds after focus moves into a
+  text field or a terminal), while Do Not Disturb is on, and while the browser tab is hidden. "Open Lucy" opens her column
+  with the waiting strip unfolded. The interaction log counts these as `lucy_panel_action` events
+  (`bubble_card_shown`, `bubble_card_answered`, `bubble_card_dismissed`, `bubble_card_opened`).
 - **Needs** Telegram remote chat (that is what makes `kookr ask` available) and, for her voice, the
   speech service. With the avatar panel off nothing changes: the question is on Telegram only.
 - **By voice, with a read-back.** With hands-free talk on, say one of the listed choices ("run it

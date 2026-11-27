@@ -49,8 +49,10 @@ export const TELEMETRY_EVENT_TYPES = [
    * - lucy_clip_started: { clipId, trigger: 'click' | 'replay' | 'ask', panelState: 'open' | 'minimized' | 'off', tabVisible: boolean }
    * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded' | 'barge_in', playedMs, totalMs } (`barge_in`: the operator talked over it with Talk on)
    * - lucy_clip_unheard: { clipId, reason: 'muted' | 'dnd' | 'audio_suspended' | 'error' }
-   * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay' | 'expand' | 'collapse', clipId?: string }
-   *   (`expand` / `collapse`: she was given the whole window, "Lucy's room", or went back to the column)
+   * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay' | 'expand' | 'collapse' | 'bubble_card_shown' | 'bubble_card_answered' | 'bubble_card_dismissed' | 'bubble_card_opened', clipId?: string }
+   *   (`expand` / `collapse`: she was given the whole window, "Lucy's room", or went back to the column;
+   *   `bubble_card_*`: the minimised bubble grew into a card for a waiting question or permission prompt, and the
+   *   operator answered from it, put it off with "Later", or opened Lucy from it)
    * - lucy_live_timing: { kind: 'end_to_first_audio' | 'barge_in_duck' | 'barge_in_stop' | 'barge_in_rejected', ms: number }, measured in the browser during hands-free talk
    */
   'lucy_clip_started',
