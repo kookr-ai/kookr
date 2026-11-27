@@ -39,7 +39,7 @@ import type { RefObject } from 'react';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import { dismissOperatorAsk, markAskSubmitting, type AskSubmitState } from '../store/operator-asks.js';
 import { useLucyPermission } from '../store/lucy-permission.js';
-import { loadTrayExpanded, saveTrayExpanded } from '../store/avatar-panel-prefs.js';
+import { loadTrayExpanded, saveTrayExpanded, useTrayOpenRequests } from '../store/avatar-panel-prefs.js';
 import { AskCard, closesInText, timeLeftText, type AskAnswerChoice } from './AskCard.js';
 import { LucyPermissionCards, type PermissionChoiceSender } from './LucyPermissionCard.js';
 
@@ -86,6 +86,13 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
 
   // Folded to one line until the operator unfolds it; remembered for this browser tab.
   const [expanded, setExpanded] = useState(loadTrayExpanded);
+  const trayOpenRequests = useTrayOpenRequests();
+  const seenTrayOpenRequests = useRef(trayOpenRequests);
+  useEffect(() => {
+    // The dashboard's "Needs you" rows ask for it unfolded while the column is already open.
+    if (trayOpenRequests !== seenTrayOpenRequests.current) setExpanded(true);
+    seenTrayOpenRequests.current = trayOpenRequests;
+  }, [trayOpenRequests]);
   // A permission prompt is the one thing that unfolds the strip by itself: a task is stopped on it and Lucy
   // has just said "the command is on my card", so Approve and Deny must be on screen. The remembered choice
   // is not changed, and the operator can fold it away again.

@@ -18167,3 +18167,48 @@ button.coordinator-chain-member:focus-visible {
 .task-account-result--error { color: var(--red); }
 .task-account-banner { display: flex; flex-direction: column; gap: 6px; }
 .task-account-banner-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* r8-b: questions and permission prompts that wait on the operator, as rows in the task list (and the overview).
+   The rail row is a quiet, bordered button, so it does not read as a finding card. */
+.needs-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  width: 100%;
+  margin: 4px 0;
+  padding: 7px 10px;
+  background: var(--bg-card);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.needs-row:hover {
+  background: var(--bg-card-hover);
+}
+.needs-row:focus-visible {
+  outline: 2px solid var(--state-need);
+  outline-offset: 1px;
+}
+.needs-row-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.needs-row-action {
+  color: var(--state-need);
+}
+.needs-row-time {
+  margin-left: auto;
+  color: var(--text-muted);
+  white-space: nowrap;
+}

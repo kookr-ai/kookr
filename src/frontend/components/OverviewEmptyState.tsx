@@ -7,6 +7,8 @@ import {
   getDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
+import { useNeedsYou, waitingOnLucyItems } from '../store/needs-you.js';
+import { WaitingOnLucyRow } from './WaitingOnLucyRow.js';
 import { useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
@@ -241,7 +243,11 @@ export function OverviewEmptyState({
   const nextRun = nextSchedule ? scheduleNextRunLabel(nextSchedule) : null;
   const runningCount = running.length;
   const completedCount = completed.length;
-  const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
+  // Questions and permission prompts wait on the operator as much as findings do, so they count here too.
+  const needsYou = useNeedsYou(waiting);
+  const waitingOnLucy = waitingOnLucyItems(needsYou);
+  const waitingTotal = waitingOnLucy.length + waiting.length;
+  const hasAnyTask = waitingTotal > 0 || runningCount > 0 || completedCount > 0;
   // First-run only: once any task exists the operator already launched, so the
   // install nudge would be noise. Empty `availableAgentTypes` before the first
   // WS snapshot is the same flash Launch/Quick Launch already accept (#3390).
@@ -294,8 +300,8 @@ export function OverviewEmptyState({
             <span className="overview-count-value">{runningCount}</span>
             <span className="overview-count-label">running</span>
           </div>
-          <div className={`overview-count${waiting.length > 0 ? ' overview-count-attention' : ''}`}>
-            <span className="overview-count-value">{waiting.length}</span>
+          <div className={`overview-count${waitingTotal > 0 ? ' overview-count-attention' : ''}`}>
+            <span className="overview-count-value">{waitingTotal}</span>
             <span className="overview-count-label">needs input</span>
           </div>
           <div className="overview-count">
@@ -344,11 +350,16 @@ export function OverviewEmptyState({
           </p>
         )}
 
-        {waiting.length > 0 ? (
+        {waitingTotal > 0 ? (
           <div className="overview-waiting">
             <h3 className="overview-waiting-title">Waiting on you</h3>
             <ul className="overview-waiting-list">
-              {waiting.slice(0, MAX_WAITING_ROWS).map((agent) => {
+              {waitingOnLucy.slice(0, MAX_WAITING_ROWS).map((item) => (
+                <li key={item.id}>
+                  <WaitingOnLucyRow item={item} variant="overview" />
+                </li>
+              ))}
+              {waiting.slice(0, Math.max(0, MAX_WAITING_ROWS - waitingOnLucy.length)).map((agent) => {
                 const age = formatAge(findingWaitStartedAt(agent));
                 return (
                   <li key={agent.agentId}>
@@ -368,9 +379,9 @@ export function OverviewEmptyState({
                 );
               })}
             </ul>
-            {waiting.length > MAX_WAITING_ROWS && (
+            {waitingTotal > MAX_WAITING_ROWS && (
               <p className="overview-waiting-more">
-                +{waiting.length - MAX_WAITING_ROWS} more in the findings rail
+                +{waitingTotal - MAX_WAITING_ROWS} more in the findings rail
               </p>
             )}
           </div>

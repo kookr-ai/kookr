@@ -1,3 +1,4 @@
+import { useNeedsYou } from './store/needs-you.js';
 import React, { Suspense, useState, useEffect, useLayoutEffect, useMemo, useCallback, useReducer, useRef } from 'react';
 import { isLiveChainTip } from '../shared/contracts/playbook-chain.js';
 import { lazyWithReload } from './lazy-with-reload.js';
@@ -1376,6 +1377,8 @@ export function App() {
     () => buildAgentBuckets(agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks),
     [agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks],
   );
+  // Findings, questions and permission prompts: the one list behind the header, the overview and Lucy's badge.
+  const needsYou = useNeedsYou(findings);
   const commandPaletteFindings = useMemo(
     () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
     [agents, coordinator, projectPriorityRanks],
@@ -1646,7 +1649,7 @@ export function App() {
       labelled={!selectedProjectSummary}
       footer={renderUsage('nav')}
       queues={{
-        needsYou: findings.length,
+        needsYou: needsYou.total,
         working: healthy.length,
         finished: finishedListCount,
         onNeedsYou: jumpToNeedsYou,
@@ -1992,6 +1995,8 @@ export function App() {
           <Suspense fallback={null}>
             <AvatarDock
               attentionCount={findings.length}
+              needsYouCount={needsYou.total}
+              permissionCount={needsYou.counts.permission}
               onAnswerAsk={answerOperatorAsk}
               onOpenTask={openAskingTask}
               onPermissionChoice={send}

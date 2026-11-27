@@ -15,6 +15,8 @@ import { App } from './App.js';
 import type { AvatarDockProps } from './avatar/AvatarDock.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 import { AVATAR_PANEL_KEY, AVATAR_ROOM_KEY, __resetAvatarPanelPrefsForTests, getAvatarRoom, setAvatarPageCovered, setAvatarRoom } from './store/avatar-panel-prefs.js';
+import { __resetOperatorAsksForTests, handleOperatorAsks } from './store/operator-asks.js';
+import { __resetLucyPermissionForTests, handleLucyPermissionCards } from './store/lucy-permission.js';
 import { __resetViewerSessionForTests } from './viewer-session.js';
 import { detectShortcutPlatform, getDefaultShortcutBindings } from '../shared/contracts/shortcut-bindings.js';
 
@@ -194,6 +196,27 @@ describe('App passes the Talk shortcut and the shortcut block to Lucy’s panel 
     await act(async () => { opened = dock.props!.onOpenTask!('gone'); });
     expect(opened).toBe(false);
     expect(selected()).toBeNull();
+  });
+
+  test('hands the dock the number of things waiting on the operator: questions and permission prompts', async () => {
+    __resetOperatorAsksForTests();
+    __resetLucyPermissionForTests();
+    await renderApp();
+    expect(dock.props!.needsYouCount).toBe(0);
+    await act(async () => {
+      handleOperatorAsks([{
+        id: 'a1b2c3d4e5f6', taskId: 't1', taskName: 'Fix login', question: 'Ship?', options: ['Yes'], allowText: false,
+        state: 'pending', createdAt: Date.now(), expiresAt: Date.now() + 600_000,
+      }]);
+      handleLucyPermissionCards({
+        type: 'lucyPermissionCards',
+        cards: [{ promptId: 'p1', taskId: 't2', agentId: 'ag2', toolName: 'Bash', command: 'ls', since: Date.now() }],
+      });
+    });
+    expect(dock.props!.needsYouCount).toBe(2);
+    expect(dock.props!.permissionCount).toBe(1);
+    __resetOperatorAsksForTests();
+    __resetLucyPermissionForTests();
   });
 
   test('passes the platform’s binding for Lucy’s room', async () => {

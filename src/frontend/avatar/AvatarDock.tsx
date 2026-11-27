@@ -174,6 +174,10 @@ const RAIL_WIDTH_PROPERTY = '--lucy-rail-width';
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
   attentionCount: number;
+  /** Everything waiting on the operator (findings, questions, permission prompts), from `buildNeedsYou`; the badge shows it. */
+  needsYouCount?: number;
+  /** Of {@link needsYouCount}, the permission prompts, so the bubble's label and card can name them. */
+  permissionCount?: number;
   /**
    * Send the operator's answer to a `kookr ask` question over the dashboard socket.
    * Returns false when it could not be sent (not connected). Without it the cards are
@@ -254,6 +258,8 @@ function replayDescriptionText(newestUnheard: boolean, unavailable: string | nul
 
 export function AvatarDock({
   attentionCount,
+  needsYouCount,
+  permissionCount = 0,
   onAnswerAsk,
   onOpenTask,
   onPermissionChoice,
@@ -738,7 +744,7 @@ export function AvatarDock({
 
   // The bubble's card: what the badge and the dot mean. It only repeats what the bubble's label says, so it is
   // hidden from assistive technology; keyboard users get it through focus, Escape closes it.
-  const cardHasContent = attentionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0 || opinionCount > 0;
+  const cardHasContent = attentionCount > 0 || permissionCount > 0 || lastClip.unheardCount > 0 || pendingAskCount > 0 || opinionCount > 0;
   const cardVisible = minimized && cardHasContent && (hovered || focused) && !cardDismissed;
   useEffect(() => {
     if (!cardVisible) return undefined;
@@ -783,13 +789,14 @@ export function AvatarDock({
       `Open ${NAME}${activity}`,
       pendingAskCount > 0 ? questionsText(pendingAskCount) : null,
       opinionCount > 0 ? opinionsText(opinionCount) : null,
+      permissionCount > 0 ? plural(permissionCount, 'permission prompt waiting', 'permission prompts waiting') : null,
       attentionCount > 0 ? findingsText(attentionCount) : null,
       lastClip.unheardCount > 0 ? unheardText(lastClip.unheardCount) : null,
     ]
       .filter(Boolean)
       .join('. ') + (cardHasContent ? '.' : '');
     // One number on the bubble: everything that is waiting for the operator (opinion requests block nothing and are not in it).
-    const badgeCount = attentionCount + pendingAskCount;
+    const badgeCount = needsYouCount ?? attentionCount + pendingAskCount;
     const bubbleView = (
       <>
         {/* The bubble sits in the bottom-right corner (see `.avatar-bubble` in styles.css), not where a window was dragged. */}
@@ -846,6 +853,12 @@ export function AvatarDock({
               <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-opinions">
                 <span className="avatar-mark-ring" />
                 {opinionsText(opinionCount)}
+              </div>
+            )}
+            {permissionCount > 0 && (
+              <div className="avatar-bubble-card-row" data-testid="avatar-bubble-card-permissions">
+                <span className="avatar-mark-diamond" />
+                {plural(permissionCount, 'permission prompt waiting', 'permission prompts waiting')}
               </div>
             )}
             {attentionCount > 0 && (

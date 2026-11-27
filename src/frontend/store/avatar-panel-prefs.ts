@@ -227,6 +227,27 @@ export function saveTrayExpanded(expanded: boolean): void {
   }
 }
 
+/**
+ * How many times the dashboard asked for the strip to be unfolded. A tray that is already on screen cannot read
+ * the saved choice again, so it watches this count and unfolds when it changes.
+ */
+let trayOpenRequests = 0;
+
+/**
+ * Open Lucy on what waits for the operator: switch her panel on if it is off, bring her out of the bubble,
+ * and unfold the "Waiting on you" strip. It answers nothing; the cards stay hers to answer.
+ */
+export function openLucyOnWaiting(): void {
+  saveTrayExpanded(true);
+  trayOpenRequests += 1;
+  updateAvatarPanelPrefs({ enabled: true, minimized: false });
+}
+
+/** React binding for {@link openLucyOnWaiting}: the number of requests so far in this tab. */
+export function useTrayOpenRequests(): number {
+  return useSyncExternalStore(subscribe, () => trayOpenRequests, () => 0);
+}
+
 // --- Lucy's room: she takes the whole window, in this browser tab only ---
 
 /**
@@ -400,5 +421,6 @@ export function __resetAvatarPanelPrefsForTests(): void {
   state = loadAvatarPanelPrefs();
   room = loadAvatarRoom();
   pageCovered = false;
+  trayOpenRequests = 0;
   listeners.clear();
 }
