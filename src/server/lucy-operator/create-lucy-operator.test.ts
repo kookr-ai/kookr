@@ -184,6 +184,12 @@ describe('buildLucyOperator', () => {
     expect(result).toEqual({ unavailableReason: 'needs a key' });
   });
 
+  test('builds the service for a Baseten configuration too', () => {
+    const model = { apiKey: 'k', model: 'm', baseUrl: 'http://127.0.0.1:9', reasoningEffort: 'medium' as const };
+    const result = buildLucyOperator(routeDeps({ lucyOperatorConfig: { enabled: true, ok: true, provider: 'baseten', warnings: [], model } }).deps);
+    expect(result?.service?.isBusy('c1')).toBe(false);
+  });
+
   test('gives the route a service when it is switched on and usable', () => {
     const model = { apiKey: 'k', model: 'm', baseUrl: 'http://127.0.0.1:9', providers: [], reasoning: 'medium' as const };
     const result = buildLucyOperator(routeDeps({ lucyOperatorConfig: { enabled: true, ok: true, warnings: [], model } }).deps);

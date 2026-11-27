@@ -113,7 +113,7 @@ export type LucyTurnEvent =
       outputTokens: number;
       /** What the provider charged for this turn, in US dollars; null when it did not say. */
       costUsd: number | null;
-      /** Which provider served the last model call, as OpenRouter names it; absent when unknown. */
+      /** Which provider served the last model call, as OpenRouter names it; absent when unknown, and always absent on Baseten (its replies name no provider). */
       provider?: string;
     };
 

@@ -8,7 +8,7 @@
  * a call during that time fails at once with a `unavailable` error and never reaches the provider, so
  * the operator waits milliseconds instead of seconds. When the time is up the next call goes through;
  * a success closes the breaker, another failure opens it again. Nothing is retried here, and no
- * provider is excluded: which provider serves her is the routing rule on the OpenRouter account.
+ * provider is excluded: on OpenRouter, which provider serves her is the routing rule on the account.
  *
  * The snapshot feeds `GET /api/health` (`lucyOperator`), so the model's state is visible without
  * asking her anything.

@@ -1,12 +1,13 @@
 /**
  * Builds Lucy's operator conversation from the server's own parts: the configuration
- * resolved at start-up, the OpenRouter stream, and a look source over the task list,
+ * resolved at start-up, the model stream (Baseten or OpenRouter), and a look source over the task list,
  * the findings, the quota and the projects.
  *
  * Returns what the route needs: nothing when the setting is off (the route answers
  * 404), a reason when it is on but unusable (503), or the service.
  */
 
+import { createBasetenChatStream } from '../../adapters/llm/baseten-chat-stream.js';
 import { createOpenRouterChatStream } from '../../adapters/llm/openrouter-chat-stream.js';
 import { listOperatorAsks } from '../../core/operator-asks.js';
 import { listProjectSummaries } from '../routes/project-routes.js';
@@ -75,7 +76,7 @@ export function buildLucyOperator(deps: RouteDeps, wiring: LucyActionWiring = {}
   // One breaker and one health record for every call to her model: the conversation and the writers of a
   // launch, a reply and an answer reach the same provider, so a dead one is noticed once for all of them.
   const modelHealth = deps.lucyModelHealth ?? createLucyModelHealth();
-  const model = modelHealth.guard(createOpenRouterChatStream(config.model));
+  const model = modelHealth.guard(config.provider === 'baseten' ? createBasetenChatStream(config.model) : createOpenRouterChatStream(config.model));
   // Launching is a second switch: she can answer questions without ever being able to propose a task.
   // The same switch lets her act on existing tasks (answer a question, reply, close). One card is on
   // screen for all of her proposals, so each holder clears the other's card when it makes a new one.

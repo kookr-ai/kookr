@@ -57,6 +57,11 @@ describe('plainFailureReason', () => {
     const at = (status: number) => plainFailureReason(new LucyModelError('http', 'x', status, { providerName: 'Novita', status }));
     expect(at(402)).toBe("My language model is not answering: OpenRouter's provider Novita refused the request (402). Check the OpenRouter key and its credit.");
     expect(at(503)).toBe("My language model is not answering: OpenRouter's provider Novita had a server error (503).");
+    const baseten = (status: number) => plainFailureReason(new LucyModelError('http', 'x', status, { providerName: 'Baseten', service: 'Baseten', status }));
+    expect(baseten(429)).toBe('My language model is not answering: Baseten is rate-limited (429).');
+    expect(baseten(402)).toBe('My language model is not answering: Baseten refused the request (402). Check the Baseten key and its credit.');
+    expect(baseten(500)).toBe('My language model is not answering: Baseten had a server error (500).');
+    expect(modelErrorLogLine({ providerName: 'Baseten', service: 'Baseten', status: 429 })).toBe('Baseten answered 429');
     expect(at(404)).toBe("My language model is not answering: OpenRouter's provider Novita answered with an error (404).");
   });
 

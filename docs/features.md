@@ -625,9 +625,9 @@ know something. She cannot act on tasks yet.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 
-#### Ask Lucy a question (on by default with an OpenRouter key)
+#### Ask Lucy a question (on by default with a Baseten or OpenRouter key)
 
-When an OpenRouter key is set, Kookr answers questions about your tasks at `POST /api/lucy/turn`
+When a Baseten or OpenRouter key is set, Kookr answers questions about your tasks at `POST /api/lucy/turn`
 (on by default; `KOOKR_LUCY_OPERATOR=0` switches it off):
 you send one sentence, and Lucy's reply comes back as it is written. This is the first step toward
 running Kookr through her. The avatar panel has a text box for it at the foot of the column when it is on
@@ -646,11 +646,11 @@ talk uses it too when launching is on (next section).
   information to report, never an instruction.
 - **Limits.** A turn makes at most four model calls and stops after 30 seconds. When a limit ends a
   turn, her last sentence says so.
-- **What leaves the machine.** Her model runs at OpenRouter. Each turn sends your question, the board
+- **What leaves the machine.** Her model runs at Baseten (the default when its key is set) or OpenRouter. Each turn sends your question, the board
   (task names, projects, states, costs) and whatever she looks up, with secret-looking tokens replaced
   first. Switch it off (`KOOKR_LUCY_OPERATOR=0`) if task names or task requests must not leave the machine.
-- **What it needs.** An OpenRouter key (`KOOKR_OPENROUTER_API_KEY`). The model, the providers allowed
-  to serve it and how much it thinks are settings. Details: [Lucy operator](reference/lucy-operator.md).
+- **What it needs.** A Baseten key (`KOOKR_BASETEN_API_KEY`) or an OpenRouter key (`KOOKR_OPENROUTER_API_KEY`). The service,
+  the model and how much it thinks are settings. Details: [Lucy operator](reference/lucy-operator.md).
 
 #### Ask Lucy to start a task (on by default)
 

@@ -15,25 +15,35 @@ switches to this conversation whenever launching is on (the default; `KOOKR_LUCY
 
 ## Setup
 
-1. Set an OpenRouter key, the same one the helper model can use: `KOOKR_OPENROUTER_API_KEY` (or
-   `OPENROUTER_API_KEY`).
+1. Set a key for one of the two services that can run her model. Baseten is the default: set
+   `KOOKR_BASETEN_API_KEY` (or `BASETEN_API_KEY`), the key Lucy live already uses. OpenRouter works
+   too: `KOOKR_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`), the key the helper model can use.
 2. Restart Kookr. The conversation is on by default whenever a key is set; to switch it off, set
    `KOOKR_LUCY_OPERATOR=0` (or `false`, `off`, `no`) in Kookr's `.env`.
 
-At start-up Kookr logs which model, providers and reasoning level are in use, or why the conversation
+Which service answers: with `KOOKR_LUCY_OPERATOR_PROVIDER` unset, Baseten when its key is set, otherwise
+OpenRouter when its key is set. With both keys set, Baseten is used (unless the install already shows it runs on OpenRouter: see the
+setting table below); set `KOOKR_LUCY_OPERATOR_PROVIDER=openrouter` to keep OpenRouter. Baseten is the default because an
+OpenRouter account can block the model or its provider by a rule of its own (a guardrail), and that
+cannot be fixed from Kookr: every turn then fails. Baseten serves the same model family, and a tool call
+came back in 0.2 to 1.1 seconds when it was measured. Naming a service whose key is missing makes the
+route answer `503` and name the key. An unknown value is ignored with a start-up warning. An install that already runs on OpenRouter stays there (with a start-up note) when both keys are set, the service is not chosen, and `KOOKR_LUCY_OPERATOR_MODEL` is the OpenRouter default `deepseek/deepseek-v4.1-flash-1017` or `KOOKR_LUCY_OPERATOR_PROVIDERS` is set.
+
+At start-up Kookr logs which model, service and reasoning level are in use, or why the conversation
 is unavailable. With the setting switched off, or left unset with no key, the route answers `404` and no model is
 ever called. With `KOOKR_LUCY_OPERATOR=true` set explicitly and no key, it answers `503` and says a key
 is needed.
 
-Three more settings choose the model. The model and reasoning defaults are the ones picked in the
-model trial recorded on issue #3632. No provider is pinned by default: the routing rule on the
-OpenRouter account chooses which provider serves the model.
+Four more settings choose the model. The OpenRouter model and the reasoning default are the ones picked
+in the model trial recorded on issue #3632. No OpenRouter provider is pinned by default: the routing rule
+on the OpenRouter account chooses which provider serves the model.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `KOOKR_LUCY_OPERATOR_MODEL` | `deepseek/deepseek-v4.1-flash-1017` | The OpenRouter model that answers. It must support tool calls. |
-| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `any` (no provider pinned) | Opt-in: the providers allowed to serve it, tried in this order; no other provider is used. Unset, `any` or `auto` sends no `provider` field, so the OpenRouter account's routing rule decides. |
-| `KOOKR_LUCY_OPERATOR_REASONING` | `medium` | How much the model thinks before answering: `none`, `low`, `medium` or `high`. |
+| `KOOKR_LUCY_OPERATOR_PROVIDER` | `baseten` when a Baseten key is set, else `openrouter`; OpenRouter when both keys are set and the OpenRouter model default or a provider list is set | `baseten` or `openrouter`: which service answers. A choice between two services, not a switch. With both keys present and no service named, an install that sets `KOOKR_LUCY_OPERATOR_MODEL` to the OpenRouter default `deepseek/deepseek-v4.1-flash-1017`, or sets `KOOKR_LUCY_OPERATOR_PROVIDERS`, stays on OpenRouter (with a start-up note). |
+| `KOOKR_LUCY_OPERATOR_MODEL` | `deepseek-ai/DeepSeek-V4.1-Flash-Fast` on Baseten, `deepseek/deepseek-v4.1-flash-1017` on OpenRouter | The model that answers, on the service in use. It must support tool calls. On Baseten, when this is unset, `KOOKR_BASETEN_MODEL` is used, as for Lucy live; `KOOKR_BASETEN_BASE_URL` always applies on Baseten. |
+| `KOOKR_LUCY_OPERATOR_PROVIDERS` | `any` (no provider pinned) | OpenRouter only, and ignored on Baseten (a note is logged at start-up). Setting it while both keys are present and no service is named keeps OpenRouter. Opt-in: the providers allowed to serve it, tried in this order; no other provider is used. Unset, `any` or `auto` sends no `provider` field, so the OpenRouter account's routing rule decides. |
+| `KOOKR_LUCY_OPERATOR_REASONING` | `medium` | How much the model thinks before answering: `none`, `low`, `medium` or `high`. On Baseten it is sent as `reasoning_effort` (`none` is Baseten's own "do not think" level). |
 
 ## Trying it
 
@@ -137,11 +147,13 @@ answered after 20 s.
   with task names, soonest first, then how many tasks are working. For example: "My language model is
   not answering: OpenRouter's provider Sail Research is rate-limited (429). From the board: Research
   agent has gone quiet. One more is working."
+  When nothing waits and no task is in trouble, the reply says that in one sentence ("Nothing is waiting on you and no task is in trouble."), since the briefing itself then has no text.
 - **If the request asks her to act** (it starts with an action word such as launch, answer, reply or close,
   or has one right after "can you", "could you", "please", "go ahead and" or "I want you to"), the same reply ends with "I cannot
   launch, answer, reply or close anything until my language model is back." Kookr does not try to
   read a command without the model.
-- **What the sentence may contain.** Only the provider's name and the status, and only when the name is
+- **What the sentence may contain.** Only the provider's name and the status (on Baseten, the word
+  "Baseten" and the status: "My language model is not answering: Baseten is rate-limited (429)."), and only when the name is
   letters, digits, spaces, dots and dashes, at most 40 characters. The provider's own error text is
   never shown; anything else is left out. When the failure has no readable shape, the sentence is the
   generic one ("The model provider returned an error."). The server log has the real detail, for
@@ -159,8 +171,8 @@ answered after 20 s.
   retried, and Kookr does not exclude any provider: which provider serves her is the routing rule on
   the OpenRouter account.
 - **Seeing it without asking her.** `GET /api/health` has a `lucyOperator` object: `configured`,
-  `model`, `lastSuccessAt`, `lastFailureAt`, `lastFailure` (the same safe sentence) and `breakerOpen`.
-  It is in memory and starts empty after a restart. When nothing waits and no task is in trouble, the reply says that in one sentence ("Nothing is waiting on you and no task is in trouble."), since the briefing itself then has no text.
+  `provider` (`baseten` or `openrouter`), `model`, `lastSuccessAt`, `lastFailureAt`, `lastFailure` (the same safe sentence) and `breakerOpen`.
+  It is in memory and starts empty after a restart.
 
 ## Launching a task by voice or text
 
@@ -492,7 +504,7 @@ read-only viewers, because her answers draw on every task.
 
 ## What leaves the machine
 
-The model runs at OpenRouter, so each turn sends text out. It sends more than hands-free talk does:
+The model runs at Baseten (the default) or OpenRouter, so each turn sends text out. It sends more than hands-free talk does:
 that sends what you said and the task names, and never a task's request.
 
 | Sent | When |
@@ -625,5 +637,5 @@ with whole turns between 0.6 and 3.1 s.
   output to read.
 - The spend figure on the board is the all-time total. The last-24-hours figure the dashboard shows
   is not on the board yet, and she is told so.
-- The reasoning level is sent as OpenRouter's `reasoning.effort`. A model that does not accept it will
-  fail each turn; choose `KOOKR_LUCY_OPERATOR_REASONING` to suit the model.
+- The reasoning level is sent as OpenRouter's `reasoning.effort`, or as Baseten's `reasoning_effort`. A model that does not accept it will
+  fail each turn on OpenRouter; on Baseten a refusal (HTTP 400) is asked again once without the field, and the field is then left out until restart; choose `KOOKR_LUCY_OPERATOR_REASONING` to suit the model.

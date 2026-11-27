@@ -108,6 +108,8 @@ export interface TaskNamerHealthSnapshot {
  */
 export interface LucyOperatorHealth {
   configured: boolean;
+  /** The service her model is called on; null when she is not configured. */
+  provider: 'baseten' | 'openrouter' | null;
   model: string | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;

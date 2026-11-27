@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { LUCY_BREAKER_OPEN_MS, createLucyModelHealth } from './model-health.js';
+import { plainFailureReason } from './model-failure.js';
 import { LucyModelError, type LucyModelEvent, type LucyModelPort, type LucyModelRequest } from './model-port.js';
 
 const REQUEST: LucyModelRequest = { messages: [{ role: 'user', content: 'hi' }], tools: [], maxOutputTokens: 100 };
@@ -41,6 +42,16 @@ describe('the Lucy model circuit breaker', () => {
     const refused = await call(s.port);
     expect(refused).toMatchObject({ kind: 'unavailable', detail: { providerName: 'Sail Research', status: 429 } });
     expect(s.calls.n).toBe(2); // not called
+  });
+
+  test('after two Baseten failures the refusal carries the Baseten wording', async () => {
+    const s = setup();
+    s.set(new LucyModelError('http', 'log', 429, { providerName: 'Baseten', service: 'Baseten', status: 429 }));
+    await call(s.port);
+    await call(s.port);
+    const refused = await call(s.port);
+    expect(refused).toMatchObject({ kind: 'unavailable', detail: { service: 'Baseten', status: 429 } });
+    expect(plainFailureReason(refused)).toBe('My language model is not answering: Baseten is rate-limited (429). I will not ask it again for a minute.');
   });
 
   test('stays open for a minute, then lets one call through; a success closes it, a failure reopens it', async () => {

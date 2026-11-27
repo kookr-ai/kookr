@@ -1,18 +1,23 @@
 /**
- * Decides, from the environment, whether Lucy's operator conversation is switched on
- * and which model answers (issue #3660).
+ * Decides, from the environment, whether Lucy's operator conversation is switched on,
+ * which service answers (Baseten or OpenRouter) and which model (issue #3660).
  *
- * It is on by default (issue #3937) and needs an OpenRouter key, the same one the helper
- * model uses. With `KOOKR_LUCY_OPERATOR` unset it turns itself on when that key is
- * present and stays quietly off when it is not. Setting it to `true` asks for it
- * explicitly: a missing key then makes the route answer 503 and say why. `0`, `false`,
- * `off` or `no` switches it off. The model, the providers allowed to serve it and how
- * much it thinks before answering are each a setting. The model and reasoning defaults
- * are the ones chosen from the model trial recorded on issue #3632; the provider list
- * is empty by default, so the routing rule on the OpenRouter account picks the provider.
+ * It is on by default (issue #3937) and needs a key for one of the two services.
+ * `KOOKR_LUCY_OPERATOR_PROVIDER` chooses the service. Unset, Baseten is used when its key
+ * is configured (the key Lucy live already uses; the operator's OpenRouter account may
+ * block the model, which no setting here can fix), otherwise OpenRouter when its key is
+ * configured. Exception: with both keys present and no service named, an install that sets
+ * `KOOKR_LUCY_OPERATOR_MODEL` to the OpenRouter default or sets `KOOKR_LUCY_OPERATOR_PROVIDERS`
+ * stays on OpenRouter, so it is not moved to Baseten unasked. With `KOOKR_LUCY_OPERATOR` unset it turns itself on when a key is present and
+ * stays quietly off when none is. Setting it to `true` asks for it explicitly: a missing
+ * key then makes the route answer 503 and say why. `0`, `false`, `off` or `no` switches it
+ * off. The model and how much it thinks before answering are settings too; the OpenRouter
+ * defaults are the ones chosen from the model trial recorded on issue #3632, and its
+ * provider list is empty by default, so the routing rule on the OpenRouter account picks.
  */
 
 import { isDefaultOnFlagEnabled, isKillSwitchValue } from '../../core/default-on-flag.js';
+import { DEFAULT_BASETEN_BASE_URL, DEFAULT_BASETEN_MODEL, type BasetenChatStreamConfig } from '../../adapters/llm/baseten-chat-stream.js';
 import {
   LUCY_OPERATOR_REASONING_LEVELS,
   type LucyOperatorReasoning,
@@ -32,11 +37,27 @@ const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 /** A provider tag as OpenRouter writes it: a slug, optionally followed by variants (`deepinfra/fp8/flex`). */
 const PROVIDER_TAG_RE = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
 
+export type LucyOperatorProvider = 'baseten' | 'openrouter';
+const LUCY_OPERATOR_PROVIDERS: readonly LucyOperatorProvider[] = ['baseten', 'openrouter'];
+
+/** The service of a usable configuration; a configuration written without the field is an OpenRouter one. */
+export function lucyOperatorProviderOf(config: { provider?: LucyOperatorProvider }): LucyOperatorProvider {
+  return config.provider ?? 'openrouter';
+}
+
+type LucyOperatorUsable = {
+  /** On unless `KOOKR_LUCY_LAUNCH` is a kill switch: she may propose launching a task. */
+  launch: boolean;
+  /** Settings that were ignored, for the start-up log. */
+  warnings: string[];
+};
+
 export type LucyOperatorConfigResult =
-  /** Switched off, or left unset with no OpenRouter key: the route answers 404. */
+  /** Switched off, or left unset with no key: the route answers 404. */
   | { enabled: false }
-  /** Switched on and usable. `warnings` lists settings that were ignored, for the start-up log. */
-  | { enabled: true; ok: true; model: OpenRouterChatStreamConfig; /** On unless `KOOKR_LUCY_LAUNCH` is a kill switch: she may propose launching a task. */ launch: boolean; warnings: string[] }
+  /** Switched on and usable. */
+  | ({ enabled: true; ok: true; provider: 'baseten'; model: BasetenChatStreamConfig } & LucyOperatorUsable)
+  | ({ enabled: true; ok: true; provider?: 'openrouter'; model: OpenRouterChatStreamConfig } & LucyOperatorUsable)
   /** Switched on but something is missing: the route answers 503 with `reason`. */
   | { enabled: true; ok: false; reason: string; warnings: string[] };
 
@@ -68,20 +89,73 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
     }
   }
 
-  const apiKey = env.KOOKR_OPENROUTER_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) {
-    // Unset: on only where the key is present, so a host without one sees no change.
+  const basetenKey = env.KOOKR_BASETEN_API_KEY?.trim() || env.BASETEN_API_KEY?.trim();
+  const openRouterKey = env.KOOKR_OPENROUTER_API_KEY?.trim() || env.OPENROUTER_API_KEY?.trim();
+
+  // Unset or unknown: the first service with a key. An unknown value is a typo, so it is reported once.
+  const rawProvider = env.KOOKR_LUCY_OPERATOR_PROVIDER?.trim().toLowerCase();
+  let chosen: LucyOperatorProvider | undefined;
+  if (rawProvider) {
+    if ((LUCY_OPERATOR_PROVIDERS as readonly string[]).includes(rawProvider)) chosen = rawProvider as LucyOperatorProvider;
+    else warnings.push(`KOOKR_LUCY_OPERATOR_PROVIDER="${rawProvider.slice(0, 40)}" is not one of ${LUCY_OPERATOR_PROVIDERS.join(', ')}; choosing by which key is configured.`);
+  }
+  const explicit = chosen !== undefined;
+  let provider: LucyOperatorProvider = chosen ?? (basetenKey ? 'baseten' : 'openrouter');
+
+  // Upgrade trap: an install that already runs on OpenRouter (both keys now set) and says so by an OpenRouter-only
+  // setting must not move to Baseten unasked, where that model id would fail every turn.
+  if (!explicit && provider === 'baseten' && openRouterKey) {
+    const modelSetting = env.KOOKR_LUCY_OPERATOR_MODEL?.trim();
+    const why = modelSetting === DEFAULT_LUCY_OPERATOR_MODEL
+      ? `KOOKR_LUCY_OPERATOR_MODEL is the OpenRouter model ${DEFAULT_LUCY_OPERATOR_MODEL}`
+      : rawProviders ? 'KOOKR_LUCY_OPERATOR_PROVIDERS is set, and it only applies to OpenRouter' : null;
+    if (why) {
+      provider = 'openrouter';
+      warnings.push(`Keeping Lucy's conversation on OpenRouter because ${why}. Set KOOKR_LUCY_OPERATOR_PROVIDER=baseten to use Baseten${modelSetting === DEFAULT_LUCY_OPERATOR_MODEL ? ' (and change or unset the model setting)' : ''}.`);
+    }
+  }
+
+  // Left to the keys, with none of either: on only where a key is present, so a host without one sees no change.
+  if (!explicit && !basetenKey && !openRouterKey) {
     if (!askedFor) return { enabled: false };
-    return { enabled: true, ok: false, reason: 'Lucy\'s conversation needs an OpenRouter key (set KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY).', warnings };
+    return { enabled: true, ok: false, reason: 'Lucy\'s conversation needs a Baseten key (KOOKR_BASETEN_API_KEY or BASETEN_API_KEY) or an OpenRouter key (KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY).', warnings };
+  }
+
+  if (provider === 'baseten') {
+    if (!basetenKey) {
+      return { enabled: true, ok: false, reason: 'Lucy\'s conversation is set to use Baseten and needs a Baseten key (set KOOKR_BASETEN_API_KEY or BASETEN_API_KEY).', warnings };
+    }
+    if (rawProviders) warnings.push('KOOKR_LUCY_OPERATOR_PROVIDERS only applies to OpenRouter and is ignored on Baseten.');
+    // Baseten's named levels include all four this setting accepts; `none` is its own "do not think" level.
+    const modelFromOperatorSetting = env.KOOKR_LUCY_OPERATOR_MODEL?.trim();
+    return {
+      enabled: true,
+      ok: true,
+      provider: 'baseten',
+      warnings,
+      launch: isDefaultOnFlagEnabled(env.KOOKR_LUCY_LAUNCH),
+      model: {
+        apiKey: basetenKey,
+        // The model falls back to Lucy live's Baseten model when the operator setting is unset; the address is always Lucy live's.
+        model: modelFromOperatorSetting || env.KOOKR_BASETEN_MODEL?.trim() || DEFAULT_BASETEN_MODEL,
+        baseUrl: env.KOOKR_BASETEN_BASE_URL?.trim() || DEFAULT_BASETEN_BASE_URL,
+        reasoningEffort: reasoning,
+      },
+    };
+  }
+
+  if (!openRouterKey) {
+    return { enabled: true, ok: false, reason: 'Lucy\'s conversation is set to use OpenRouter and needs an OpenRouter key (set KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY).', warnings };
   }
 
   return {
     enabled: true,
     ok: true,
+    provider: 'openrouter',
     warnings,
     launch: isDefaultOnFlagEnabled(env.KOOKR_LUCY_LAUNCH),
     model: {
-      apiKey,
+      apiKey: openRouterKey,
       model: env.KOOKR_LUCY_OPERATOR_MODEL?.trim() || DEFAULT_LUCY_OPERATOR_MODEL,
       baseUrl: OPENROUTER_BASE_URL,
       providers,

@@ -3238,13 +3238,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const initialLucyLiveStatus = lucyLiveRuntime.status();
   if (!initialLucyLiveStatus.available) console.log(`[lucy-live] ${initialLucyLiveStatus.starting ? 'waiting for the speech recogniser' : 'disabled'}: ${initialLucyLiveStatus.reason}`);
 
-  // Lucy's operator conversation (issue #3660): on by default where an OpenRouter key is present (issue #3937).
+  // Lucy's operator conversation (issue #3660): on by default where a Baseten or OpenRouter key is present (issue #3937).
   const lucyOperatorConfig = config.lucyOperatorConfig ?? resolveLucyOperatorConfig(process.env);
   if (lucyOperatorConfig.enabled) {
     for (const warning of lucyOperatorConfig.warnings) console.warn(`[lucy-operator] ${warning}`);
-    console.log(lucyOperatorConfig.ok
-      ? `[lucy-operator] enabled: ${lucyOperatorConfig.model.model}, providers ${lucyOperatorConfig.model.providers.join(' then ') || 'any'}, reasoning ${lucyOperatorConfig.model.reasoning}`
-      : `[lucy-operator] switched on but unavailable: ${lucyOperatorConfig.reason}`);
+    if (!lucyOperatorConfig.ok) console.log(`[lucy-operator] switched on but unavailable: ${lucyOperatorConfig.reason}`);
+    else if (lucyOperatorConfig.provider === 'baseten') console.log(`[lucy-operator] enabled: ${lucyOperatorConfig.model.model} on Baseten, reasoning ${lucyOperatorConfig.model.reasoningEffort ?? 'default'}`);
+    else console.log(`[lucy-operator] enabled: ${lucyOperatorConfig.model.model} on OpenRouter, providers ${lucyOperatorConfig.model.providers.join(' then ') || 'any'}, reasoning ${lucyOperatorConfig.model.reasoning}`);
   }
 
   const app = createRoutes({
