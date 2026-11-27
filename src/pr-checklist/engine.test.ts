@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { collectAndVerify, collectScaffold, verifyChecklist } from './engine.js';
+import { collectAndVerify, collectScaffold, TEST_CORPUS_PATHSPECS, verifyChecklist } from './engine.js';
 import { ChecklistInputError } from './errors.js';
 import type { GitRunner } from './git.js';
+import { isTestFile } from './checklist.js';
 import type { DiffFacts } from './types.js';
 
 function facts(overrides: Partial<DiffFacts> = {}): DiffFacts {
@@ -455,5 +456,71 @@ describe('test files in the tests and env rules (#4226)', () => {
     const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: read });
     expect(report.results.find((r) => r.id === 'env')?.summary).toMatch(/KOOKR_PROBE_ONLY_IN_TEST/);
     expect(report.ok).toBe(false);
+  });
+});
+
+describe('the test corpus a new source module is looked up in', () => {
+  const range = 'BASE...HEAD';
+  const lsTests = `ls-files -- ${TEST_CORPUS_PATHSPECS.join(' ')}`;
+
+  function gitWithTests(testFiles: string) {
+    return fakeGit({
+      'merge-base origin/main HEAD': { stdout: 'BASE' },
+      [`diff --name-status ${range}`]: { stdout: 'A\tsrc/frontend/avatar/zz-bubble-probe.ts' },
+      [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/frontend/avatar/zz-bubble-probe.ts\n+export const probe = 1;' },
+      [lsTests]: { stdout: testFiles },
+      // The repository opts in to the checklist by having a template with a marked row.
+      ...OPT_IN_GIT,
+    });
+  }
+  const readTests = async (p: string) => {
+    if (p.endsWith('AvatarDock.zz.test.tsx')) return "import { probe } from './zz-bubble-probe.js';";
+    if (p.endsWith('other.test.ts')) return 'nothing relevant';
+    if (p.endsWith('PULL_REQUEST_TEMPLATE.md')) return MARKER_TEMPLATE;
+    return '';
+  };
+
+  it('lists .test and .spec files in .ts, .tsx, .js and .jsx, and the two test directories', () => {
+    expect([...TEST_CORPUS_PATHSPECS]).toEqual([
+      '*.test.ts', '*.test.tsx', '*.test.js', '*.test.jsx',
+      '*.spec.ts', '*.spec.tsx', '*.spec.js', '*.spec.jsx',
+      '*/__tests__/*', 'test/*',
+    ]);
+  });
+
+  it('every extension pattern, and test/, names a file the checklist itself recognises as a test', () => {
+    // `*/__tests__/*` is left out: `isTestFile` has never recognised a `__tests__` directory by itself
+    // (files in one are named `.test.` in this repository), and this change keeps that as it was.
+    for (const spec of TEST_CORPUS_PATHSPECS.filter((s) => s !== '*/__tests__/*')) {
+      const sample = spec.startsWith('*.') ? `src/x/sample${spec.slice(1)}` : spec.replace('/*', '/sample.ts');
+      expect(isTestFile(sample), `${spec} -> ${sample}`).toBe(true);
+    }
+  });
+
+  it('a new module referenced only from a .test.tsx file is not reported as untested', async () => {
+    const git = gitWithTests('src/frontend/avatar/AvatarDock.zz.test.tsx\nsrc/core/other.test.ts');
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readTests });
+    expect(report.results.some((r) => r.id === 'new-tests' && r.status === 'fail')).toBe(false);
+  });
+
+  it('a new module no test file mentions is still reported', async () => {
+    const git = gitWithTests('src/core/other.test.ts');
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readTests });
+    expect(report.results.find((r) => r.id === 'new-tests')?.summary).toMatch(/zz-bubble-probe\.ts/);
+  });
+
+  it('finds the test however much test text comes before it, and stops reading once every module is found', async () => {
+    // 40 test files of 512 KiB each (20 MiB, more than the old 16 MiB limit) sort before the one that matters.
+    const filler = Array.from({ length: 40 }, (_, i) => `src/aaa/filler-${String(i).padStart(2, '0')}.test.ts`);
+    const git = gitWithTests([...filler, 'src/frontend/avatar/AvatarDock.zz.test.tsx', 'src/zzz/never-read.test.ts'].join('\n'));
+    const readPaths: string[] = [];
+    const read = async (p: string) => {
+      readPaths.push(p);
+      if (p.includes('/filler-')) return 'x'.repeat(512 * 1024);
+      return readTests(p);
+    };
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: read });
+    expect(report.results.some((r) => r.id === 'new-tests' && r.status === 'fail')).toBe(false);
+    expect(readPaths.some((p) => p.endsWith('never-read.test.ts'))).toBe(false);
   });
 });

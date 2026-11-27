@@ -16,6 +16,7 @@ import {
   findUnparsedMarkerIds,
   isSourceFile,
   parseChecklist,
+  sourceBaseName,
 } from './checklist.js';
 import {
   classifyCommitlintConfig,
@@ -33,7 +34,6 @@ import type { DiffFacts, VerifyReport } from './types.js';
 export const MAX_BODY_BYTES = 1024 * 1024;
 export const MAX_ENV_FILE_BYTES = 256 * 1024;
 export const MAX_TEST_FILE_BYTES = 512 * 1024;
-export const MAX_TEST_CORPUS_BYTES = 16 * 1024 * 1024;
 export const MAX_CONFIG_BYTES = 64 * 1024;
 
 export interface VerifyInput {
@@ -41,6 +41,7 @@ export interface VerifyInput {
   body: string | null;
   facts: DiffFacts;
   envFileText: string;
+  /** The names of the new source modules that some test file mentions, one per line (see `readTestCorpus`). */
   testCorpus: string;
   /** The repo's PR-template text, or '' when it ships none (presence rule then no-ops). */
   templateText: string;
@@ -158,7 +159,7 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
   const needsTests = !facts.baseUnresolved && facts.addedFiles.some(isSourceFile);
 
   const envFileText = needsEnv ? await readTracked(runner, read, deps.cwd, '.env.example', MAX_ENV_FILE_BYTES) : '';
-  const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd) : '';
+  const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd, facts.addedFiles.filter(isSourceFile)) : '';
 
   // A repo that disables `pr-title` gets no title check at all — no warning
   // note either (the disable filter below only removes results).
@@ -301,23 +302,51 @@ async function readTracked(
   return read(resolve(cwd, path), cap).catch(() => '');
 }
 
+/**
+ * The files whose text counts as "the tests" when a new source module must be referenced by one.
+ * They follow `TEST_FILE_PATTERNS` in checklist.ts (`.test.` or `.spec.`, in `.ts`, `.tsx`, `.js` or `.jsx`).
+ * The list once had only `*.test.ts` and `*.test.js`, so a new frontend module tested from a `.test.tsx`
+ * file was reported as having no test.
+ */
+export const TEST_CORPUS_PATHSPECS: readonly string[] = [
+  '*.test.ts', '*.test.tsx', '*.test.js', '*.test.jsx',
+  '*.spec.ts', '*.spec.tsx', '*.spec.js', '*.spec.jsx',
+  '*/__tests__/*', 'test/*',
+];
+
+/**
+ * What the tests say about the new source modules: the names of those modules that at least one test
+ * file mentions, joined into the "corpus" `findUntested` looks them up in.
+ *
+ * Every listed test file is looked at, one at a time, until each name has been found. An earlier
+ * version joined the text of the test files up to 16 MiB and stopped there; this
+ * repository has more test text than that, so which test files counted depended on where they sort,
+ * and a module whose test sorted late (most of `src/server`) was reported as untested. Only the
+ * per-file cap is kept: a test file larger than `MAX_TEST_FILE_BYTES` is skipped whole, as before.
+ */
 async function readTestCorpus(
   runner: GitRunner,
   read: (absPath: string, cap: number) => Promise<string>,
   cwd: string,
+  newSourceFiles: readonly string[],
 ): Promise<string> {
-  const listed = await runner(['ls-files', '--', '*.test.ts', '*.test.js', '*/__tests__/*', 'test/*']);
+  const wanted = new Set(newSourceFiles.map(sourceBaseName).filter((name) => name.length > 0));
+  if (wanted.size === 0) return '';
+  const listed = await runner(['ls-files', '--', ...TEST_CORPUS_PATHSPECS]);
   if (listed.exitCode !== 0) return '';
   const files = listed.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-  const parts: string[] = [];
-  let total = 0;
+  const found: string[] = [];
   for (const rel of files) {
-    if (total >= MAX_TEST_CORPUS_BYTES) break;
+    if (wanted.size === 0) break;
     const text = await read(resolve(cwd, rel), MAX_TEST_FILE_BYTES).catch(() => '');
-    total += text.length;
-    parts.push(text);
+    for (const name of wanted) {
+      if (text.includes(name)) {
+        found.push(name);
+        wanted.delete(name);
+      }
+    }
   }
-  return parts.join('\n');
+  return found.join('\n');
 }
 
 /**

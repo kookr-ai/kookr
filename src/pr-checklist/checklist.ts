@@ -404,9 +404,14 @@ export function findMissingEnv(addedSourceLines: string[], declaredKeys: string[
 /** New source files whose basename is referenced nowhere in the given test corpus. Pure. */
 export function findUntested(newSourceFiles: string[], testCorpus: string): string[] {
   return newSourceFiles.filter((p) => {
-    const base = p.replace(/^.*\//, '').replace(/\.[jt]s$/, '');
+    const base = sourceBaseName(p);
     return base.length > 0 && !testCorpus.includes(base);
   });
+}
+
+/** The name a test must mention for a source file to count as tested: its file name without `.ts` or `.js`. */
+export function sourceBaseName(path: string): string {
+  return path.replace(/^.*\//, '').replace(/\.[jt]s$/, '');
 }
 
 /**
@@ -427,7 +432,8 @@ export function scanSecrets(
 /**
  * Structural fact checks that fire from the diff regardless of any box.
  * `envFileText` is the declared env template (empty string if none).
- * `testCorpus` is the concatenated text of the repo's test files.
+ * `testCorpus` only has to contain the name of each new source module that some test file mentions
+ * (`collectAndVerify` passes exactly those names, one per line, not the text of the tests).
  */
 export function evaluateStructural(
   facts: DiffFacts,
