@@ -34,6 +34,12 @@ export interface LucyModelUsage {
 }
 
 export type LucyModelEvent =
+  /**
+   * The provider has started sending real data for this call (content, a tool call or reasoning), at most
+   * once per call and before any text. It says nothing about what was sent: reasoning is never forwarded.
+   * It lets the loop tell a model that is thinking from one that is silent.
+   */
+  | { type: 'activity' }
   /** A piece of the reply, as soon as the model produced it. */
   | { type: 'text'; delta: string }
   /** One tool call, emitted only once its name and arguments have arrived in full. */

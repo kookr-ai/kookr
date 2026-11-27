@@ -166,6 +166,7 @@ describe('createOpenRouterChatStream', () => {
     const events = await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST));
 
     expect(events).toEqual([
+      { type: 'activity' },
       { type: 'text', delta: 'Let me ' },
       { type: 'text', delta: 'check.' },
       { type: 'tool_call', call: { id: 'c1', name: 'read_board', arguments: '{}' } },
@@ -223,7 +224,7 @@ describe('createOpenRouterChatStream', () => {
     })();
 
     await expect(run).rejects.toMatchObject({ kind: 'timeout' });
-    expect(events).toEqual([{ type: 'text', delta: 'partial' }]);
+    expect(events).toEqual([{ type: 'activity' }, { type: 'text', delta: 'partial' }]);
   });
 
   test('a request that is already aborted never reaches the network', async () => {
@@ -301,5 +302,32 @@ describe('provider errors keep the provider and the codes (R8-F10)', () => {
     const failure = (await collect(createOpenRouterChatStream(CONFIG, fetchImpl)(REQUEST)).then(() => null, (err: unknown) => err)) as LucyModelError;
     // Nothing hostile is kept as a field; the message is the server log's, and quotes the body as before.
     expect(failure.detail).toEqual({ status: 429 });
+  });
+});
+
+describe('the activity event (provider silence, not text)', () => {
+  const run = (parts: readonly string[]) => collect(createOpenRouterChatStream(CONFIG, (async () => sseResponse(parts)) as typeof fetch)(REQUEST));
+  const reasoningChunk = (reasoning: string): string => data({ choices: [{ delta: { reasoning } }] });
+  const finish = data({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + 'data: [DONE]\n\n';
+
+  test('a reasoning-only chunk gives one activity event, and the reasoning text is never forwarded', async () => {
+    const events = await run([reasoningChunk('let me think about the board'), reasoningChunk(' more'), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'finish']);
+    expect(JSON.stringify(events)).not.toContain('think about');
+  });
+
+  test('activity comes once, before the first text', async () => {
+    const events = await run([textChunk('Hi'), textChunk(' there'), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'text', 'text', 'finish']);
+  });
+
+  test('a tool-call chunk counts as activity', async () => {
+    const events = await run([data({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'read_board', arguments: '{}' } }] } }] }), finish]);
+    expect(events.map((e) => e.type)).toEqual(['activity', 'tool_call', 'finish']);
+  });
+
+  test('comment lines, keep-alives and empty deltas are not activity', async () => {
+    const events = await run([': OPENROUTER PROCESSING\n\n', '\n', ': OPENROUTER PROCESSING\n\n', data({ choices: [{ delta: { content: '' } }] }), finish]);
+    expect(events.map((e) => e.type)).toEqual(['finish']);
   });
 });

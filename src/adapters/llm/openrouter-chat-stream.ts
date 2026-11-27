@@ -98,6 +98,12 @@ export class OpenRouterChatStreamParser {
   private provider: string | undefined;
   private finishReason: string | null = null;
   done = false;
+  /**
+   * True once a JSON chunk has carried a delta of content, a tool call or reasoning. Comment lines
+   * (`: OPENROUTER PROCESSING`) and empty keep-alives never set it: OpenRouter sends those while the
+   * provider has not started. Only the fact is kept; reasoning text is not read.
+   */
+  sawActivity = false;
 
   /** Feed decoded text; returns the text pieces completed by it, in order. Throws when the provider reports an error in the stream. */
   push(chunk: string): string[] {
@@ -151,6 +157,8 @@ export class OpenRouterChatStreamParser {
         finish_reason?: unknown;
         delta?: {
           content?: unknown;
+          reasoning?: unknown;
+          reasoning_details?: unknown;
           tool_calls?: Array<{ index?: unknown; id?: unknown; function?: { name?: unknown; arguments?: unknown } }>;
         };
       }>;
@@ -178,6 +186,12 @@ export class OpenRouterChatStreamParser {
     if (typeof choice.finish_reason === 'string') this.finishReason = choice.finish_reason;
     const delta = choice.delta;
     if (!delta) return;
+    if (
+      (typeof delta.content === 'string' && delta.content !== '')
+      || (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0)
+      || (typeof delta.reasoning === 'string' && delta.reasoning !== '')
+      || (Array.isArray(delta.reasoning_details) && delta.reasoning_details.length > 0)
+    ) this.sawActivity = true;
     // `delta.reasoning` (the model thinking aloud) is deliberately not read.
     if (typeof delta.content === 'string' && delta.content) out.push(delta.content);
     for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
@@ -270,6 +284,7 @@ async function* streamOnce(
     const parser = new OpenRouterChatStreamParser();
     const decoder = new TextDecoder();
     const reader = res.body.getReader();
+    let activitySent = false;
     try {
       for (;;) {
         let chunk: ReadableStreamReadResult<Uint8Array>;
@@ -280,13 +295,24 @@ async function* streamOnce(
         }
         arm();
         if (chunk.done) break;
-        for (const delta of parser.push(decoder.decode(chunk.value, { stream: true }))) yield { type: 'text', delta };
+        const pieces = parser.push(decoder.decode(chunk.value, { stream: true }));
+        if (parser.sawActivity && !activitySent) {
+          activitySent = true;
+          yield { type: 'activity' };
+        }
+        for (const delta of pieces) yield { type: 'text', delta };
         if (parser.done) break;
       }
       if (!parser.done) {
-        for (const delta of parser.push(decoder.decode())) yield { type: 'text', delta };
-        for (const delta of parser.end()) yield { type: 'text', delta };
+        const tail = [...parser.push(decoder.decode()), ...parser.end()];
+        if (parser.sawActivity && !activitySent) {
+          activitySent = true;
+          yield { type: 'activity' };
+        }
+        for (const delta of tail) yield { type: 'text', delta };
       }
+      // A reply whose only data chunks came with the last bytes (tool calls come out in finish()).
+      if (parser.sawActivity && !activitySent) yield { type: 'activity' };
       for (const event of parser.finish()) yield event;
     } finally {
       // Stop reading and drop the connection; ignore errors from an already-closed body.

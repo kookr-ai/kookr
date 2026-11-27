@@ -81,7 +81,7 @@ describe('plainFailureReason', () => {
   });
 
   test('a first-token timeout says how long it waited', () => {
-    expect(plainFailureReason(new LucyModelError('timeout', 'x', undefined, { firstTokenAfterMs: 8000 }))).toBe('My language model is not answering: it sent nothing in 8 seconds.');
+    expect(plainFailureReason(new LucyModelError('timeout', 'x', undefined, { firstTokenAfterMs: 12_000 }))).toBe('My language model is not answering: it sent nothing in 12 seconds.');
   });
 
   test('a refusal by the breaker repeats the last known cause and says it will not ask for a minute', () => {

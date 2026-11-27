@@ -46,8 +46,12 @@ export interface LucyTurnLimits {
   /** Longest a turn may run, in milliseconds. */
   maxMs: number;
   /**
-   * How long one model call may send nothing (no text and no look-up) before it is abandoned and treated
-   * as a failure, in milliseconds. `0` switches it off.
+   * How long the provider may stay silent on one model call (no data of any kind: no text, no look-up and
+   * no reasoning) before the call is abandoned and treated as a failure, in milliseconds. `0` switches it
+   * off. Reasoning counts as data because a healthy model that is thinking sends no text for a while: in
+   * the operator's own history the slowest healthy first text took 9.4 s (9 of 30 turns took over 5 s),
+   * while the failing provider answered with its error after 20 s. 12 s clears the first and still cuts
+   * the second well short.
    */
   firstTokenMs: number;
   /** Most tokens (read plus written, summed over the model calls) before no further call is made. */
@@ -61,7 +65,7 @@ export interface LucyTurnLimits {
 export const DEFAULT_LUCY_TURN_LIMITS: LucyTurnLimits = {
   maxSteps: 4,
   maxMs: 30_000,
-  firstTokenMs: 8_000,
+  firstTokenMs: 12_000,
   maxTokens: 40_000,
   maxOutputTokensPerStep: 1500,
   maxToolCallsPerStep: 4,
@@ -146,7 +150,9 @@ export interface LucyTurnSummary {
 
 /** What she cannot do while her model is away. Said only when the operator's words look like a request to act. */
 const CANNOT_ACT_SENTENCE = 'I cannot launch, answer, reply or close anything until my language model is back.';
-const ACTION_WORDS_RE = /\b(launch|start|spawn|run|answer|reply|respond|close|stop|kill|cancel|approve|deny|send|merge)\b/i;
+const ACTION_VERBS = 'launch|start|spawn|run|answer|reply|respond|close|stop|kill|cancel|approve|deny|send|merge';
+/** An action word counts only as the first word, or right after a polite lead-in: "close the finished ones", "can you launch a task". */
+const ACTION_REQUEST_RE = new RegExp(`^\\W*(?:(?:can you|could you|please|go ahead and|i want you to)[\\s,]+)*(?:${ACTION_VERBS})\\b`, 'i');
 
 /**
  * The reply written without the model: the failure sentence, then the briefing from the board. Null when
@@ -155,7 +161,7 @@ const ACTION_WORDS_RE = /\b(launch|start|spawn|run|answer|reply|respond|close|st
 function boardReply(reason: string, asked: string, briefing: () => OperatorBriefingInput, nowMs: number): string | null {
   try {
     const board = buildOperatorBriefing(briefing(), nowMs).text;
-    return [reason, `From the board: ${board}`, ...(ACTION_WORDS_RE.test(asked) ? [CANNOT_ACT_SENTENCE] : [])].join(' ');
+    return [reason, `From the board: ${board}`, ...(ACTION_REQUEST_RE.test(asked) ? [CANNOT_ACT_SENTENCE] : [])].join(' ');
   } catch {
     return null;
   }
@@ -313,6 +319,8 @@ export async function* runLucyTurn(deps: LucyTurnDeps, input: LucyTurnInput): As
             firstTokenSeen = true;
             yield textEvent(stepText ? event.delta : joined(event.delta));
             stepText += event.delta;
+          } else if (event.type === 'activity') {
+            firstTokenSeen = true;
           } else if (event.type === 'tool_call') {
             firstTokenSeen = true;
             calls.push(event.call);

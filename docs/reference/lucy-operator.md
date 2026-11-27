@@ -109,7 +109,7 @@ to say or write it, and in the trial below she never did.
 |---|---|---|
 | Model calls | 4 | Look-ups asked for on the fourth call are not run |
 | Time | 30 s | The model call in progress is cancelled |
-| First word of a model call | 8 s | A call that has sent no text and no look-up by then is cancelled and counts as a failure (see below) |
+| Silence from the provider on a model call | 12 s | A call that has sent no data of any kind by then (no text, no look-up and no reasoning) is cancelled and counts as a failure (see below) |
 | Tokens read and written | 40,000 | No further model call is made |
 | Look-ups from one model call | 4 | Any beyond the fourth are dropped |
 | Turns running at once, over all conversations | 4 | A further request is refused with `429` |
@@ -124,7 +124,12 @@ please ask me something narrower."), and the `done` event carries `step_cap`, `t
 ## When her model does not answer
 
 A question to Lucy is no longer lost when the model fails. This covers an error from the provider, a
-call that sends nothing for 8 seconds, and a model that has just failed twice in a row.
+call on which the provider stays silent for 12 seconds, and a model that has just failed twice in a row.
+The 12 seconds measure silence, not text: a model that is thinking sends reasoning before its first word, and
+that counts as an answer from the provider (the reasoning itself is never shown). Comment lines such as
+`: OPENROUTER PROCESSING` do not count, since OpenRouter sends them while the provider has not started. The
+number comes from the operator's history: the slowest healthy first text took 9.4 s, and the failing provider
+answered after 20 s.
 
 - **What she says.** If the first model call of a turn fails, she answers without the model, from the
   same board the opening briefing is built from. The reply is one sentence saying her model is not
@@ -132,7 +137,8 @@ call that sends nothing for 8 seconds, and a model that has just failed twice in
   with task names, soonest first, then how many tasks are working. For example: "My language model is
   not answering: OpenRouter's provider Sail Research is rate-limited (429). From the board: Research
   agent has gone quiet. One more is working."
-- **If the request asks her to act** (launch, answer, reply, close), the same reply ends with "I cannot
+- **If the request asks her to act** (it starts with an action word such as launch, answer, reply or close,
+  or has one right after "can you", "could you", "please", "go ahead and" or "I want you to"), the same reply ends with "I cannot
   launch, answer, reply or close anything until my language model is back." Kookr does not try to
   read a command without the model.
 - **What the sentence may contain.** Only the provider's name and the status, and only when the name is

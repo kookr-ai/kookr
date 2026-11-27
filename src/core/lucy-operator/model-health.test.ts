@@ -81,7 +81,7 @@ describe('the Lucy model circuit breaker', () => {
 
   test('a failure the turn recorded itself (first token deadline) counts toward opening it', () => {
     const s = setup();
-    const deadline = new LucyModelError('timeout', 'x', undefined, { firstTokenAfterMs: 8000 });
+    const deadline = new LucyModelError('timeout', 'x', undefined, { firstTokenAfterMs: 12_000 });
     s.health.recordFailure(deadline);
     s.health.recordFailure(deadline);
     expect(s.health.snapshot().breakerOpen).toBe(true);
