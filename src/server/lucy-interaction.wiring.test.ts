@@ -4,16 +4,31 @@
  * (websocket) must land in the same log, join on `clipId`, show up in the
  * summary endpoint, and stop being written when the `lucyInteractionLog`
  * setting is switched off. Only the TTS service is faked.
+ *
+ * The summary's wording model is switched off for the test (see `MODEL_ENV`): a spoken summary then
+ * uses the template wording, which is all this test needs. Without that, a shell that carries real
+ * model keys (every Kookr task's shell does) made this test call the real provider, and it timed out
+ * whenever that provider was slow.
  */
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
+
+/** Every variable that can give the server a helper model. Emptied for the test, restored after it. */
+const MODEL_ENV = [
+  'KOOKR_LLM_PROVIDER', 'KOOKR_LLM_BASE_URL',
+  'OPENROUTER_API_KEY', 'KOOKR_OPENROUTER_API_KEY',
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+  'GEMINI_API_KEY', 'GROQ_API_KEY',
+  'BASETEN_API_KEY', 'KOOKR_BASETEN_API_KEY',
+  'REQUESTY_API_KEY', 'KOOKR_REQUESTY_API_KEY',
+] as const;
 
 function portOf(server: { address(): unknown }): number {
   const addr = server.address();
@@ -38,6 +53,7 @@ describe('Lucy interaction log wiring (real server, fake TTS)', () => {
   let logPath: string;
 
   beforeEach(async () => {
+    for (const name of MODEL_ENV) vi.stubEnv(name, '');
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-lucy-wiring-'));
     logPath = join(tempDir, 'lucy-interactions.jsonl');
     tts = createServer((req, res) => {
@@ -69,6 +85,7 @@ describe('Lucy interaction log wiring (real server, fake TTS)', () => {
     await server.close();
     await new Promise<void>((resolve) => tts.close(() => resolve()));
     rmSync(tempDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   async function speak(taskId: string): Promise<{ clipId: string }> {
