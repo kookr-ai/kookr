@@ -47,7 +47,7 @@ export interface ChecklistConfig {
   /**
    * Test globs the repo declares (`testGlobs`), already validated. They are
    * added to the built-in test patterns, never replace them. See
-   * `testGlobToRegExp` in checklist.ts for the syntax.
+   * `testGlobToMatcher` in checklist.ts for the syntax.
    */
   testGlobs: string[];
   /** Non-fatal parse/validation notes surfaced in the report (S2: never a hard fail). */
@@ -141,7 +141,10 @@ function testGlobProblem(item: unknown): string | null {
   if (!item.trim()) return 'is empty';
   if (item.length > MAX_TEST_GLOB_LENGTH) return `is longer than ${MAX_TEST_GLOB_LENGTH} characters`;
   if (/[[\]{}!\\]/.test(item)) return 'uses unsupported syntax ([ ] { } ! or \\ — only * ** and ? are wildcards)';
+  if (item !== item.trim()) return 'has leading or trailing whitespace';
   if (item.startsWith('/')) return 'is absolute (globs are relative to the repository root)';
-  if (item.split('/').includes('..')) return 'contains a ".." segment';
+  const segments = item.replace(/\/$/, '').split('/');
+  if (segments.includes('..')) return 'contains a ".." segment';
+  if (segments.some((seg) => seg === '' || seg === '.')) return 'contains an empty or "." segment (paths are written like `qa/x`, not `./qa//x`)';
   return null;
 }

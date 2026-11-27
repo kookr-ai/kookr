@@ -34,7 +34,7 @@ describe('parseChecklistConfig', () => {
     }
   });
 
-  it('a config can only ever remove checks — no field adds a rule', () => {
+  it('a config can only ever weaken the gate — no field adds or runs a rule', () => {
     // The parser surface is exactly { disable, testGlobs }, and test globs only
     // widen what counts as a test. Any attempt to add/execute is
     // an unknown key that is ignored. This test pins that invariant.
@@ -52,17 +52,19 @@ describe('parseChecklistConfig', () => {
 
   it('skips unusable testGlobs entries with a content-free note, keeping the rest', () => {
     const cfg = parseChecklistConfig(
-      JSON.stringify({ testGlobs: ['ok/*.sh', 3, '', '[ab].ts', '{a,b}.ts', '!x', 'a\\b', '/abs/*', '../up/*', 'x'.repeat(201)] }),
+      JSON.stringify({ testGlobs: ['ok/*.sh', 3, '', '[ab].ts', '{a,b}.ts', '!x', 'a\\b', '/abs/*', '../up/*', 'x'.repeat(201), ' qa/', './qa/', 'qa//x', 'qa/./x'] }),
     );
     expect(cfg.testGlobs).toEqual(['ok/*.sh']);
     const notes = cfg.notes.join('\n');
-    expect(cfg.notes).toHaveLength(9);
+    expect(cfg.notes).toHaveLength(13);
     expect(notes).toMatch(/is not a string/);
     expect(notes).toMatch(/is empty/);
     expect(notes).toMatch(/unsupported syntax/);
     expect(notes).toMatch(/is absolute/);
     expect(notes).toMatch(/"\.\." segment/);
     expect(notes).toMatch(/longer than 200/);
+    expect(notes).toMatch(/leading or trailing whitespace/);
+    expect(notes).toMatch(/empty or "\." segment/);
     expect(notes).not.toMatch(/\/abs|up\//);
   });
 

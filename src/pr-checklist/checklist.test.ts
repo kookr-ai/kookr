@@ -14,7 +14,7 @@ import {
   parseTemplateRows,
   renderRow,
   scanSecrets,
-  testGlobToRegExp,
+  testGlobToMatcher,
   WAIVER_REASON_PLACEHOLDER,
 } from './checklist.js';
 import type { DiffFacts } from './types.js';
@@ -391,8 +391,8 @@ describe('isTestFile / tests evidence (#4226)', () => {
   });
 });
 
-describe('testGlobToRegExp / declared test globs (#4257)', () => {
-  const m = (glob: string, path: string) => testGlobToRegExp(glob).test(path);
+describe('testGlobToMatcher / declared test globs (#4257)', () => {
+  const m = (glob: string, path: string) => testGlobToMatcher(glob).test(path);
 
   it('a glob with no slash matches the file name in any directory; * stays inside one segment', () => {
     expect(m('*.check.ts', 'src/a/b.check.ts')).toBe(true);
@@ -418,14 +418,38 @@ describe('testGlobToRegExp / declared test globs (#4257)', () => {
   it('? is one character other than /, and regex metacharacters are literal', () => {
     expect(m('t?.sh', 'dir/t1.sh')).toBe(true);
     expect(m('t?.sh', 'dir/t12.sh')).toBe(false);
+    expect(m('a?b', 'a/b')).toBe(false);
+    expect(m('a*b', 'a/b')).toBe(false);
+    expect(m('a**b', 'a/x/b')).toBe(false);
+    expect(m('a**b', 'axyb')).toBe(true);
     expect(m('a.b+(c)', 'a.b+(c)')).toBe(true);
     expect(m('a.b+(c)', 'aXb+(c)')).toBe(false);
     expect(m('a.b+(c)', 'a.bb(c)')).toBe(false);
     expect(m('$x^', 'd/$x^')).toBe(true);
   });
 
+  it('repeated ** segments collapse and still match any depth, including none', () => {
+    expect(m('**/**/x.ts', 'x.ts')).toBe(true);
+    expect(m('a/**/**/b', 'a/b')).toBe(true);
+    expect(m('a/**/**/b', 'a/1/2/3/b')).toBe(true);
+    expect(m('a/**/**/b', 'a/1/2/3/c')).toBe(false);
+  });
+
+  it('globs that backtrack catastrophically as regexes match in bounded time', () => {
+    const deep = Array.from({ length: 30 }, () => 'd').join('/') + '/y';
+    const cases: [string, string][] = [
+      ['**/'.repeat(30) + 'x', 'src/a/b/c/d/e/f/g/h.ts'],
+      ['**/'.repeat(9) + 'x', deep],
+      ['*a'.repeat(8) + 'b', 'a'.repeat(40)],
+      ['*a'.repeat(60) + 'b', 'a'.repeat(200)],
+    ];
+    const started = Date.now();
+    for (const [glob, path] of cases) expect(m(glob, path)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it('declared patterns add to the built-in test detection, never replace it', () => {
-    const extra = [testGlobToRegExp('*.check.ts')];
+    const extra = [testGlobToMatcher('*.check.ts')];
     expect(isTestFile('src/a.check.ts', extra)).toBe(true);
     expect(isTestFile('src/a.check.ts')).toBe(false);
     expect(isTestFile('src/a.test.ts', extra)).toBe(true);
@@ -433,7 +457,7 @@ describe('testGlobToRegExp / declared test globs (#4257)', () => {
   });
 
   it('only the tests / new-tests rows take declared globs as evidence', () => {
-    const extra = [testGlobToRegExp('checks/')];
+    const extra = [testGlobToMatcher('checks/')];
     expect(hasEvidence('tests', ['checks/run.sh'], extra)).toBe(true);
     expect(hasEvidence('new-tests', ['checks/run.sh'], extra)).toBe(true);
     expect(hasEvidence('tests', ['checks/run.sh'])).toBe(false);
@@ -445,7 +469,7 @@ describe('testGlobToRegExp / declared test globs (#4257)', () => {
   });
 
   it('a file a declared glob names as a test is not a source file', () => {
-    const extra = [testGlobToRegExp('*.check.ts')];
+    const extra = [testGlobToMatcher('*.check.ts')];
     expect(isSourceFile('src/a.check.ts')).toBe(true);
     expect(isSourceFile('src/a.check.ts', extra)).toBe(false);
     expect(isSourceFile('src/a.ts', extra)).toBe(true);

@@ -6,7 +6,7 @@
 // so a pathological diff surfaces as an error, never an OOM.
 
 import { execFile } from 'node:child_process';
-import { isTestFile } from './checklist.js';
+import { isTestFile, type PathPattern } from './checklist.js';
 import { ChecklistInputError } from './errors.js';
 import type { DiffFacts } from './types.js';
 
@@ -69,7 +69,7 @@ export async function resolveBase(runner: GitRunner, base: string): Promise<stri
 export async function collectDiffFacts(
   runner: GitRunner,
   base: string,
-  extraTestPatterns: readonly RegExp[] = [],
+  extraTestPatterns: readonly PathPattern[] = [],
 ): Promise<DiffFacts> {
   const baseSha = await resolveBase(runner, base);
   if (!baseSha) {

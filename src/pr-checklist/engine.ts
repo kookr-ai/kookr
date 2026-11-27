@@ -18,6 +18,7 @@ import {
   isSourceFile,
   parseChecklist,
   sourceBaseName,
+  type PathPattern,
 } from './checklist.js';
 import {
   classifyCommitlintConfig,
@@ -49,7 +50,7 @@ export interface VerifyInput {
   /** Rule ids the repo disabled via .kookr/pr-checklist.json (P4a). Only removes checks. */
   disabled?: ReadonlySet<string>;
   /** The repo's declared test globs (`testGlobs`), compiled; they add to the built-in test patterns. */
-  testPatterns?: readonly RegExp[];
+  testPatterns?: readonly PathPattern[];
   /** Non-fatal notes from parsing the repo config, surfaced in the report. */
   configNotes?: readonly string[];
   /**
@@ -336,7 +337,7 @@ async function readTestCorpus(
   read: (absPath: string, cap: number) => Promise<string>,
   cwd: string,
   newSourceFiles: readonly string[],
-  testPatterns: readonly RegExp[] = [],
+  testPatterns: readonly PathPattern[] = [],
 ): Promise<string> {
   const wanted = new Set(newSourceFiles.map(sourceBaseName).filter((name) => name.length > 0));
   if (wanted.size === 0) return '';
@@ -345,7 +346,7 @@ async function readTestCorpus(
   const files = listed.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
   if (testPatterns.length > 0) {
     // The repo's declared test globs (#4257) are matched in-process, with the
-    // same regexes the evidence rule uses, rather than handed to git as
+    // same matchers the evidence rule uses, rather than handed to git as
     // pathspecs, whose `*` semantics differ. Added after the default files.
     const all = await runner(['ls-files']);
     if (all.exitCode === 0) {

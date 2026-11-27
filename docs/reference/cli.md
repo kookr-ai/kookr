@@ -2524,14 +2524,15 @@ stdout and rewrites every row that carries a `kookr:check` marker:
   A row with no built-in evidence rule (for example `prose`) gets a placeholder
   asking you to tick it if you did the work, or give the reason.
 
-A repository whose tests live outside the built-in test paths (`test/`,
-`tests/`, `*.test.*`, `*.spec.*`, `*.test.sh`) can declare more in
+A repository whose tests live outside the built-in test paths (a `test/` or
+`tests/` directory at any depth, `*.test.{js,jsx,ts,tsx}`,
+`*.spec.{js,jsx,ts,tsx}` and `*.test.sh`) can declare more in
 `.kookr/pr-checklist.json`, for example `{ "testGlobs": ["*.check.ts", "qa/"] }`.
 Both verbs then count those files as tests for the `tests` and `new-tests` rows,
-the new-module test lookup and the env-variable scan. `*` stays in one path
-segment, `**` spans segments, a glob without `/` matches a file name in any
-directory, and a trailing `/` means the whole directory. Globs only add to the
-built-in paths.
+the new-module test lookup and the env-variable scan. `*` and `?` stay in one
+path segment, `**` spans segments, a glob without `/` matches a file name in any
+directory, a glob containing `/` is matched from the repository root, and a
+trailing `/` means the whole directory. Globs only add to the built-in paths.
 
 Every other template line is printed unchanged, and so is a row whose rule the
 repository turned off in `.kookr/pr-checklist.json` (`verify` ignores that rule,
