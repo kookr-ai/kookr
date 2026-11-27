@@ -3,7 +3,7 @@
 - **Status**: Findings recorded and acted on. Eight changes (#4271, #4272, #4273, #4274, #4275, #4277, #4280, #4281) and this document (#4270) are on `main` and in production since 27 November 20:37 (build `fb3e99219`): the operator answered "Start the train now", the train verified `staging` green and moved `main`, and production redeployed itself. What was not built is in #4279.
 - **Author**: Claude (Fable 5.2), dogfooding session on the operator's live dashboard
 - **Date**: 2026-11-27 (all clock times below are UTC)
-- **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production runs
+- **Base**: `origin/main` @ `e33d8654d` (worktree `kookr-dogfood-202611-run8`), the build production ran during the run
 - **Focus** (operator's brief, the same as runs 6 and 7 plus one sentence): "Lucy's panel needs a
   full overhaul. End goal is Lucy being as helpful as Jarvis: being proactive, when she
   speaks/interacts with the user it is always to ask for added value, the chat is nice, the
@@ -366,7 +366,7 @@ this was the only test of those directories that reached a real model on this ho
 
 **Evidence.** At 19:07 the five pull requests this run had merged were on `staging` and nowhere
 else. `origin/main` is still `e33d8654d`, the commit of 23 November, and production follows
-`main`. `pnpm train:status`: `running: false`, `halted: base-red` since 26 November 22:38, last
+`main` (`main` moved at 20:29, once the operator had the train started; see the Summary). `pnpm train:status`: `running: false`, `halted: base-red` since 26 November 22:38, last
 cycle 27 November 06:59; its process id belongs to a process that died with the host's restart.
 Three pull requests from other tasks (#4267, #4269 and a plugin bump) have been waiting on
 `staging` as well. `GET /api/health` reports `integrationTrain.alerting: true`; nothing on the
@@ -515,7 +515,8 @@ request. All were merged with `kookr merge`, into `staging`.
 | J. The wiring test no longer calls a real model (R8-F12) | #4281 | 1 round, pass | Nothing blocking. It listed the suite-wide scrub that lets the same thing happen to another test. |
 | I. The checklist reads `.tsx` tests (R8-F11) | #4274 | 3 rounds | One critical finding, against my own first version: it would have hidden 94 server test files behind the checklist's 16 MiB limit. Reworked into a lookup with no total limit. |
 
-**What the operator sees once `main` moves** (it has not: R8-F13).
+**What the operator sees now that `main` has moved** (20:29; in production since 20:37, see the
+Summary).
 
 - With Lucy minimised, a task's question appears in "Needs you" and in the overview, and her
   circle grows once into the question with its answers. The dashboard no longer says "All clear"
@@ -541,8 +542,10 @@ runs the first four.
 (`start-args.json`), from the production checkout: `pnpm train:start --worktree ~/git/kookr-train
 --workers 6`. It cleared its halt at once ("a ref moved"), verified `staging` (thirteen commits
 ahead of `main`, nine of them this run's, this document included) green, and promoted
-`fb3e99219` to `main` at 20:29. The "Kookr Deploy Convergence" schedule redeployed production at
-20:37. The train is a detached process and keeps running; nothing restarts it after a reboot
+`fb3e99219` to `main` at 20:29. The server's own deploy-convergence check then asked for a redeploy
+(`[deploy-convergence] redeploy requested … age=17m grace=15m action=redeploy` in its log; the
+schedule of the same name is skipped while the project's automation is paused), and production
+restarted on the new build at 20:37. The train is a detached process and keeps running; nothing restarts it after a reboot
 (R8-F13, #4279).
 
 **Not built, and where it went.** Issue #4279: the expiry outcome on the card (the server half
