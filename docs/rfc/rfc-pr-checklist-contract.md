@@ -148,9 +148,11 @@ A repo opts in by adding **machine-readable markers** to its PR template
 ```
 
 In v1 there is **no config file**. Marker ids map to built-in rules (§3).
-**P4a** adds one narrow, safe config: `.kookr/pr-checklist.json` with a single
-`disable` key, letting a repo opt its own gate out of named built-in rules
-(declarative-only, no execution — see §"Phased delivery" P4a). The fuller
+**P4a** adds one narrow, safe config: `.kookr/pr-checklist.json` with two
+keys — `disable`, letting a repo opt its own gate out of named built-in rules,
+and `testGlobs`, adding repo-specific test paths on top of the built-in test
+patterns (declarative-only, no execution, both can only weaken the repo's own
+gate — see §"Phased delivery" P4a). The fuller
 `.kookr/pr-checklist.yaml` (repo-defined rules, including `command`) arrives at
 P4 with its own security review; its rule-merge precedence is defined there as
 **per-marker whole-rule replacement** (a repo rule for id `X` replaces the
@@ -295,12 +297,19 @@ reversible, and does not start until the prior phase has baked.
   env/scope gate (S3), attest + changed-when only, `--run-commands none`, the
   `if !`-guarded call, kill-switch + `doctor`. Canary on lucy + author repos
   before considering default-on. Satisfies R1.
-- **P4a — `.kookr/pr-checklist.json`, disable-only (SHIPPED).** The minimal,
-  safe slice of P4, carved out ahead of the risky remainder. A repo declares
-  `{ "disable": ["env", ...] }` to opt its own gate out of named built-in rules.
-  It is **JSON, not YAML** (no parser-bomb surface) and **declarative-only** —
-  the config can only ever *remove* checks, never add a rule, redirect a source,
-  or execute anything. So it cannot be an execution or exfiltration vector: worst
+- **P4a — `.kookr/pr-checklist.json`, `disable` + `testGlobs` (SHIPPED).** The
+  minimal, safe slice of P4, carved out ahead of the risky remainder. A repo
+  declares `{ "disable": ["env", ...] }` to opt its own gate out of named
+  built-in rules, and `{ "testGlobs": ["*.check.ts", "qa/", ...] }` to count
+  extra paths as tests. Test globs are **additive only**: they extend the
+  built-in test patterns, never replace them, so more paths satisfy the
+  `tests` / `new-tests` rules and fewer are read by the env-var scan. Globs
+  are relative to the repo root, support only `*`, `**` and `?`, and are
+  capped (50 entries, 200 characters each); unusable entries are skipped with a
+  note. It is **JSON, not YAML** (no parser-bomb surface) and
+  **declarative-only** — the config can only ever *weaken* the repo's own gate
+  (remove a check, or widen what counts as a test), never add a rule, redirect
+  a source, or execute anything. So it cannot be an execution or exfiltration vector: worst
   case a repo weakens its own gate, and CI stays authoritative. That property is
   why it needs none of the S1/S5 command-execution review below. Motivating case:
   `knowledge-base-mcp-server` documents 100+ config vars in typed config modules /
