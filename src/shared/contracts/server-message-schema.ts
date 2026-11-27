@@ -312,6 +312,16 @@ const resourceStatusMessage = z.object({
   }),
 });
 
+const fleetVitalsMessage = z.object({
+  type: z.literal('fleetVitals'),
+  sample: z.object({
+    sampledAtMs: z.number(),
+    machine: jsonObject,
+    fleet: jsonObject,
+  }),
+  history: z.array(jsonObject).optional(),
+});
+
 const circuitBreakerStatusMessage = z.object({
   type: z.literal('circuitBreakerStatus'),
   breakers: z.array(jsonObject),
@@ -546,6 +556,7 @@ const ServerMessageSchemaImpl = z.union([
   achievementResetAckMessage,
   quotaStatusMessage,
   resourceStatusMessage,
+  fleetVitalsMessage,
   circuitBreakerStatusMessage,
   schedulesMessage,
   scheduleFiredMessage,

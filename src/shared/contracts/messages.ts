@@ -5,6 +5,7 @@ import type { AnomalySeverity, AnomalyType } from './anomalies.js';
 import type { BuildInfo } from './build-info.js';
 import type { CircuitBreakerSnapshot } from './circuit-breaker.js';
 import type { DiagnosticReport } from './diagnostic.js';
+import type { FleetVitalsHistoryPoint, FleetVitalsSample } from './fleet-vitals.js';
 import type { GitHubPRState, GitHubIssueState, GitHubStateChange } from './github.js';
 import type { AttemptState, ContributionAttempt, IssueCheckError } from './oss-attempts.js';
 import type { CheckoutMissingPlaybooks, Playbook, PlaybookScope, LaunchDependency } from './playbook.js';
@@ -498,6 +499,11 @@ export type ServerMessage =
   | { type: 'achievement:reset:ack'; success: boolean; error?: string }
   | { type: 'quotaStatus'; quota: QuotaStatus }
   | { type: 'resourceStatus'; status: SystemResourceStatus }
+  /**
+   * Machine and fleet vitals, sent on every resource-status tick. `history` is
+   * present only in the burst a dashboard receives when it connects.
+   */
+  | { type: 'fleetVitals'; sample: FleetVitalsSample; history?: FleetVitalsHistoryPoint[] }
   | { type: 'circuitBreakerStatus'; breakers: CircuitBreakerSnapshot[] }
   | { type: 'schedules'; schedules: ScheduleResponse[]; revision: number; status: ScheduleStatusSnapshot }
   | { type: 'scheduleFired'; scheduleId: string; taskId: string }
@@ -792,6 +798,7 @@ export const SERVER_MESSAGE_TYPES = [
   'achievement:reset:ack',
   'quotaStatus',
   'resourceStatus',
+  'fleetVitals',
   'circuitBreakerStatus',
   'schedules',
   'scheduleFired',

@@ -113,6 +113,22 @@ export class OutstandingSubagentTracker {
   }
 
   /**
+   * Outstanding subagents across all parents that are still inside
+   * {@link SUBAGENT_TTL_MS}. Read-only: unlike {@link evictStale} it drops
+   * nothing, so a display can call it on every tick without changing what the
+   * suppression paths later evict and count.
+   */
+  totalFresh(now: number = Date.now()): number {
+    let total = 0;
+    for (const map of this.outstanding.values()) {
+      for (const startedAt of map.values()) {
+        if (now - startedAt <= SUBAGENT_TTL_MS) total++;
+      }
+    }
+    return total;
+  }
+
+  /**
    * Drop subagent entries older than {@link SUBAGENT_TTL_MS}. Caps suppression
    * duration when SubagentStop is lost. Eviction is lazy — only runs when
    * called (typically from suppress / snapshot paths).

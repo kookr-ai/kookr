@@ -131,6 +131,31 @@ const serverMessageCases = [
     },
   }),
   serverMessageCase({ type: 'resourceStatus', status: resourceStatus }),
+  serverMessageCase({
+    type: 'fleetVitals',
+    sample: {
+      sampledAtMs: 1790000000000,
+      machine: {
+        cpuUsagePercent: 66,
+        loadAverage1m: 18.2,
+        logicalCpuCount: 16,
+        memoryUsedPercent: 32,
+        memoryUsedBytes: 1024,
+        memoryTotalBytes: 4096,
+        gpu: null,
+        gpuUnavailable: 'not_installed',
+        serverLoopDelayP95Ms: 12,
+      },
+      fleet: {
+        agents: 9,
+        subagents: 6,
+        tokens: { generatedPerSec: 110, readPerSec: 13860, cacheReadPerSec: 13525 },
+        toolCallsPerMin: 26,
+        topTools: [{ tool: 'Bash', calls: 18 }],
+      },
+    },
+    history: [{ t: 1790000000000, cpu: 66, mem: 32, gpu: null, vram: null, run: 15, gen: 110, read: 13860, tools: 26 }],
+  }),
   serverMessageCase({ type: 'circuitBreakerStatus', breakers: [] }),
   serverMessageCase({
     type: 'schedules',

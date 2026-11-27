@@ -222,6 +222,8 @@ import { PlaybookChainService } from './playbook-chain-service.js';
 import { isProviderPaused } from '../core/provider-pause.js';
 import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
+import { createFleetVitalsService } from './bootstrap/create-fleet-vitals-service.js';
+import type { FleetVitalsGpuSource } from './fleet-vitals-service.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
 import {
   createResourceStatusService,
@@ -464,6 +466,8 @@ export interface KookrConfig {
   resourceStatusSampler?: ResourceStatusSampler;
   /** Test seam for faster resource-status polling. Production uses RESOURCE_STATUS_INTERVAL_MS. */
   resourceStatusIntervalMs?: number;
+  /** Test seam for the fleet vitals GPU reading. Production runs `nvidia-smi`. */
+  fleetVitalsGpuProbe?: FleetVitalsGpuSource;
   /**
    * Resolved API-token auth posture (issue #708). When `required` is true (a
    * non-loopback bind), state-changing routes and the WebSocket upgrade require
@@ -589,6 +593,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
     resourceStatusSampler,
     resourceStatusIntervalMs,
+    fleetVitalsGpuProbe,
     lifecycleSignal,
     systemdNotifier,
     bootClassification,
@@ -2377,6 +2382,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   );
   let getEventLoopDelayP95MsForSnapshotShed: () => number | null | undefined = () => null;
 
+  // Machine + fleet vitals for the dashboard (display only). Created before the
+  // event pipeline because the pipeline reports each tool call to it; sampled
+  // from the resource-status tick further down.
+  const fleetVitalsService = createFleetVitalsService({
+    taskStore,
+    monitor,
+    broadcastToAll,
+    hasDashboardClients: () => connectionRegistry.dashboardCount() > 0,
+    gpuProbe: fleetVitalsGpuProbe,
+  });
+
   const {
     abortPendingSuggestion,
     requestSnapshotBroadcast,
@@ -2404,6 +2420,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // so the coalesced flush skips the createSnapshotMessage rebuild while the
     // broadcaster is shedding (it discards any snapshot built during a shed).
     getLoadShedActive: () => realtime.isLoadShedActive(),
+    onToolCall: (toolName) => fleetVitalsService.noteToolCall(toolName),
   });
 
   // Terminal input deps — used by terminal bridge handlers
@@ -4060,6 +4077,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         // healthy again (sweeps only fire on the false→true edge).
         emergencyMaintenancePrune?.noteDiskLeftCritical();
       }
+      // Fleet vitals ride this tick: one sample per resource sample. Last, and
+      // the service guards its own sources, so it cannot hold up disk admission.
+      fleetVitalsService.observeResourceStatus(status);
     },
   });
   // Issue #1995: bind the live resource sample for ops-status free-disk fields.
@@ -4258,6 +4278,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),
     getLatestResourceStatus: () => resourceStatusService.getLatest(),
+    getFleetVitals: () => {
+      const sample = fleetVitalsService.getLatest();
+      return sample ? { sample, history: fleetVitalsService.getHistory() } : null;
+    },
     startupAlerts,
     workspaceEnabled: true,
     attemptRepository,
