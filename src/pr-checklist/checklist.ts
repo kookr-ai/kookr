@@ -26,9 +26,91 @@ export interface BoxEvidence {
  */
 export const TEST_FILE_PATTERNS: readonly RegExp[] = [/(^|\/)tests?\//, /\.(?:test|spec)\.[jt]sx?$/, /\.test\.sh$/];
 
-/** True when `path` is a test file by the `tests` evidence rule. Pure. */
-export function isTestFile(path: string): boolean {
-  return TEST_FILE_PATTERNS.some((re) => re.test(path));
+/**
+ * True when `path` is a test file by the `tests` evidence rule. `extra` holds
+ * the repo's declared test globs (`testGlobs`, already compiled by
+ * `testGlobToMatcher`); they add to the built-in patterns. Pure.
+ */
+export function isTestFile(path: string, extra: readonly PathPattern[] = []): boolean {
+  return TEST_FILE_PATTERNS.some((re) => re.test(path)) || extra.some((re) => re.test(path));
+}
+
+/** Anything that can say whether a repo-relative path matches: a RegExp, or a compiled test glob. */
+export interface PathPattern {
+  test(path: string): boolean;
+}
+
+/**
+ * Compile one `testGlobs` entry from `.kookr/pr-checklist.json` (#4257) into a
+ * matcher over repo-relative paths. Pure. The syntax is gitignore-like:
+ *   - `*` matches within one path segment, `?` one character other than `/`;
+ *   - a `**` segment matches any number of path segments, including none
+ *     (`dir/**`, or `**` then `/name.ts` for that file name at any depth);
+ *     a `**` inside a segment (`a**b`) acts as `*`;
+ *   - a glob with no `/` matches the file name in any directory
+ *     (`*.check.ts` matches `src/a/b.check.ts`); one with a `/` is anchored
+ *     at the repository root;
+ *   - a trailing `/` means everything under that directory.
+ * Every other character is literal. The config parser has already refused
+ * `[ ] { } ! \`, absolute globs, `.` / `..` / empty segments and padding.
+ *
+ * The glob is repo-controlled, so it is NOT compiled to a RegExp: nested
+ * wildcards backtrack exponentially there (`**` + `/` repeated 30 times took
+ * seconds per path). This matcher is dynamic programming over segments and
+ * characters, so its cost is bounded by glob length × path length.
+ */
+export function testGlobToMatcher(glob: string): PathPattern {
+  const g = glob.endsWith('/') ? `${glob}**` : glob;
+  const raw = g.includes('/') ? g.split('/') : ['**', g];
+  const segs: string[] = [];
+  for (const seg of raw) if (!(seg === '**' && segs[segs.length - 1] === '**')) segs.push(seg);
+  return { test: (path: string) => matchSegments(segs, path.split('/')) };
+}
+
+/** `segs` (with `**` segments) against path segments. O(segs × parts) segment matches. */
+function matchSegments(segs: readonly string[], parts: readonly string[]): boolean {
+  // ok[j]: segs[i..] matches parts[j..]; filled from the last glob segment back.
+  let ok = parts.map(() => false).concat(true); // segs[] (empty) matches only the empty tail
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const next = new Array<boolean>(parts.length + 1).fill(false);
+    if (segs[i] === '**') {
+      // `**` takes zero segments (ok[j]) or one more (next[j + 1]).
+      for (let j = parts.length; j >= 0; j--) next[j] = ok[j] || (j < parts.length && next[j + 1]);
+    } else {
+      for (let j = 0; j < parts.length; j++) next[j] = ok[j + 1] && matchSegment(segs[i], parts[j]);
+    }
+    ok = next;
+  }
+  return ok[0];
+}
+
+/** One glob segment (`*`, `?`, literals) against one path segment. Greedy with one backtrack point: O(len × len). */
+function matchSegment(pat: string, str: string): boolean {
+  let p = 0;
+  let s = 0;
+  let star = -1;
+  let mark = 0;
+  while (s < str.length) {
+    if (p < pat.length && (pat[p] === '?' || (pat[p] !== '*' && pat[p] === str[s]))) {
+      p++;
+      s++;
+    } else if (p < pat.length && pat[p] === '*') {
+      star = p++;
+      mark = s;
+    } else if (star >= 0) {
+      p = star + 1;
+      s = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (p < pat.length && pat[p] === '*') p++;
+  return p === pat.length;
+}
+
+/** Compile a repo's declared test globs; the result is passed as `extraTestPatterns` / `extra`. Pure. */
+export function compileTestGlobs(globs: readonly string[]): PathPattern[] {
+  return globs.map(testGlobToMatcher);
 }
 
 export const BOX_EVIDENCE: Record<string, BoxEvidence> = {
@@ -186,7 +268,7 @@ export function findUnparsedMarkerIds(body: string, parsedRows: ChecklistRow[]):
 }
 
 /** Does any changed path match one of the evidence patterns? */
-function changed(paths: string[], patterns: RegExp[]): boolean {
+function changed(paths: string[], patterns: readonly PathPattern[]): boolean {
   return patterns.some((re) => paths.some((p) => re.test(p)));
 }
 
@@ -196,9 +278,17 @@ function changed(paths: string[], patterns: RegExp[]): boolean {
  * Shared by `evaluateAttestation` and `scaffold`, so a row scaffold ticks is one
  * verify accepts.
  */
-export function hasEvidence(id: string, changedPaths: string[]): boolean | null {
+export function hasEvidence(id: string, changedPaths: string[], extraTestPatterns: readonly PathPattern[] = []): boolean | null {
   const spec = BOX_EVIDENCE[id];
-  return spec ? changed(changedPaths, spec.paths) : null;
+  return spec ? changed(changedPaths, evidencePaths(id, spec, extraTestPatterns)) : null;
+}
+
+/** Rows whose evidence is "a test file changed", so a repo's declared test globs count for them. */
+const TEST_EVIDENCE_IDS: ReadonlySet<string> = new Set(['tests', 'new-tests']);
+
+/** The evidence patterns for `id`: the built-in ones, plus the repo's test globs for the test rows. */
+function evidencePaths(id: string, spec: BoxEvidence, extraTestPatterns: readonly PathPattern[]): readonly PathPattern[] {
+  return TEST_EVIDENCE_IDS.has(id) && extraTestPatterns.length > 0 ? [...spec.paths, ...extraTestPatterns] : spec.paths;
 }
 
 /**
@@ -213,6 +303,7 @@ export function evaluateAttestation(
   rows: ChecklistRow[],
   changedPaths: string[],
   templateText = '',
+  extraTestPatterns: readonly PathPattern[] = [],
 ): { results: CheckResult[]; waived: Set<string>; notes: string[] } {
   const templateRows = templateRowsById(templateText);
   const expectedLines = (id: string, ...states: ('checked' | 'waived')[]) => expectedFor(id, templateRows, states);
@@ -279,7 +370,7 @@ export function evaluateAttestation(
       });
       continue;
     }
-    if (!changed(changedPaths, spec.paths)) {
+    if (!changed(changedPaths, evidencePaths(row.id, spec, extraTestPatterns))) {
       results.push({
         id: row.id,
         status: 'fail',
@@ -440,6 +531,7 @@ export function evaluateStructural(
   envFileText: string,
   testCorpus: string,
   waived: Set<string>,
+  extraTestPatterns: readonly PathPattern[] = [],
 ): CheckResult[] {
   const results: CheckResult[] = [];
 
@@ -467,7 +559,7 @@ export function evaluateStructural(
 
   // (B) New source file with no reference under a test path.
   if (!waived.has('new-tests') && !waived.has('tests')) {
-    const untested = findUntested(facts.addedFiles.filter(isSourceFile), testCorpus);
+    const untested = findUntested(facts.addedFiles.filter((p) => isSourceFile(p, extraTestPatterns)), testCorpus);
     if (untested.length > 0) {
       results.push({
         id: 'new-tests',
@@ -490,7 +582,16 @@ export function evaluateStructural(
   return results;
 }
 
-/** Source file heuristic: a .ts/.js under src/ (not a test). */
-export function isSourceFile(path: string): boolean {
-  return /^src\/.*\.[jt]s$/.test(path) && !/\.test\.[jt]s$/.test(path) && !/(^|\/)__tests__\//.test(path);
+/**
+ * Source file heuristic: a .ts/.js under src/ (not a test). A file matching one
+ * of the repo's declared test globs (`extraTestPatterns`) is a test, not a
+ * source module that needs a test of its own.
+ */
+export function isSourceFile(path: string, extraTestPatterns: readonly PathPattern[] = []): boolean {
+  return (
+    /^src\/.*\.[jt]s$/.test(path) &&
+    !/\.test\.[jt]s$/.test(path) &&
+    !/(^|\/)__tests__\//.test(path) &&
+    !extraTestPatterns.some((re) => re.test(path))
+  );
 }

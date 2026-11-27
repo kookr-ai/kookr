@@ -16,6 +16,7 @@ import {
   parseTemplateRows,
   renderRow,
   WAIVER_REASON_PLACEHOLDER,
+  type PathPattern,
 } from './checklist.js';
 
 export interface ScaffoldResult {
@@ -36,6 +37,7 @@ export function scaffoldBody(
   templateText: string,
   changedPaths: string[],
   disabled: ReadonlySet<string> = new Set(),
+  extraTestPatterns: readonly PathPattern[] = [],
 ): ScaffoldResult {
   const lines = templateText.split('\n');
   const result: ScaffoldResult = { body: '', checked: [], struck: [], undecided: [], disabled: [] };
@@ -46,7 +48,7 @@ export function scaffoldBody(
       result.disabled.push(row.id);
       continue;
     }
-    const evidence = hasEvidence(row.id, changedPaths);
+    const evidence = hasEvidence(row.id, changedPaths, extraTestPatterns);
     const cr = lines[row.line].endsWith('\r') ? '\r' : '';
     if (evidence === true) {
       lines[row.line] = renderRow(row, 'checked') + cr;
