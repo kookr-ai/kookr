@@ -15,19 +15,23 @@
  * waiting, the bubble grows into a card with the decision and its buttons (`BubbleDecisionCard.tsx`, when and
  * which in `bubble-decision.ts`); it never takes focus and waits while the operator types.
  *
- * "Lucy's room" is the fourth layout: she takes the whole window and covers the dashboard, which stays mounted
- * underneath. The header's Expand button enters it and, as "Back to dashboard", leaves it; so does a keyboard
- * shortcut (Alt+Shift+L by default, `lucy_room_toggle`), also from the minimised bubble. From 1100 px wide the
- * room is a slim header (name and state, Talk, Replay last, Back to dashboard), the conversation in the middle
- * (at most 760 px, centred, the composer under it) and a side rail on the right with the 3D view above what
- * waits on the operator as whole cards; narrower, it is the column's own stack at full width. It is the same
- * element with the same children in the same places, laid out again by the stylesheet, so the switch unmounts
- * nothing: the 3D view keeps running, a half-typed message and the scroll position stay. The room belongs to
- * one browser tab (`store/avatar-panel-prefs.ts`): it is open there whatever the shared "minimised" choice
- * says, does not set `--lucy-column-width`, and "Open task" from inside it leaves it so the task is on screen.
+ * "Lucy's room", called the desk in the interface, is the fourth layout: she takes the whole window and covers the
+ * dashboard, which stays mounted underneath. The header's Desk button enters it and, as "Back to dashboard",
+ * leaves it; so does a keyboard shortcut (Alt+Shift+L by default, `lucy_room_toggle`), also from the minimised
+ * bubble. From 1500 px wide the desk is three labelled columns under a one-line header (name and state, a plain
+ * summary such as "7 running · 2 need you", Talk, Replay last, Back to dashboard): Decisions (everything that waits
+ * on the operator, `WaitingTray.tsx` with `desk.ts`'s words), Fleet (what runs and what finished today,
+ * `DeskFleet.tsx`) and the Conversation (her 3D view as a portrait, the thread, the composer: at most 760 px wide,
+ * centred). From 1100 px Decisions and Fleet are stacked in one left column; narrower, the desk is the column's own
+ * stack at full width (`avatarDeskColumns` decides). It is the same element with the same children in the same
+ * places, laid out again by the stylesheet, so the switch unmounts nothing: the 3D view keeps running, a half-typed
+ * message and the scroll position stay. The desk belongs to one browser tab (`store/avatar-panel-prefs.ts`): it is
+ * open there whatever the shared "minimised" choice says, does not set `--lucy-column-width`, and "Open task"
+ * from inside it leaves it so the task is on screen. While it is shown the dock tells the page where the
+ * conversation starts (`--lucy-desk-left`), so the dashboard's toasts stand above the composer.
  *
  * From top to bottom the column holds:
- *  - the header: her name, what she is doing, Replay last, Expand, Minimise;
+ *  - the header: her name, what she is doing, Replay last, Desk, Minimise;
  *  - the 3D view, 120 px tall (it gives up height only when an unfolded "Waiting on you" list needs the room);
  *  - the strip "Waiting on you" (`WaitingTray.tsx`), one line until it is unfolded: permission cards, the
  *    questions tasks ask the operator (`kookr ask`, the same question that goes to Telegram; Lucy reads one
@@ -68,6 +72,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FocusEvent as ReactFocusEvent } from 'react';
 import avatarUrl from './assets/lucy-bust.glb?url';
+import type { AgentState } from '../../shared/protocol.js';
 import { AvatarStage, type AvatarState } from './avatar-stage.js';
 import { subscribeSpeechBus } from '../audio/speech-bus.js';
 import { getLastClip, useClipHistory, useLastClip } from '../audio/last-clip.js';
@@ -98,6 +103,9 @@ import { LucyActionCard } from './LucyActionCard.js';
 import { LucyTypedInput } from './LucyTypedInput.js';
 import { LucyThread } from './LucyThread.js';
 import { WaitingTray } from './WaitingTray.js';
+import { DeskFleet } from './DeskFleet.js';
+import { deskSummaryText } from './desk.js';
+import { useNeedsYou } from '../store/needs-you.js';
 import { BubbleDecisionCard } from './BubbleDecisionCard.js';
 import { useBubbleDecision, type BubbleItem } from './bubble-decision.js';
 import { ColumnResizer } from './ColumnResizer.js';
@@ -147,12 +155,12 @@ const TALK_OFF_NOTICE = 'Hands-free off';
 const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
 /** The one button that gives her the whole window and brings the dashboard back; what it says is its name. */
-const ROOM_ENTER_LABEL = 'Expand';
+const ROOM_ENTER_LABEL = 'Desk';
 const ROOM_LEAVE_LABEL = 'Back to dashboard';
 const ROOM_ENTER_TITLE = `Give ${NAME} the whole window`;
 /** What the panel is called as a region of the page, in the column and in the room. */
 const COLUMN_REGION_LABEL = `${NAME} avatar`;
-const ROOM_REGION_LABEL = `${NAME}\u2019s room`;
+const ROOM_REGION_LABEL = `${NAME}\u2019s desk`;
 /** Re-render the "N min ago" labels this often while the thread is on screen. */
 const RELATIVE_TIME_REFRESH_MS = 30_000;
 
@@ -187,8 +195,13 @@ function announcedText(item: BubbleItem): string {
 /** The name of the CSS custom property on the page's root element that tells the dashboard how much room the open column takes. */
 export const COLUMN_WIDTH_PROPERTY = '--lucy-column-width';
 
-/** On the room's own element: how wide its side rail is, for the stylesheet's grid. */
-const RAIL_WIDTH_PROPERTY = '--lucy-rail-width';
+/** On the desk's own element: how wide one side column (Decisions, Fleet) is, for the stylesheet's grid. */
+const SIDE_WIDTH_PROPERTY = '--lucy-desk-side-width';
+/** On the page's root element while the desk is shown: how far from the left its conversation column starts, how tall its composer is. */
+const DESK_ATTRIBUTE = 'data-lucy-desk';
+const DESK_LEFT_PROPERTY = '--lucy-desk-left';
+const DESK_COMPOSER_PROPERTY = '--lucy-desk-composer-height';
+const NO_AGENTS: readonly AgentState[] = [];
 
 export interface AvatarDockProps {
   /** How many tasks are waiting for the operator; shown as a badge on the bubble. */
@@ -236,6 +249,14 @@ export interface AvatarDockProps {
    * the dialog is painted above her and is not hers to close.
    */
   dashboardDialogOpen?: () => boolean;
+  /**
+   * The dashboard's agent buckets, for the desk (Lucy's room): `findings` are the tasks that need the operator,
+   * `running` its "Working" bucket, `completed` its finished one, newest first. Passed through as they are, so
+   * the desk and the dashboard cannot disagree. Without them the desk's Fleet column is empty.
+   */
+  findings?: readonly AgentState[];
+  running?: readonly AgentState[];
+  completed?: readonly AgentState[];
 }
 
 /** A dialog, live and holding the keyboard: focus in it is never taken away from the operator. */
@@ -287,6 +308,9 @@ export function AvatarDock({
   shortcutsBlocked = false,
   dialogOpen = false,
   dashboardDialogOpen,
+  findings = NO_AGENTS,
+  running = NO_AGENTS,
+  completed = NO_AGENTS,
 }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
   // "Lucy's room": she has the whole window, in this browser tab only.
@@ -333,6 +357,12 @@ export function AvatarDock({
     },
   });
   const operatorAsks = useOperatorAsks();
+  // What waits on the operator, for the desk's Decisions column, its "Next:" line and the header's summary.
+  const needsYouList = useNeedsYou(findings);
+  const needsTaskIds = useMemo(
+    () => needsYouList.items.flatMap((item) => (item.taskId ? [item.taskId] : [])),
+    [needsYouList],
+  );
   // Why a press on the unavailable Talk button did nothing, for people who cannot see its tooltip.
   const [talkNotice, setTalkNotice] = useState<string | null>(null);
   // Bumped on every press of the unavailable Talk button so the announcement is spoken again.
@@ -408,6 +438,29 @@ export function AvatarDock({
       root.style.removeProperty(COLUMN_WIDTH_PROPERTY);
     };
   }, [minimized, docked, columnWidth]);
+
+  // While the desk is shown, tell the page where the conversation column is, so the dashboard's toasts can sit
+  // above its composer instead of on a card or on her 3D view (`.toasts-in-desk` in styles.css).
+  const deskLeft = layout.mode === 'room' ? layout.railWidth : 0;
+  useLayoutEffect(() => {
+    if (!inRoom) return undefined;
+    const root = document.documentElement;
+    root.setAttribute(DESK_ATTRIBUTE, '');
+    root.style.setProperty(DESK_LEFT_PROPERTY, `${deskLeft}px`);
+    const composer = dockRef.current?.querySelector<HTMLElement>('.avatar-composer') ?? null;
+    const measure = (): void => {
+      if (composer) root.style.setProperty(DESK_COMPOSER_PROPERTY, `${composer.offsetHeight}px`);
+    };
+    measure();
+    const observer = composer && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (composer) observer?.observe(composer);
+    return () => {
+      observer?.disconnect();
+      root.removeAttribute(DESK_ATTRIBUTE);
+      root.style.removeProperty(DESK_LEFT_PROPERTY);
+      root.style.removeProperty(DESK_COMPOSER_PROPERTY);
+    };
+  }, [inRoom, deskLeft]);
 
   // Follow Kookr's speech playback.
   useEffect(() => {
@@ -688,7 +741,7 @@ export function AvatarDock({
     return () => document.removeEventListener('keydown', onKey);
   }, [talkShortcut, shortcutsBlocked]);
   const roomShortcutHint = roomShortcut ? ` (${formatShortcutBinding(roomShortcut)})` : '';
-  // The room's shortcut presses the Expand / Back to dashboard button, also while she is minimised (it then
+  // The room's shortcut presses the Desk / Back to dashboard button, also while she is minimised (it then
   // opens her in the room). In a ref for the same reason as Talk's.
   const roomShortcutRef = useRef<() => void>(() => {});
   roomShortcutRef.current = () => {
@@ -1006,9 +1059,9 @@ export function AvatarDock({
     // not a half-typed message, not the scroll position of the conversation.
     <section
       className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${sheet ? ' avatar-dock-sheet' : ''}${inRoom ? ' avatar-dock-room' : ''}${centredThread ? ' avatar-dock-centred' : ''}`}
-      // The rail's width is decided in one place (`avatarRoomRailWidth`) and handed to the stylesheet.
+      // The side columns' width is decided in one place (`avatarRoomRailWidth`) and handed to the stylesheet.
       style={layout.mode === 'room'
-        ? (layout.rail ? { [RAIL_WIDTH_PROPERTY]: `${layout.railWidth}px` } as CSSProperties : undefined)
+        ? (layout.rail ? { [SIDE_WIDTH_PROPERTY]: `${layout.sideWidth}px` } as CSSProperties : undefined)
         : sheet ? undefined : { width: columnWidth }}
       aria-label={inRoom ? ROOM_REGION_LABEL : COLUMN_REGION_LABEL}
       ref={dockRef}
@@ -1016,6 +1069,7 @@ export function AvatarDock({
       data-testid="avatar-dock"
       data-column-mode={layout.mode}
       data-room-rail={inRoom ? (rail ? 'true' : 'false') : undefined}
+      data-desk-columns={layout.mode === 'room' ? layout.columns : undefined}
       data-room-switch={roomSwitch}
       data-avatar-state={state}
       data-lucy-live={live.status}
@@ -1035,6 +1089,10 @@ export function AvatarDock({
       <div className="avatar-dock-header">
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
         <span className="avatar-dock-state" data-testid="avatar-state-label">{liveStateLabel ?? STATE_LABEL[state]}</span>
+        {inRoom && (
+          // One plain line from the same data as the columns below.
+          <span className="avatar-desk-summary" data-testid="avatar-desk-summary">{deskSummaryText(running.length, needsYouList.total)}</span>
+        )}
         <span className="avatar-dock-spacer" />
         {/* In the room Talk is up here, beside Replay; in the column it sits beside the text box. */}
         {inRoom && talkButton}
@@ -1057,7 +1115,7 @@ export function AvatarDock({
           {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
         </button>
         {/* The same button in both layouts, so keyboard focus stays on it across the switch. A full-width sheet
-            already is the whole window, so it has no Expand. */}
+            already is the whole window, so it has no Desk button. */}
         {(inRoom || !sheet) && (
           <button
             type="button"
@@ -1081,41 +1139,63 @@ export function AvatarDock({
           </button>
         )}
       </div>
-      <div className="avatar-dock-view" ref={viewRef}>
-        {/* Always present and never hidden, only emptied: screen readers announce text added to a live
-            region reliably only if the region was already there. */}
-        <span className="avatar-dock-status" role="status">
-          {error
-            ? `The 3D view could not start (${error}). Spoken summaries still play.`
-            : statusNotice
-              ? <span key={replayNotice ? 'replay' : `unavailable-${unavailableNoticeSeq}`}>{statusNotice}</span>
-              : loaded
-                ? ''
-                : 'Loading…'}
-        </span>
+      {/* Decisions and Fleet: the desk's two side columns. A box of its own only in the two-column desk; elsewhere
+          it has no box (`display: contents`), so the column's stack is what it always was. */}
+      <div className="avatar-desk-left">
+        <WaitingTray
+          asks={asks}
+          submit={operatorAsks.submit}
+          nowMs={now + askClockOffsetMs()}
+          dockRef={dockRef}
+          rail={rail}
+          needsYou={needsYouList}
+          findings={findings}
+          allAsks={operatorAsks.asks}
+          {...(onAnswerAsk ? { onAnswerAsk } : {})}
+          {...(openTask ? { onOpenTask: openTask } : {})}
+          {...(onPermissionChoice ? { onPermissionChoice } : {})}
+        />
+        {rail && (
+          <DeskFleet
+            running={running}
+            completed={completed}
+            needsTaskIds={needsTaskIds}
+            {...(openTask ? { onOpenTask: openTask } : {})}
+          />
+        )}
       </div>
-      <WaitingTray
-        asks={asks}
-        submit={operatorAsks.submit}
-        nowMs={now + askClockOffsetMs()}
-        dockRef={dockRef}
-        rail={rail}
-        {...(onAnswerAsk ? { onAnswerAsk } : {})}
-        {...(openTask ? { onOpenTask: openTask } : {})}
-        {...(onPermissionChoice ? { onPermissionChoice } : {})}
-      />
-      <LucyThread
-        entries={entries}
-        clips={clips}
-        nowMs={now}
-        liveReady={liveReady}
-        connecting={live.status === 'connecting'}
-        replayUnavailable={replayUnavailable}
-        replayReasonId={REPLAY_REASON_ID}
-        onReplay={onReplay}
-        pendingCards={<><LucyLaunchCard /><LucyActionCard /></>}
-      />
-      <LucyTypedInput leading={inRoom ? null : talkButton} roomy={inRoom} />
+      {/* The conversation: her 3D view, the thread and the composer. A labelled region in the desk. */}
+      <div
+        className="avatar-desk-conversation"
+        {...(inRoom ? { role: 'region', 'aria-label': 'Conversation' } : {})}
+        data-testid="avatar-desk-conversation"
+      >
+        <div className="avatar-dock-view" ref={viewRef}>
+          {/* Always present and never hidden, only emptied: screen readers announce text added to a live
+              region reliably only if the region was already there. */}
+          <span className="avatar-dock-status" role="status">
+            {error
+              ? `The 3D view could not start (${error}). Spoken summaries still play.`
+              : statusNotice
+                ? <span key={replayNotice ? 'replay' : `unavailable-${unavailableNoticeSeq}`}>{statusNotice}</span>
+                : loaded
+                  ? ''
+                  : 'Loading…'}
+          </span>
+        </div>
+        <LucyThread
+          entries={entries}
+          clips={clips}
+          nowMs={now}
+          liveReady={liveReady}
+          connecting={live.status === 'connecting'}
+          replayUnavailable={replayUnavailable}
+          replayReasonId={REPLAY_REASON_ID}
+          onReplay={onReplay}
+          pendingCards={<><LucyLaunchCard /><LucyActionCard /></>}
+        />
+        <LucyTypedInput leading={inRoom ? null : talkButton} roomy={inRoom} />
+      </div>
     </section>
   );
   return <>{panelView}{announcer}</>;

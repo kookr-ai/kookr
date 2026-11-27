@@ -34,7 +34,7 @@ in [features](../features.md#talk-to-lucy-hands-free-optional-off-by-default).
    microphone audio, so your voice then leaves this machine. Lucy live still switches on.
 3. Open the avatar panel (Settings → Notifications & Alerts → Avatar panel) and press **Talk**. The button
    sits beside the text box in her column, and in the title bar when she has the whole window
-   ("Lucy's room", **Expand** or Alt+Shift+L).
+   ("Lucy's desk", **Desk** or Alt+Shift+L).
 
 `GET /api/lucy-live/status` reports whether everything is configured, and if not, what is missing.
 While Kookr is still bringing the recogniser up it answers `available: false, starting: true` with a

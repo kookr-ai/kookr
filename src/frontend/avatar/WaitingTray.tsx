@@ -25,11 +25,16 @@
  * unfolded or a card opens. It is not shown when there is nothing to put in it. The count in the strip is
  * permissions plus questions a task may be waiting for: opinions are counted apart, because they block nothing.
  *
- * In Lucy's room (`rail`) the same tray is the side rail beside the conversation, and it has the room to show
- * things whole: it cannot be folded, every permission card and every question a task is waiting for is an
- * open card, and only the opinion requests stay folded under their one line. It scrolls by itself, its height
- * is not animated, and when nothing waits (opinion requests block nothing, so they do not count) it says so in
- * one quiet line instead of disappearing, so the rail keeps its place. The fold the operator chose for the strip is left alone and comes back with the column.
+ * In Lucy's desk (`rail`, her room) the same tray is the Decisions column, and it has the room to show things
+ * whole: it cannot be folded, and it lists everything that waits on the operator in `buildNeedsYou`'s order:
+ * every question a task is waiting for and every permission prompt as an open card, then the findings as
+ * compact cards with one "Open task" button. A permission prompt stands in for the finding of its own task.
+ * On top, "Next:" names the first item and scrolls its card into view on a press. Only the opinion requests
+ * stay folded under their one line. The count in the title is everything that waits, findings included. It
+ * scrolls by itself, its height is not animated, and when nothing waits (opinion requests block nothing, so
+ * they do not count) it says "Nothing waits on you." and lists up to five questions closed today ("Decided
+ * today"). The permission buttons have the press guard below too, since a question above them closing or
+ * arriving moves them. The fold the operator chose for the strip is left alone and comes back with the column.
  *
  * It also keeps the three rules that stop a wrong answer being sent, which moved here with the cards:
  *  - a press on an answer is ignored for a moment after the cards change (a card closing, a row opening or
@@ -40,11 +45,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type { OperatorAskView } from '../../shared/contracts/asks.js';
+import type { AgentState } from '../../shared/protocol.js';
 import { dismissOperatorAsk, markAskSubmitting, type AskSubmitState } from '../store/operator-asks.js';
 import { permissionButtonsLive, useLucyPermission } from '../store/lucy-permission.js';
 import { loadTrayExpanded, saveTrayExpanded, useTrayOpenRequests } from '../store/avatar-panel-prefs.js';
-import { AskCard, closesInText, timeLeftText, type AskAnswerChoice } from './AskCard.js';
-import { LucyPermissionCards, type PermissionChoiceSender } from './LucyPermissionCard.js';
+import { buildNeedsYou, type NeedsYou, type NeedsYouItem } from '../store/needs-you.js';
+import { AskCard, askOutcome, closesInText, timeLeftText, type AskAnswerChoice } from './AskCard.js';
+import { LucyPermissionCards, PermissionCard, useSecondClock, type PermissionChoiceSender } from './LucyPermissionCard.js';
+import { DeskFindingCard } from './DeskFindingCard.js';
+import { decidedToday, nextDecisionText } from './desk.js';
 
 /** Answer presses are ignored for this long after the cards change, so a press aimed at a card that just moved cannot answer another question. */
 export const ASK_PRESS_GUARD_MS = 400;
@@ -57,6 +66,9 @@ const SCROLLS_ATTRIBUTE = 'data-scrolls';
 const ALWAYS_SCROLLS = typeof ResizeObserver === 'undefined' ? { [SCROLLS_ATTRIBUTE]: '' } : {};
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+const NO_FINDINGS: readonly AgentState[] = [];
+/** How long the card the "Next:" line scrolled to stays highlighted. */
+const FLASH_MS = 1400;
 
 /** The soonest-closing question first; ties keep the order the server sent them in. */
 function byExpiry(a: OperatorAskView, b: OperatorAskView): number {
@@ -75,17 +87,37 @@ export interface WaitingTrayProps {
   onPermissionChoice?: PermissionChoiceSender;
   /** The column itself: where keyboard focus goes when a question's card is gone and nothing replaced it. */
   dockRef: RefObject<HTMLElement | null>;
-  /** True in Lucy's room, where the tray is the side rail: always unfolded, cards open, never hidden. */
+  /** True in Lucy's room, where the tray is the Decisions column: always unfolded, cards open, never hidden. */
   rail?: boolean;
+  /**
+   * The Decisions column's list: what waits on the operator, in `buildNeedsYou`'s order. Absent, it is built here
+   * from `findings` (and the questions and permission prompts the tray already holds).
+   */
+  needsYou?: NeedsYou;
+  /** The findings (`AgentState`s) behind the Decisions column's finding cards: their kind and their own explanation. */
+  findings?: readonly AgentState[];
+  /** Every question the store holds, closed ones included: the empty Decisions column lists those closed today. */
+  allAsks?: readonly OperatorAskView[];
 }
 
-export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPermissionChoice, dockRef, rail = false }: WaitingTrayProps) {
-  const permissionCards = useLucyPermission().cards;
+export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPermissionChoice, dockRef, rail = false, needsYou, findings, allAsks }: WaitingTrayProps) {
+  const { cards: permissionCards, pressed: pressedPrompts } = useLucyPermission();
   const permissionCount = permissionCards.length;
   const pending = useMemo(() => asks.filter((ask) => ask.state === 'pending'), [asks]);
   const waiting = useMemo(() => pending.filter((ask) => ask.taskEnded !== true).sort(byExpiry), [pending]);
   const opinions = useMemo(() => pending.filter((ask) => ask.taskEnded === true).sort(byExpiry), [pending]);
   const closed = useMemo(() => asks.filter((ask) => ask.state !== 'pending'), [asks]);
+  // The Decisions column (`rail`): what waits, in `buildNeedsYou`'s order, and the cards to show for each entry.
+  const findingList = findings ?? NO_FINDINGS;
+  const needs = useMemo(
+    () => needsYou ?? buildNeedsYou({ findings: findingList, asks, permissionCards, nowMs }),
+    [needsYou, findingList, asks, permissionCards, nowMs],
+  );
+  const askById = useMemo(() => new Map(asks.map((ask) => [ask.id, ask])), [asks]);
+  const findingById = useMemo(() => new Map(findingList.map((agent) => [`finding:${agent.agentId}:${agent.taskId ?? ''}`, agent])), [findingList]);
+  const cardByPrompt = useMemo(() => new Map(permissionCards.map((card) => [card.promptId, card])), [permissionCards]);
+  const cardByTask = useMemo(() => new Map(permissionCards.map((card) => [card.taskId, card])), [permissionCards]);
+  const permissionClock = useSecondClock(rail && permissionCards.length > 0);
 
   // Folded to one line until the operator unfolds it; remembered for this browser tab.
   const [expanded, setExpanded] = useState(loadTrayExpanded);
@@ -163,7 +195,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
   const cardsChangedAtRef = useRef(0);
   // Permission cards sit above the questions in the same scroll box: one arriving or leaving moves the buttons too.
   // Entering or leaving the room lays everything out again, so it counts as a change too.
-  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${stripOpen ? 'x' : ''}|${rail ? 'r' : ''}`;
+  const signature = `${asks.map((ask) => `${ask.id}:${ask.state}`).join(',')}|${expandedId ?? ''}|${opinionsOpen ? 'o' : ''}|${permissionCards.map((card) => card.promptId).join(',')}|${stripOpen ? 'x' : ''}|${rail ? `r${needs.items.map((item) => item.id).join(',')}` : ''}`;
   useLayoutEffect(() => {
     cardsChangedAtRef.current = Date.now();
   }, [signature]);
@@ -240,12 +272,44 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
     };
   }, [shown, rail]);
 
-  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
-    // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+  // "Next:" scrolls the first card into view and lights it for a moment. It never moves focus: it runs on the
+  // operator's press only.
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const flashedRef = useRef<Element | null>(null);
+  useEffect(() => () => clearTimeout(flashTimerRef.current), []);
+  const showNeedsItem = (item: NeedsYouItem): void => {
+    const tray = trayRef.current;
+    if (!tray) return;
+    let selector: string | null;
+    if (item.kind === 'question') selector = `[data-testid="avatar-ask"][data-ask-id="${item.id.slice('question:'.length)}"]`;
+    else if (item.kind === 'permission') selector = `[data-prompt-id="${item.id.slice('permission:'.length)}"]`;
+    else {
+      const card = findingById.get(item.id)?.taskId ? cardByTask.get(findingById.get(item.id)?.taskId ?? '') : undefined;
+      selector = card && findingById.get(item.id)?.anomaly?.type === 'permission_blocked'
+        ? `[data-prompt-id="${card.promptId}"]`
+        : null;
+    }
+    const target = selector !== null
+      ? tray.querySelector<HTMLElement>(selector)
+      : [...tray.querySelectorAll<HTMLElement>('[data-desk-finding]')].find((element) => element.dataset.deskFinding === item.id);
+    if (!target) return;
+    target.scrollIntoView?.({ block: 'nearest' });
+    flashedRef.current?.classList.remove('avatar-desk-flash');
+    target.classList.add('avatar-desk-flash');
+    flashedRef.current = target;
+    clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => target.classList.remove('avatar-desk-flash'), FLASH_MS);
+  };
+
+  // A clock that stepped backwards (negative elapsed time) must not keep answers blocked.
+  const pressGuarded = useCallback((): boolean => {
     const sinceChange = Date.now() - cardsChangedAtRef.current;
-    if (sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS) return;
+    return sinceChange >= 0 && sinceChange < ASK_PRESS_GUARD_MS;
+  }, []);
+  const onAnswer = useCallback((askId: string, choice: AskAnswerChoice) => {
+    if (pressGuarded()) return;
     markAskSubmitting(askId, onAnswerAsk ? onAnswerAsk(askId, choice) : false);
-  }, [onAnswerAsk]);
+  }, [onAnswerAsk, pressGuarded]);
 
   const open = (askId: string): void => {
     scrollToRef.current = askId;
@@ -254,7 +318,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
 
   if (!shown) return null;
 
-  const waitingCount = permissionCount + waiting.length;
+  const waitingCount = rail ? needs.total : permissionCount + waiting.length;
   const toggle = (): void => {
     if (hasWaiting) {
       // The saved choice is for when nothing waits; by hand, only this wait is folded or unfolded.
@@ -264,7 +328,10 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
     setExpanded(!expanded);
     saveTrayExpanded(!expanded);
   };
-  const listLabel = waiting.length > 0
+  const decided = rail && needs.total === 0 ? decidedToday(allAsks ?? asks, nowMs) : [];
+  const listLabel = rail
+    ? `Decisions (${needs.total})`
+    : waiting.length > 0
     ? `Questions waiting for your answer (${waiting.length})`
     : opinions.length > 0
       ? `Opinion requests (${opinions.length})`
@@ -311,22 +378,56 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
     );
   };
 
+  const permissionCardView = (card: (typeof permissionCards)[number]) => (
+    <PermissionCard
+      key={card.promptId}
+      card={card}
+      pressed={pressedPrompts.has(card.promptId)}
+      nowMs={permissionClock}
+      pressGuard={pressGuarded}
+      {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
+      {...(onOpenTask ? { onOpenTask } : {})}
+    />
+  );
+  const renderNeedsItem = (item: NeedsYouItem) => {
+    if (item.kind === 'question') {
+      const ask = askById.get(item.id.slice('question:'.length));
+      return ask ? renderEntry(ask, 'waiting') : null;
+    }
+    if (item.kind === 'permission') {
+      const card = cardByPrompt.get(item.id.slice('permission:'.length));
+      return card ? permissionCardView(card) : null;
+    }
+    const agent = findingById.get(item.id);
+    if (!agent) return null;
+    // A task stopped on a permission prompt has its card with the buttons; it stands in for the finding.
+    const card = agent.anomaly?.type === 'permission_blocked' && agent.taskId ? cardByTask.get(agent.taskId) : undefined;
+    if (card) return permissionCardView(card);
+    return <DeskFindingCard key={item.id} id={item.id} agent={agent} {...(onOpenTask ? { onOpenTask } : {})} />;
+  };
+  const nextItem = rail ? needs.items[0] : undefined;
+
   return (
     <section
       className={`avatar-tray${waitingCount > 0 ? ' avatar-tray-waiting' : ''}${rail ? ' avatar-tray-rail' : ''}`}
-      aria-label="Waiting on you"
+      aria-label={rail ? 'Decisions' : 'Waiting on you'}
       ref={trayRef}
       data-testid="avatar-tray"
     >
       {rail ? (
         // The rail cannot be folded, so its top line is a title, not a button.
+        <>
         <div className="avatar-tray-title" data-testid="avatar-tray-title">
-          <h2 className="avatar-tray-heading">Waiting on you</h2>
-          {waitingCount > 0 && (
-            // The number alone means nothing to a screen reader; the unit is said, not shown.
-            <span className="avatar-tray-count" data-testid="avatar-tray-count">{waitingCount}<span className="sr-only"> waiting</span></span>
-          )}
+          <h2 className="avatar-tray-heading">
+            Decisions <span aria-hidden="true">·</span> <span className="avatar-tray-heading-count" data-testid="avatar-tray-count">{waitingCount}</span>
+          </h2>
         </div>
+        {nextItem && (
+          <button type="button" className="avatar-desk-next" onClick={() => showNeedsItem(nextItem)} data-testid="avatar-desk-next">
+            {nextDecisionText(nextItem, nowMs, (item) => findingById.get(item.id))}
+          </button>
+        )}
+        </>
       ) : (
         <button
           type="button"
@@ -367,15 +468,32 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
         <div className="avatar-tray-list" ref={listRef}>
           {/* Opinion requests block nothing, so with only those left nothing is waiting either. */}
           {rail && waitingCount === 0 && (
-            <p className="avatar-tray-empty" data-testid="avatar-tray-empty">Nothing is waiting on you.</p>
+            <div className="avatar-desk-empty" data-testid="avatar-desk-empty">
+              <p className="avatar-tray-empty" data-testid="avatar-tray-empty">Nothing waits on you.</p>
+              {decided.length > 0 && (
+                <section className="avatar-desk-decided" aria-labelledby="avatar-desk-decided-title" data-testid="avatar-desk-decided">
+                  <h3 className="avatar-desk-subtitle" id="avatar-desk-decided-title">Decided today</h3>
+                  <ul className="avatar-desk-decided-list" role="list">
+                    {decided.map((ask) => (
+                      <li key={ask.id} className="avatar-desk-decided-row" title={ask.question}>
+                        <span className="avatar-desk-decided-who">{ask.system ? 'Kookr' : (ask.taskName ?? 'A task')}</span>
+                        <span className="avatar-desk-decided-outcome">{askOutcome(ask).text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
           )}
           {(stripOpen || rail) && (
             <>
-            <LucyPermissionCards
-              {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
-              {...(onOpenTask ? { onOpenTask } : {})}
-            />
-            {(asks.length > 0) && (
+            {!rail && (
+              <LucyPermissionCards
+                {...(onPermissionChoice ? { onChoice: onPermissionChoice } : {})}
+                {...(onOpenTask ? { onOpenTask } : {})}
+              />
+            )}
+            {(rail ? needs.total > 0 || opinions.length > 0 : asks.length > 0) && (
               <ol
                 className="avatar-asks"
                 // Stated because `list-style: none` makes some browsers drop the list role, and its label with it.
@@ -383,7 +501,7 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
                 aria-label={listLabel}
                 data-testid="avatar-asks"
               >
-                {waiting.map((ask) => renderEntry(ask, 'waiting'))}
+                {rail ? needs.items.map(renderNeedsItem) : waiting.map((ask) => renderEntry(ask, 'waiting'))}
                 {opinions.length > 0 && (
                   <li className="avatar-opinions" data-testid="avatar-opinions">
                     <button
@@ -409,7 +527,8 @@ export function WaitingTray({ asks, submit, nowMs, onAnswerAsk, onOpenTask, onPe
                     )}
                   </li>
                 )}
-                {closed.map((ask) => (
+                {/* The Decisions column lists what closed today in its empty state instead. */}
+                {(!rail || needs.total > 0) && closed.map((ask) => (
                   <AskCard
                     key={ask.id}
                     ask={ask}

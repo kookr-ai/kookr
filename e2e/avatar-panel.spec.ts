@@ -1525,7 +1525,7 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
 
   const rootColumnWidth = (page: Page) => page.evaluate(() => document.documentElement.style.getPropertyValue('--lucy-column-width'));
 
-  test('Lucy\'s room: Expand gives her the whole window with the conversation in the middle and what waits in a side rail; a half-typed message, a reload and the way back all hold', async ({ page }) => {
+  test('Lucy\'s desk: Desk gives her the whole window, Decisions and Fleet on the left and the conversation beside them; a half-typed message, a reload and the way back all hold', async ({ page }) => {
     await page.route('**/api/lucy/turn', (route) => route.fulfill({
       contentType: 'application/x-ndjson',
       body: turnBody({ type: 'text', delta: 'Two questions are waiting:\n- Billing migration: run it now, tonight, or not at all\n- Invoice export bug: fix the pager or switch to streaming' }),
@@ -1534,14 +1534,16 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     const dock = page.getByTestId('avatar-dock');
     const toggle = page.getByTestId('avatar-room-toggle');
     const input = page.getByTestId('avatar-typed-input');
-    await expect(toggle).toHaveText('Expand');
+    await expect(toggle).toHaveText('Desk');
     expect(await rootColumnWidth(page)).toBe('380px');
     await input.fill('What is wai');
 
     await toggle.click();
     await expect(dock).toHaveAttribute('data-column-mode', 'room');
     await expect(dock).toHaveAttribute('data-room-rail', 'true');
-    await expect(dock).toHaveAttribute('aria-label', 'Lucy\u2019s room');
+    // 1440 px: two columns, Decisions with Fleet under it on the left.
+    await expect(dock).toHaveAttribute('data-desk-columns', '2');
+    await expect(dock).toHaveAttribute('aria-label', 'Lucy\u2019s desk');
     await expect(toggle).toHaveText('Back to dashboard');
     // The whole window, over the page; the page is not asked for room any more.
     await expect.poll(async () => { const b = (await dock.boundingBox())!; return [Math.round(b.x), Math.round(b.y), Math.round(b.width), Math.round(b.height)]; }).toEqual([0, 0, 1440, 900]);
@@ -1555,19 +1557,23 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expect(input).toBeFocused();
     expect(Math.round((await input.boundingBox())!.height)).toBe(60);
 
-    // The side rail: 400 px on the right, her view on top, then every waiting question as an open card.
+    // Decisions: 400 px on the left, with Fleet stacked under it; every waiting question is an open card in it.
     const tray = page.getByTestId('avatar-tray');
     const rail = (await tray.boundingBox())!;
-    expect(Math.round(rail.x)).toBe(1040);
-    expect(Math.round(rail.x + rail.width)).toBe(1440);
-    expect(Math.round(rail.y + rail.height)).toBe(900);
+    expect(Math.round(rail.x)).toBe(0);
+    expect(Math.round(rail.width)).toBe(400);
+    const fleet = (await page.getByTestId('avatar-desk-fleet').boundingBox())!;
+    expect(Math.round(fleet.x)).toBe(0);
+    expect(Math.round(fleet.width)).toBe(400);
+    expect(Math.round(fleet.y + fleet.height)).toBe(900);
+    expect(fleet.y).toBeGreaterThanOrEqual(Math.round(rail.y + rail.height) - 1);
+    // Her view is the portrait at the top of the conversation column, to the right of them.
     const view = (await page.locator('.avatar-dock-view').boundingBox())!;
-    expect(Math.round(view.x)).toBe(1040);
-    expect(Math.round(view.width)).toBe(400);
-    expect(Math.round(view.height)).toBe(234);
-    expect(Math.round(view.y + view.height)).toBe(Math.round(rail.y));
-    await expect(page.getByTestId('avatar-tray-title').locator('h2')).toHaveText('Waiting on you');
-    await expect(page.getByTestId('avatar-tray-count')).toHaveText('2 waiting');
+    expect(Math.round(view.x)).toBe(400);
+    expect(Math.round(view.width)).toBe(1040);
+    expect(Math.round(view.height)).toBe(160);
+    await expect(page.getByTestId('avatar-tray-title').locator('h2')).toHaveText('Decisions · 2');
+    await expect(page.getByTestId('avatar-tray-count')).toHaveText('2');
     await expect(page.getByTestId('avatar-tray-toggle')).toHaveCount(0);
     await expect(page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]')).toHaveCount(2);
     await expect(page.getByTestId('avatar-ask-option')).toHaveCount(5);
@@ -1575,14 +1581,14 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expect(page.getByTestId('avatar-opinions-toggle')).toContainText('2 opinions wanted by finished tasks');
     // The folded strip's measured height (0) did not come along: the rail has the height the room gives it.
     expect(await page.locator('#avatar-tray-body').evaluate((el) => (el as HTMLElement).style.height)).toBe('');
-    await expectVisible(page.getByTestId('avatar-ask-option').first(), 'the first answer in the rail');
+    await expectVisible(page.getByTestId('avatar-ask-option').first(), 'the first answer in Decisions');
     for (const card of await page.locator('[data-testid="avatar-ask"][data-ask-state="pending"]').all()) {
       const box = (await card.boundingBox())!;
-      expect(box.x).toBeGreaterThanOrEqual(1040);
-      expect(box.x + box.width).toBeLessThanOrEqual(1440);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(400);
     }
 
-    // The conversation: a reading column of 760 px at most, centred in what the rail leaves, the composer lined up with it.
+    // The conversation: a reading column of 760 px at most, centred in what the left columns leave, the composer lined up with it.
     await input.pressSequentially('ting?');
     await input.press('Enter');
     const list = page.getByTestId('avatar-entry-list');
@@ -1592,15 +1598,15 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     const you = (await page.getByTestId('avatar-typed-you').boundingBox())!;
     const send = (await page.getByTestId('avatar-typed-send').boundingBox())!;
     const composerInput = (await input.boundingBox())!;
-    expect(Math.round(reply.x)).toBe(140);
-    expect(Math.round(you.x + you.width)).toBe(900);
-    expect(Math.round(composerInput.x)).toBe(140);
-    expect(Math.round(send.x + send.width)).toBe(900);
+    expect(Math.round(reply.x)).toBe(540);
+    expect(Math.round(you.x + you.width)).toBe(1300);
+    expect(Math.round(composerInput.x)).toBe(540);
+    expect(Math.round(send.x + send.width)).toBe(1300);
     // The composer sits at the foot of the conversation column, and the newest reply is on screen above it.
     expect(composerInput.y).toBeGreaterThan(reply.y + reply.height);
     await expectVisible(list, 'her list answer');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-    await shot(page, 'room-1440');
+    await shot(page, 'desk-1440');
 
     // This tab stays in the room across a reload; the shared preferences were not touched.
     expect(await page.evaluate(() => sessionStorage.getItem('kookr:lucyRoom'))).toBe('1');
@@ -1609,19 +1615,20 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expect(dock).toHaveAttribute('data-column-mode', 'room');
     await expect(page.getByTestId('avatar-typed-you')).toHaveCount(1);
 
-    // And back: the column, the page beside it, focus on the button that opened the room.
+    // And back: the column, the page beside it, focus on the button that opened the desk.
     await toggle.click();
     await expect(dock).toHaveAttribute('data-column-mode', 'docked');
-    await expect(toggle).toHaveText('Expand');
+    await expect(toggle).toHaveText('Desk');
     await expect(toggle).toBeFocused();
     expect(await rootColumnWidth(page)).toBe('380px');
     const main = (await page.locator('.main').boundingBox())!;
     expect(Math.round(main.x + main.width)).toBe(1440 - 380);
-    await expect(page.getByTestId('avatar-tray-toggle')).toHaveAttribute('aria-expanded', 'false');
+    // Two questions still wait, so the column's strip is unfolded (it is folded only while nothing waits).
+    await expect(page.getByTestId('avatar-tray-toggle')).toHaveAttribute('aria-expanded', 'true');
     expect(await page.evaluate(() => sessionStorage.getItem('kookr:lucyRoom'))).toBeNull();
   });
 
-  test('Lucy\'s room: a conversation long enough to scroll stays on its newest entry when she takes the window and when she gives it back', async ({ page }) => {
+  test('Lucy\'s desk: a conversation long enough to scroll stays on its newest entry when she takes the window and when she gives it back', async ({ page }) => {
     const lines = Array.from({ length: 40 }, (_, n) => `- Step ${n + 1}: check the invoices table before the rename runs on production`);
     await page.route('**/api/lucy/turn', (route) => route.fulfill({
       contentType: 'application/x-ndjson',
@@ -1637,7 +1644,7 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     expect(await overflow()).toBeGreaterThan(200);
     await expect.poll(fromBottom).toBeLessThanOrEqual(24);
 
-    // Into the room: the lines are wider and fewer, the thread still overflows, and it is still on its last line.
+    // Into the desk: the lines are wider and fewer, the thread still overflows, and it is still on its last line.
     await page.getByTestId('avatar-room-toggle').click();
     await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-column-mode', 'room');
     expect(await overflow()).toBeGreaterThan(200);
@@ -1659,7 +1666,7 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await expectVisible(page.getByTestId('avatar-entry-list').locator('li').last(), 'the last line of her answer, in the column');
   });
 
-  test('Lucy\'s room by address and by shortcut: /?lucy=room switches a panel that is off on and opens the room, and Alt+Shift+L goes back and forth', async ({ page }) => {
+  test('Lucy\'s desk by address and by shortcut: /?lucy=room switches a panel that is off on and opens the desk, and Alt+Shift+L goes back and forth', async ({ page }) => {
     await withoutWebGL(page);
     await page.addInitScript((key) => {
       if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, '{"enabled":false,"minimized":false}');
@@ -1671,10 +1678,10 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     expect(new URL(page.url()).search).toBe('');
     expect(JSON.parse((await page.evaluate((key) => localStorage.getItem(key), AVATAR_PANEL_KEY))!)).toMatchObject({ enabled: true, minimized: false });
     await expect(page.getByTestId('avatar-typed-input')).toBeFocused();
-    // Nothing waits: the rail keeps its place and says so.
-    await expect(page.getByTestId('avatar-tray-empty')).toHaveText('Nothing is waiting on you.');
+    // Nothing waits: Decisions keeps its place and says so.
+    await expect(page.getByTestId('avatar-tray-empty')).toHaveText('Nothing waits on you.');
     expect(Math.round((await page.getByTestId('avatar-tray').boundingBox())!.width)).toBe(400);
-    await shot(page, 'room-empty-1440');
+    await shot(page, 'desk-empty-1440');
 
     await page.keyboard.press('Alt+Shift+L');
     await expect(dock).toHaveAttribute('data-column-mode', 'docked');
@@ -1692,7 +1699,7 @@ test.describe('avatar panel: Lucy\'s operator column', () => {
     await shot(page, 'room-narrow-1000');
   });
 
-  test('Lucy\'s room: "Open task" on a card selects the task in the dashboard and brings her back to the column beside it', async ({ page, request }) => {
+  test('Lucy\'s desk: "Open task" on a card selects the task in the dashboard and brings her back to the column beside it', async ({ page, request }) => {
     test.setTimeout(60_000);
     await resetServer(request);
     const { send } = await openColumn(page, { asks: [] });

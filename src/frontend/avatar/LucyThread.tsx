@@ -488,6 +488,11 @@ export function LucyThread({
     }
   };
 
+  // Nothing but her opening words (the hello, or one briefing she wrote by herself): in the desk these sit right
+  // under her portrait instead of at the foot of an empty column (styles.css). A real exchange ends this.
+  const opening = entries.length === 0
+    || (entries.length === 1 && (entries[0].kind === 'lucy' || (entries[0].kind === 'typed-lucy' && typeof entries[0].briefing === 'string')));
+
   return (
     <div
       className="avatar-thread"
@@ -510,7 +515,7 @@ export function LucyThread({
         onScroll={onScroll}
         data-testid="avatar-thread"
       >
-        <div className="avatar-thread-content" ref={contentRef}>
+        <div className="avatar-thread-content" ref={contentRef} data-opening={opening ? 'true' : undefined}>
           {replayUnavailable && anyReplayable && <span id={replayReasonId} className="sr-only">{replayUnavailable}</span>}
           {entries.length === 0 ? (
             // Nothing said yet: she says hello, and offers three things to ask.

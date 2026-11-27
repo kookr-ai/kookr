@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { Alert } from '../store/useStore.js';
+import { useAvatarPageCovered, useAvatarRoom } from '../store/avatar-panel-prefs.js';
 
 export const AUTO_DISMISS_INFO_MS = 8_000;
 export const AUTO_DISMISS_ERROR_MS = 15_000;
@@ -35,6 +36,10 @@ function alertAnnouncementText(alert: Alert): string {
 export function Toasts() {
   const { alerts, dismissAlert, selectAgent } = useKookrStore();
   const timersRef = useRef<Map<string, DismissTimer>>(new Map());
+  // While Lucy's desk covers the window the toasts move out of the way of her cards, her 3D view and the composer.
+  const inRoom = useAvatarRoom();
+  const pageCovered = useAvatarPageCovered();
+  const inDesk = inRoom && pageCovered;
 
   const scheduleTimer = (key: string, timer: DismissTimer) => {
     timer.startedAt = Date.now();
@@ -123,7 +128,7 @@ export function Toasts() {
         {assertiveText}
       </div>
       {alerts.length > 0 && (
-        <div className="toasts">
+        <div className={`toasts${inDesk ? ' toasts-in-desk' : ''}`}>
           {alerts.map((alert, i) => {
             // Info toasts that carry an agent become the shortest path to that
             // task: activating the message region selects the agent and clears

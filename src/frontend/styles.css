@@ -17890,7 +17890,7 @@ button.coordinator-chain-member:focus-visible {
    with her 3D view above what waits on the operator. Narrower, it is the column's own stack at full width.
    It sits where the column does (z-index 90), so dialogs, menus and toasts stay above it, and it does not set
    `--lucy-column-width`: it covers the page instead of taking room from it. */
-/* The button that enters and leaves the room: "Expand" in the column's header, "Back to dashboard" in the room's. */
+/* The button that enters and leaves the desk: "Desk" in the column's header, "Back to dashboard" in the desk's. */
 .avatar-room-toggle {
   flex: none;
   display: inline-flex;
@@ -17940,26 +17940,8 @@ button.coordinator-chain-member:focus-visible {
 .avatar-dock-room .avatar-typed { gap: 8px; }
 .avatar-dock-room .avatar-typed textarea { height: 60px; min-height: 60px; padding: 9px 12px; border-radius: 8px; font-size: 14px; line-height: 20px; }
 .avatar-dock-room .avatar-typed .avatar-ask-send { height: 36px; padding: 0 16px; font-size: 14px; }
-.avatar-dock-room[data-room-rail="true"] {
-  /* The rail is 400px, a little more in a very wide window (`--lucy-rail-width`, set by AvatarDock.tsx); her
-     view is about 280px tall at 1080. */
-  --lucy-rail-view-height: clamp(200px, 26vh, 340px);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--lucy-rail-width, 400px);
-  grid-template-rows: 44px var(--lucy-rail-view-height) minmax(0, 1fr) auto;
-  grid-template-areas:
-    "header header"
-    "thread view"
-    "thread tray"
-    "composer tray";
-}
-.avatar-dock-room[data-room-rail="true"] > .avatar-dock-header { grid-area: header; }
-.avatar-dock-room[data-room-rail="true"] > .avatar-dock-view { grid-area: view; height: auto; border-left: 1px solid var(--border); }
-.avatar-dock-room[data-room-rail="true"] > .avatar-thread { grid-area: thread; min-height: 0; border-top: 0; }
-.avatar-dock-room[data-room-rail="true"] > .avatar-composer { grid-area: composer; border-top: 0; padding-left: max(24px, calc((100% - var(--lucy-reading-width, 760px)) / 2)); padding-right: max(24px, calc((100% - var(--lucy-reading-width, 760px)) / 2)); }
-.avatar-dock-room[data-room-rail="true"] .avatar-thread-content { max-width: calc(var(--lucy-reading-width, 760px) + 48px); padding-left: 24px; padding-right: 24px; }
 /* The side rail: what waits on the operator, as whole cards, scrolling by itself under her view. */
-.avatar-tray-rail { grid-area: tray; border-left: 1px solid var(--border); background: var(--bg-panel); }
+.avatar-tray-rail { border-left: 1px solid var(--border); background: var(--bg-panel); }
 /* A hairline under the title, so a card scrolled half out of sight is cut by a line and not by nothing. */
 .avatar-tray-title { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border-dim); }
 .avatar-tray-heading { margin: 0; color: var(--text-secondary); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; line-height: 18px; text-transform: uppercase; }
@@ -17983,18 +17965,18 @@ button.coordinator-chain-member:focus-visible {
 /* The opinion requests stay folded under their one line, in a box of their own. */
 .avatar-tray-rail .avatar-tray-list > .avatar-asks > .avatar-opinions { border: 1px solid var(--border-dim); border-radius: 8px; overflow: hidden; font-size: 13px; }
 .avatar-tray-rail .avatar-opinions-toggle { padding: 9px 12px; }
-/* The switch between column and room, over a moment. Entering, the room covers the page at once (so the page
-   is never seen settling to its full width underneath) and the conversation and the composer arrive from the
-   side where the column stood; her view and what waits stay put on the right, where they were. Leaving, the
-   column fades back in. Only opacity and a small shift: the room's own size never animates, so the 3D view is
+/* The switch between column and desk, over a moment. Entering, the desk covers the page at once (so the page
+   is never seen settling to its full width underneath) and the thread and the composer, which sit inside the
+   conversation column (`.avatar-desk-conversation`), arrive from the side where the column stood; Decisions and
+   Fleet stay put. Leaving, the column fades back in. Only opacity and a small shift: the room's own size never animates, so the 3D view is
    resized once. Nothing plays on a page that loads in the room or never enters it (AvatarDock.tsx). */
 @keyframes avatar-room-enter { from { opacity: 0; transform: translateX(16px); } }
 @keyframes avatar-room-leave { from { opacity: 0; } }
-.avatar-dock[data-room-switch="enter"] > .avatar-thread,
-.avatar-dock[data-room-switch="enter"] > .avatar-composer { animation: avatar-room-enter 180ms ease-out; }
+.avatar-dock[data-room-switch="enter"] .avatar-desk-conversation > .avatar-thread,
+.avatar-dock[data-room-switch="enter"] .avatar-desk-conversation > .avatar-composer { animation: avatar-room-enter 180ms ease-out; }
 .avatar-dock[data-room-switch="leave"] { animation: avatar-room-leave 160ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .avatar-dock[data-room-switch], .avatar-dock[data-room-switch] > * { animation: none; }
+  .avatar-dock[data-room-switch], .avatar-dock[data-room-switch] > *, .avatar-dock[data-room-switch] .avatar-desk-conversation > * { animation: none; }
 }
 /* A room in a narrow window: the header keeps its controls and drops their words (the names stay for a screen reader). */
 @media (max-width: 560px) {
@@ -18277,3 +18259,130 @@ button.coordinator-chain-member:focus-visible {
 }
 .lucy-bubble-card-actions .avatar-ask-send, .lucy-bubble-card-actions .avatar-ask-option { width: auto; padding: 5px 14px; }
 .lucy-bubble-card [aria-disabled="true"] { cursor: default; }
+
+/* --- The desk: Lucy's room as three columns (AvatarDock.tsx, `data-room-rail="true"`, `data-desk-columns`) ---
+   Decisions (what waits on the operator), Fleet (what is running) and the Conversation (her 3D view, the thread,
+   the composer). From 1500px the three sit side by side; from 1100px Decisions and Fleet are stacked on the left,
+   each scrolling by itself, with the Conversation on the right; narrower it is one column. The side columns are
+   26% of the window, 400 to 520px (`--lucy-desk-side-width`, from `avatar-panel-prefs.ts`). The thread and the
+   composer keep their reading width (`--lucy-reading-width`), centred in the conversation column. */
+.avatar-desk-left, .avatar-desk-conversation { display: contents; }
+/* Outside the desk's grid the header is first and her view second, whatever the order of the boxes above. */
+.avatar-dock:not([data-room-rail="true"]) > .avatar-dock-header { order: -2; }
+.avatar-dock:not([data-room-rail="true"]) .avatar-dock-view { order: -1; }
+.avatar-dock-room[data-room-rail="true"] {
+  display: grid;
+  grid-template-columns: var(--lucy-desk-side-width, 400px) var(--lucy-desk-side-width, 400px) minmax(0, 1fr);
+  grid-template-rows: 44px minmax(0, 1fr);
+  grid-template-areas:
+    "header header header"
+    "decisions fleet conversation";
+}
+.avatar-dock-room[data-room-rail="true"] > .avatar-dock-header { grid-area: header; }
+.avatar-dock-room[data-room-rail="true"] .avatar-tray-rail { grid-area: decisions; min-height: 0; min-width: 0; }
+.avatar-dock-room[data-room-rail="true"] .avatar-desk-fleet { grid-area: fleet; }
+.avatar-dock-room[data-room-rail="true"] .avatar-desk-conversation { grid-area: conversation; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.avatar-dock-room[data-desk-columns="2"] {
+  grid-template-columns: var(--lucy-desk-side-width, 400px) minmax(0, 1fr);
+  grid-template-areas:
+    "header header"
+    "left conversation";
+}
+.avatar-dock-room[data-desk-columns="2"] .avatar-desk-left { grid-area: left; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.avatar-dock-room[data-desk-columns="2"] .avatar-desk-left > .avatar-tray-rail,
+.avatar-dock-room[data-desk-columns="2"] .avatar-desk-left > .avatar-desk-fleet { flex: 1 1 0; min-height: 0; grid-area: auto; }
+/* The conversation column: her portrait on top, then the thread and the composer at their reading width. */
+.avatar-dock-room[data-room-rail="true"] .avatar-dock-view { flex: none; height: 160px; border-bottom: 1px solid var(--border-dim); }
+.avatar-dock-room[data-room-rail="true"] .avatar-thread { min-height: 0; border-top: 0; }
+.avatar-dock-room[data-room-rail="true"] .avatar-composer { border-top: 0; padding-left: max(24px, calc((100% - var(--lucy-reading-width, 760px)) / 2)); padding-right: max(24px, calc((100% - var(--lucy-reading-width, 760px)) / 2)); }
+.avatar-dock-room[data-room-rail="true"] .avatar-thread-content { max-width: calc(var(--lucy-reading-width, 760px) + 48px); padding-left: 24px; padding-right: 24px; }
+/* The header's plain summary. */
+.avatar-desk-summary { color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.avatar-desk-summary::before { content: "\00b7"; margin-right: 10px; color: var(--text-muted); }
+/* A column's title: small, uppercase, with its count. */
+.avatar-tray-heading-count { font-variant-numeric: tabular-nums; }
+.avatar-tray-title .avatar-tray-heading-count { min-width: 0; height: auto; padding: 0; border-radius: 0; background: none; color: var(--text-bright); font-size: inherit; line-height: inherit; }
+.avatar-tray-waiting .avatar-tray-title .avatar-tray-heading-count { color: var(--amber); }
+.avatar-dock-room .avatar-tray-title { height: 43px; box-sizing: border-box; }
+/* "Next:", the first thing that waits, as a button that scrolls its card into view. */
+.avatar-desk-next {
+  flex: none;
+  margin: 10px 10px 0 16px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--amber);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-bright);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.avatar-desk-next:hover { border-color: var(--teal); border-left-color: var(--amber); }
+.avatar-desk-next:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+@keyframes avatar-desk-flash { from { box-shadow: 0 0 0 2px var(--teal); } to { box-shadow: 0 0 0 2px transparent; } }
+.avatar-desk-flash { animation: avatar-desk-flash 1400ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .avatar-desk-flash { animation: none; outline: 2px solid var(--teal); } }
+/* A finding: a compact card with one button. */
+.avatar-tray-rail .avatar-tray-list > .avatar-asks > .avatar-desk-finding { gap: 6px; }
+.avatar-desk-finding-name { margin: 0; color: var(--text-bright); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+.avatar-desk-finding-line { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar-desk-finding .avatar-launch-buttons .avatar-ask-option { width: auto; padding: 5px 12px; }
+/* Decisions with nothing waiting, and what was decided today. */
+.avatar-desk-empty { display: flex; flex-direction: column; gap: 14px; }
+.avatar-desk-subtitle { margin: 14px 0 6px; color: var(--text-secondary); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; line-height: 18px; text-transform: uppercase; }
+.avatar-desk-empty .avatar-desk-subtitle { margin-top: 0; }
+.avatar-desk-decided-list, .avatar-desk-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.avatar-desk-decided-row { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; border: 1px solid var(--border-dim); border-radius: 8px; font-size: 13px; line-height: 18px; }
+.avatar-desk-decided-who { color: var(--text-bright); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar-desk-decided-outcome { color: var(--text-secondary); overflow-wrap: anywhere; }
+/* Fleet: one row per task. */
+.avatar-desk-fleet { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--bg-panel); overflow: hidden; }
+.avatar-desk-fleet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 12px 10px 16px 16px; }
+.avatar-desk-fleet-body > .avatar-tray-empty { padding-bottom: 6px; }
+.avatar-desk-row {
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-dim);
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+}
+button.avatar-desk-row { cursor: pointer; }
+button.avatar-desk-row:hover { border-color: var(--teal); }
+button.avatar-desk-row:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.avatar-desk-row-needs { border-left: 2px solid var(--amber); }
+.avatar-desk-row-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.avatar-desk-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-bright); font-weight: 600; }
+.avatar-desk-row-doing { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+.avatar-desk-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12px; }
+/* Dashboard toasts keep off her cards, her 3D view and the composer while the desk covers the window: they sit at
+   the bottom-left of the conversation column, just above the composer (`--lucy-desk-left` and
+   `--lucy-desk-composer-height` are kept by AvatarDock.tsx). */
+.toasts.toasts-in-desk,
+:root[data-lucy-desk] .destructive-undo-toasts {
+  top: auto;
+  right: auto;
+  bottom: calc(var(--lucy-desk-composer-height, 120px) + 12px);
+  left: calc(var(--lucy-desk-left, 0px) + 16px);
+  /* No wider than reaches the left third of the reading column, so a toast covers as little of the newest message as it can; a narrow toast wraps. */
+  max-width: min(420px, calc(max(24px, (100vw - var(--lucy-desk-left, 0px) - var(--lucy-reading-width, 760px)) / 2) + var(--lucy-reading-width, 760px) / 3 - 16px));
+}
+:root[data-lucy-desk] .achievement-toasts {
+  right: auto;
+  bottom: calc(var(--lucy-desk-composer-height, 120px) + 12px);
+  left: calc(var(--lucy-desk-left, 0px) + 16px);
+}
+/* An empty conversation (only her opening words): the hello and its chips sit right under her portrait, so the eye goes portrait, hello, chips. Once there is an exchange the thread is as before, newest at the bottom. */
+.avatar-dock-room[data-room-rail="true"] .avatar-thread-content[data-opening="true"] { justify-content: flex-start; min-height: 0; }

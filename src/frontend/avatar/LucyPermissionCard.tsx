@@ -46,18 +46,21 @@ export function waitedText(sinceMs: number, nowMs: number): string {
   return `waiting ${minutes} min`;
 }
 
-function PermissionCard({
+export function PermissionCard({
   card,
   pressed,
   nowMs,
   onChoice,
   onOpenTask,
+  pressGuard,
 }: {
   card: LucyPermissionCardView;
   pressed: boolean;
   nowMs: number;
   onChoice?: PermissionChoiceSender;
   onOpenTask?: (taskId: string) => boolean;
+  /** True while presses must be ignored (the list above the card just changed and moved its buttons). */
+  pressGuard?: () => boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const live = permissionButtonsLive(card, nowMs);
@@ -66,7 +69,7 @@ function PermissionCard({
   const titleId = `avatar-permission-title-${card.promptId.slice(0, 16)}`;
 
   const press = (choice: 'approve' | 'deny'): void => {
-    if (!onChoice) return;
+    if (!onChoice || pressGuard?.()) return;
     const sent = sendPermissionChoice(card, choice, onChoice);
     if (sent !== null) setFailed(!sent);
   };
@@ -126,6 +129,18 @@ function PermissionCard({
       <p className="avatar-ask-note" role="status" data-testid="avatar-permission-note">{note}</p>
     </li>
   );
+}
+
+/** The clock the "waiting N min" labels and the button time limit read: now, refreshed every second while `active`. */
+export function useSecondClock(active: boolean, nowFn: () => number = Date.now): number {
+  const [now, setNow] = useState(nowFn);
+  useEffect(() => {
+    if (!active) return undefined;
+    setNow(nowFn());
+    const timer = setInterval(() => setNow(nowFn()), 1000);
+    return () => clearInterval(timer);
+  }, [active, nowFn]);
+  return now;
 }
 
 export function LucyPermissionCards({

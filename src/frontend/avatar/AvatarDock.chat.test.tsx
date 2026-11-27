@@ -716,11 +716,11 @@ describe('Lucy\'s column as a chat', () => {
   });
 
   describe('the header', () => {
-    test('keeps Replay and Minimise, with Expand between them, as real buttons with a name each', () => {
+    test('keeps Replay and Minimise, with Desk between them, as real buttons with a name each', () => {
       render();
       const buttons = [...container.querySelectorAll<HTMLButtonElement>('.avatar-dock-header button')];
-      // Expand is named by the word on it; the two icon buttons by their label.
-      expect(buttons.map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Replay last message', 'Expand', 'Minimise Lucy']);
+      // Desk is named by the word on it; the two icon buttons by their label.
+      expect(buttons.map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Replay last message', 'Desk', 'Minimise Lucy']);
       expect(buttons.map((b) => b.className)).toEqual(['avatar-dock-button avatar-dock-replay', 'avatar-room-toggle', 'avatar-dock-button']);
     });
   });

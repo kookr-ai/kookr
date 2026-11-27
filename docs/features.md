@@ -152,7 +152,7 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 | F5.1 | **Supervisor findings panel** | Left side (340px): rich finding cards ordered by urgency, each with severity badge, supervisor explanation, a one-line recommended next-action line (from the findings catalog), inline quick-reply input, skip/snooze, and live response chips when the suggestion channel has them (up to five Allow/Deny or Yes/No actions; permission chips without a live request binding are omitted). When the task already has a PR in `githubState`, the card also shows one compact `#N status` chip (with CI-failed or changes-requested cues); clicking it selects the task and opens the GitHub pane. When the finding has a `parentTaskId` that still resolves in the live snapshot, the card's context row also shows a compact `parent: <name>` chip; clicking it selects that parent without opening a new pane. Git branch stays off the card. When the rail mixes types, header chips filter the cards by anomaly type (multi-select OR, persisted in `localStorage`; empty selection shows all). The rail is one scrolling list grouped by state: "Needs you" (one row for each question or permission prompt a task waits on, then the finding cards; the count includes all of them and says so in words when they are mixed, for example "1 question, 1 finding"; pressing a question or permission row opens Lucy's panel on it and answers nothing; one line reading "nothing waiting" only when all three are empty), then Working, Pending, Snoozed and Finished (collapsed by default). Working rows are two lines, with their action buttons shown on hover, keyboard focus or selection. Unselected finding cards hide the recommendation, cost, turn-state line and copy-ID chip, which the selected card shows. |
 | F5.2 | **Terminal panel** | The task reading pane shows an interactive xterm.js terminal bridged to the selected agent's dtach session. It is a tab beside Conversation and Changes (and GitHub when the task has references); on windows wider than 1200 px a **Split view** toggle shows the conversation and the terminal side by side, and the choice is remembered. Terminal focus (Alt+T) shows the terminal alone; leaving it returns to the layout it was entered from, Split view included. Fractional wheel scrolling stays local to the terminal. The negotiated stream bounds pending output by acknowledging bytes after parsing; a slow or interrupted view shows an explicit recovery state instead of silently losing continuity. Dropping an image onto the terminal, or pasting one from the clipboard through the terminal's right-click Paste (for example a screenshot; plain Ctrl+V stays the agent's own key), saves it on the Kookr host and pastes the saved file's path into the agent's prompt without submitting it; Claude Code and Codex CLI attach that path as an image. Because only the image bytes cross from the browser, this works when the browser and Kookr are on different filesystems (Chrome on Windows with Kookr in WSL). PNG, JPEG, GIF and WebP up to 10 MB are accepted. See the [terminal validation report](reports/terminal-responsiveness-validation.md) for measured performance and qualification limits. |
 | F5.3 | **Status bar** | Bottom: task count, finding count, a completed-task chip when at least one live agent finished in the last 24 hours (e.g. `3 completed / 24h`; hidden at zero; tooltip notes the live-list lower bound; clicking it expands the Completed rail and scrolls it into view), a launched-task chip when at least one live agent started in the last 24 hours (e.g. `3 launched / 24h`; hidden at zero; never inferred from a finish time; tooltip notes the live-list lower bound; clicking it opens Diagnostics containing the Outcome Scoreboard), the oldest live finding wait when at least one finding is active (clicking it selects that unanswered finding), the rolling 24-hour cost chip and plan quota. Everything else sits behind the top-bar **System** indicator (issue #3561 slice 2), which turns amber while a hidden readout is degraded and shows non-urgent states neutrally (a muted-speaker glyph when alert sounds are muted, a grey dot for elevated CPU or RAM; issue #3619): host resources, ops-health pills, sound, achievements, speech-to-text, a time-to-unblock chip when at least five human-reply samples exist in the last 24 hours (visible label is volume plus median, e.g. `12 unblocked (24h) · median 8m`), and — when the live-friction snapshot has signalCount > 0 — a live-friction chip with skip and snooze counts from signals[] (false-positive included only when that kind is present; diagnostics-only; does not reorder findings). Top bar: queue dots showing triage position, findings/healthy counts, cost where available, a neutral **Bypass mode** chip when permission bypass is on, and the System indicator whose detail ends with **About** (build hash and deploy controls). |
-| F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Alt+N: next finding. Alt+L: quick launch. With the avatar panel on, Alt+Shift+M: hands-free Talk; Alt+Shift+L: Lucy's room (she takes the whole window) and back. macOS defaults use Cmd+Ctrl instead of Alt. Rebindable in Settings. |
+| F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Alt+N: next finding. Alt+L: quick launch. With the avatar panel on, Alt+Shift+M: hands-free Talk; Alt+Shift+L: Lucy's desk (she takes the whole window) and back. macOS defaults use Cmd+Ctrl instead of Alt. Rebindable in Settings. |
 | F5.5 | **Real-time updates** | All panels update live as agent states change. No manual refresh. |
 | F5.6 | **Respond-and-advance loop** | "Send & Next" as primary action. After responding, a confirmation overlay shows what was sent and where the UI is advancing to. Queue dots track triage progress. |
 | F5.7 | **"All clear" state** | When no findings exist and no question or permission prompt waits, the findings panel shows a calm "all agents working autonomously" state. |
@@ -424,30 +424,55 @@ says out loud, and a one-line strip above it holds what is waiting on you.
   it in words: "1 question for you", "2 findings need you", "1 unheard message" (each row only when it
   applies) and "Click to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
   instead. A minimised panel shuts its 3D view down and uses no graphics memory.
-- **Lucy's room: she takes the whole window.** The column's title bar has an **Expand** button (the full-width sheet of a narrow window has none, and the shortcut still works there); press it,
+- **Lucy's desk: she takes the whole window.** The column's title bar has a **Desk** button (the full-width sheet of a narrow window has none, and the shortcut still works there); press it,
   or **Alt+Shift+L** (**Cmd+Ctrl+Shift+L** on macOS; rebindable in Settings, and it works from anywhere, text
   boxes and a minimised bubble included), and she covers the dashboard, which stays loaded underneath. The
-  same button, now **Back to dashboard**, or the same key brings the column back. From 1100 px wide the room
-  has three parts: a slim title bar (her name and what she is doing on the left; **Talk**, **Replay last
-  message** and **Back to dashboard** on the right); the conversation in the middle, at most 760 px wide and
-  centred, with the composer under it (the text box starts two lines tall and grows to eight); and a side
-  rail on the right, 400 to 520 px wide with the window, with her 3D view at the top (about 280 px tall in a
-  1080 px window) above everything that waits on you as whole cards: permission cards first, then every question a task is
-  waiting for, each with its answers on screen, then the opinion requests folded under one line. The rail
-  scrolls by itself, and when nothing waits it says so in one line. In a narrower window the room is one
-  column, laid out like the docked column, with the same title bar. Nothing is restarted by the switch: the
+  same button, now **Back to dashboard**, or the same key brings the column back. From 1500 px wide the desk
+  has three columns under one title bar. The title bar is her name and what she is doing, a plain summary from
+  the same data as the columns ("7 running · 2 need you"), and on the right **Talk**, **Replay last message**
+  and **Back to dashboard**. The columns, left to right, are each a labelled region and are reached in this
+  order with Tab:
+  - **Decisions** (26% of the window, 400 to 520 px; the title carries the count, "DECISIONS · 2"). Everything
+    that waits on you, soonest first, in the order of the dashboard's "Needs you" list: the questions tasks
+    ask (the one that closes soonest first) and the permission prompts as whole cards with their answers on
+    screen, then the findings (a task that says it is finished, is over budget, has gone quiet) as compact
+    cards with the finding's kind in words, the task's name, one line of Kookr's own explanation and one
+    button, **Open task**. A task stopped on a permission prompt shows the prompt's card, with Approve once
+    and Deny, in place of a second card for its finding. Nothing in this column changes a task except
+    the answer and permission buttons of the cards. On top, one line names the first item in words ("Next:
+    answer Earnings Watch UX review, 117 min left", "Next: Billing migration wants your permission to use
+    Bash", "Next: review Package release, it says it is finished"); pressing it scrolls that card into view and
+    lights it for a moment, and never moves keyboard focus. When nothing waits the column says "Nothing waits
+    on you." and, under **Decided today**, lists up to five questions closed today with how each ended;
+    opinion requests from tasks that have already ended stay folded under their one line.
+  - **Fleet** (the same width; "FLEET · 7 RUNNING"). One row per running task in the dashboard's order, with
+    the tasks that need you first and marked with the amber diamond: the name, the project, how long it has run
+    and its cost when it has one, and under the name what it is doing right now (the same current-tool line
+    the dashboard's working rows show; no line when it has none). Under them, **Finished today** lists up to
+    eight tasks with when they finished and their cost. A row is a button that leaves the desk and opens the
+    task. It reads what the dashboard already holds; nothing is fetched.
+  - **Conversation** (the rest). Her 3D view as a portrait about 160 px tall at the top, then the conversation, at
+    most 760 px wide and centred in the column, and the composer under it (the text box starts two lines tall
+    and grows to eight). An empty conversation shows her welcome and its suggestions.
+
+  Each of the two left columns scrolls by itself. From 1100 to 1499 px Decisions with Fleet under it sit in one
+  left column, each scrolling by itself, with the conversation on the right. In a narrower window the desk is
+  one column, laid out like the docked column with the same title bar (the "Waiting on you" strip is Decisions
+  there, and there is no Fleet). While the desk is shown, the dashboard's notifications stand at the bottom
+  left of the conversation column, just above the composer, so they never cover a card, her 3D view or the
+  composer. Nothing is restarted by the switch: the
   3D view keeps running, a half-typed message stays in the text box (which gets the keyboard focus on
-  entering), and the conversation stays where it was. **Open task** on a card in the room selects the task
+  entering; nothing else in the desk takes focus by itself), and the conversation stays where it was. **Open task** on a card in the desk selects the task
   and brings the column back, so the task is on screen beside her (also when she was a minimised bubble
-  before the room). While she covers the dashboard, in the room
+  before the desk). While she covers the dashboard, in the desk
   and as the open full-width sheet of a narrow window, the
   dashboard's own keyboard shortcuts do nothing (so a stray Enter cannot act on a task you cannot see); Ctrl+K
   and her own two shortcuts still work. The dashboard underneath is also inert then: Tab cannot reach it and
   screen readers skip it, while the command palette, notifications, Diagnostics and Settings stay usable, and
-  keyboard focus left in the dashboard moves to her text box. The room is not entered while a dialog opened from
-  the dashboard (Share task, a confirm) is open; if the sheet comes up under one, the dashboard stays live until it closes. The room belongs to one browser tab: it is remembered until the tab is
+  keyboard focus left in the dashboard moves to her text box. The desk is not entered while a dialog opened from
+  the dashboard (Share task, a confirm) is open; if the sheet comes up under one, the dashboard stays live until it closes. The desk belongs to one browser tab: it is remembered until the tab is
   closed and survives a reload, and it does not switch your other tabs, so the dashboard can stay in one
-  window while she has another. Opening **`/?lucy=room`** starts a tab in the room whatever the saved
+  window while she has another. Opening **`/?lucy=room`** starts a tab in the desk whatever the saved
   preferences say, also when she was minimised, and switches the panel on if it was off; the parameter is
   then removed from the address.
 - **Usable from the keyboard.** Focus stays on the panel when you minimise or reopen it,

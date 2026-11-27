@@ -2005,6 +2005,9 @@ export function App() {
               shortcutsBlocked={showOperations || modalBlocksShortcuts}
               dialogOpen={showOperations || showCommandPalette || activeModal !== null || dialogOverLucy}
               dashboardDialogOpen={dashboardDialogOpen}
+              findings={findings}
+              running={healthy}
+              completed={completed}
             />
           </Suspense>
         </AvatarErrorBoundary>
