@@ -1,6 +1,6 @@
 /**
  * Builds Lucy's operator conversation from the server's own parts: the configuration
- * resolved at start-up, the OpenRouter stream, and a look source over the task list,
+ * resolved at start-up, the model stream (Baseten or OpenRouter), and a look source over the task list,
  * the findings, the quota and the projects.
  *
  * Returns what the route needs: nothing when the setting is off (the route answers

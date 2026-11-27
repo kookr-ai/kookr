@@ -188,3 +188,49 @@ describe('the log keeps Baseten\'s own explanation, the operator sentence never 
     expect(sentence).not.toContain('internal-host-17');
   });
 });
+
+describe('a model that refuses reasoning_effort (HTTP 400)', () => {
+  const ok = (): Response => sseResponse([textChunk('hi'), 'data: [DONE]\n\n']);
+  function recorder(answers: Array<() => Response>) {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return (answers.shift() ?? ok)();
+    }) as typeof fetch;
+    return { bodies, fetchImpl };
+  }
+  const refuse = (): Response => new Response('{"error":{"message":"reasoning_effort not supported"}}', { status: 400 });
+
+  test('is asked again once without the field, and the field is then left out for later calls', async () => {
+    const warnings: string[] = [];
+    const { bodies, fetchImpl } = recorder([refuse, ok, ok]);
+    const port = createBasetenChatStream(CONFIG, fetchImpl, (m) => warnings.push(m));
+
+    const first = await collect(port(REQUEST));
+    expect(first.some((e) => e.type === 'text')).toBe(true);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toHaveProperty('reasoning_effort', 'medium');
+    expect(bodies[1]).not.toHaveProperty('reasoning_effort');
+    expect(warnings).toHaveLength(1);
+
+    await collect(port(REQUEST));
+    expect(bodies).toHaveLength(3);
+    expect(bodies[2]).not.toHaveProperty('reasoning_effort');
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a 400 the retry does not cure is reported, and nothing is remembered', async () => {
+    const { bodies, fetchImpl } = recorder([refuse, refuse, ok]);
+    const port = createBasetenChatStream(CONFIG, fetchImpl, () => {});
+    await expect(collect(port(REQUEST))).rejects.toMatchObject({ kind: 'http', status: 400, detail: { service: 'Baseten' } });
+    await collect(port(REQUEST));
+    expect(bodies[2]).toHaveProperty('reasoning_effort', 'medium');
+  });
+
+  test('other errors are not retried', async () => {
+    const { bodies, fetchImpl } = recorder([() => new Response('', { status: 500 })]);
+    await expect(collect(createBasetenChatStream(CONFIG, fetchImpl, () => {})(REQUEST))).rejects.toMatchObject({ status: 500 });
+    expect(bodies).toHaveLength(1);
+  });
+});
+

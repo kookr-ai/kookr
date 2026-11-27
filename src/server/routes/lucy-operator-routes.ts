@@ -49,7 +49,7 @@ function refuse(code: LucyTurnErrorCode, message: string): { error: LucyTurnErro
 export function registerLucyOperatorRoutes(app: Hono, deps: LucyOperatorRouteDeps): void {
   app.post(LUCY_TURN_PATH, async (c) => {
     if (!deps.lucyOperator) {
-      return c.json(refuse('lucy_operator_disabled', 'Lucy\'s conversation is off on this server: it needs a Baseten key (KOOKR_BASETEN_API_KEY) or an OpenRouter key (KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY), and KOOKR_LUCY_OPERATOR must not be set to 0.'), 404);
+      return c.json(refuse('lucy_operator_disabled', 'Lucy\'s conversation is off on this server: it needs a Baseten key (KOOKR_BASETEN_API_KEY or BASETEN_API_KEY) or an OpenRouter key (KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY), and KOOKR_LUCY_OPERATOR must not be set to 0.'), 404);
     }
     const service = deps.lucyOperator.service;
     if (!service) {

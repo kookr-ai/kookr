@@ -175,4 +175,36 @@ describe('resolveLucyOperatorConfig: the service (Baseten or OpenRouter)', () =>
   test('the kill switch still wins over both keys', () => {
     expect(resolveLucyOperatorConfig({ ...BT, ...KEY, KOOKR_LUCY_OPERATOR: 'off' })).toEqual({ enabled: false });
   });
+
+  test.each([
+    ['baseten', /Baseten key \(set KOOKR_BASETEN_API_KEY or BASETEN_API_KEY\)/],
+    ['openrouter', /OpenRouter key \(set KOOKR_OPENROUTER_API_KEY or OPENROUTER_API_KEY\)/],
+  ])('a service named with no key at all (switch unset) is unavailable and names that service\'s key: %s', (name, reason) => {
+    const result = resolveLucyOperatorConfig({ KOOKR_LUCY_OPERATOR_PROVIDER: name });
+    expect(result).toMatchObject({ enabled: true, ok: false });
+    expect(result.enabled && !result.ok && result.reason).toMatch(reason);
+    const asked = resolveLucyOperatorConfig({ KOOKR_LUCY_OPERATOR_PROVIDER: name, KOOKR_LUCY_OPERATOR: 'true' });
+    expect(asked.enabled && !asked.ok && asked.reason).toMatch(reason);
+  });
+
+  describe('an install that already runs on OpenRouter stays there (upgrade trap)', () => {
+    const BOTH = { ...BT, ...KEY };
+    test.each([
+      ['the OpenRouter default model is set', { KOOKR_LUCY_OPERATOR_MODEL: 'deepseek/deepseek-v4.1-flash-1017' }],
+      ['an OpenRouter provider list is set', { KOOKR_LUCY_OPERATOR_PROVIDERS: 'deepinfra/fp8' }],
+    ])('both keys, service not chosen, %s: OpenRouter, with one note', (_name, extra) => {
+      const result = resolveLucyOperatorConfig({ ...BOTH, ...extra });
+      expect(result).toMatchObject({ ok: true, provider: 'openrouter', model: { apiKey: 'sk-or-key' } });
+      expect(result.enabled && result.warnings).toEqual([expect.stringMatching(/^Keeping Lucy's conversation on OpenRouter because .*KOOKR_LUCY_OPERATOR_PROVIDER=baseten/)]);
+    });
+
+    test('naming Baseten overrides it', () => {
+      expect(resolveLucyOperatorConfig({ ...BOTH, KOOKR_LUCY_OPERATOR_MODEL: 'deepseek/deepseek-v4.1-flash-1017', KOOKR_LUCY_OPERATOR_PROVIDER: 'baseten' })).toMatchObject({ provider: 'baseten' });
+    });
+
+    test('a Baseten key alone, or another model id, still means Baseten', () => {
+      expect(resolveLucyOperatorConfig({ ...BT, KOOKR_LUCY_OPERATOR_MODEL: 'deepseek/deepseek-v4.1-flash-1017' })).toMatchObject({ provider: 'baseten' });
+      expect(resolveLucyOperatorConfig({ ...BOTH, KOOKR_LUCY_OPERATOR_MODEL: 'deepseek-ai/DeepSeek-V4.1-Flash-Fast' })).toMatchObject({ provider: 'baseten', warnings: [] });
+    });
+  });
 });

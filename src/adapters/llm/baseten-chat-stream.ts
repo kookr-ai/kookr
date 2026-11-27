@@ -12,7 +12,7 @@
  * "Baseten" itself.
  */
 
-import type { LucyModelPort, LucyModelRequest } from '../../core/lucy-operator/model-port.js';
+import { LucyModelError, type LucyModelEvent, type LucyModelPort, type LucyModelRequest } from '../../core/lucy-operator/model-port.js';
 import { DEFAULT_BASE_URL, DEFAULT_MODEL, type BasetenReasoningEffort } from './baseten-client.js';
 import { streamLucyChat } from './lucy-chat-stream-core.js';
 
@@ -47,14 +47,52 @@ export function buildBasetenChatBody(config: BasetenChatStreamConfig, request: L
   return body;
 }
 
-/** Build the model port for the operator loop against Baseten. Aborting `request.signal` closes the connection at once. */
-export function createBasetenChatStream(config: BasetenChatStreamConfig, fetchImpl: typeof fetch = fetch): LucyModelPort {
-  return (request) => streamLucyChat({
-    service: 'Baseten',
-    url: `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
-    headers: { authorization: `Api-Key ${config.apiKey}` },
-    body: buildBasetenChatBody(config, request),
-    stallTimeoutMs: config.stallTimeoutMs,
-    httpErrorDetail: { providerName: 'Baseten' },
-  }, request, fetchImpl);
+/**
+ * Build the model port for the operator loop against Baseten. Aborting `request.signal` closes the connection at once.
+ *
+ * A model that refuses `reasoning_effort` answers HTTP 400. As Lucy live does, the request is then asked once more
+ * without the field; once that is accepted the field is left out for the rest of this process. A 400 the retry does
+ * not cure had another cause, so nothing is remembered and the failure is reported.
+ */
+export function createBasetenChatStream(
+  config: BasetenChatStreamConfig,
+  fetchImpl: typeof fetch = fetch,
+  warn: (message: string) => void = (message) => console.warn(`[lucy-operator] ${message}`),
+): LucyModelPort {
+  let omitReasoningEffort = false;
+  const run = (request: LucyModelRequest, effort: BasetenReasoningEffort | null): AsyncIterable<LucyModelEvent> => {
+    const sent = { ...config, reasoningEffort: effort };
+    return streamLucyChat({
+      service: 'Baseten',
+      url: `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`,
+      headers: { authorization: `Api-Key ${config.apiKey}` },
+      body: buildBasetenChatBody(sent, request),
+      stallTimeoutMs: config.stallTimeoutMs,
+      httpErrorDetail: { providerName: 'Baseten' },
+    }, request, fetchImpl);
+  };
+  return async function* (request) {
+    if (!config.reasoningEffort || omitReasoningEffort) {
+      yield* run(request, null);
+      return;
+    }
+    let started = false;
+    try {
+      for await (const event of run(request, config.reasoningEffort)) {
+        started = true;
+        yield event;
+      }
+      return;
+    } catch (err) {
+      // An HTTP error is thrown before the first event, so `started` is only true for a later failure.
+      if (started || !(err instanceof LucyModelError && err.kind === 'http' && err.status === 400)) throw err;
+    }
+    for await (const event of run(request, null)) {
+      if (!omitReasoningEffort) {
+        omitReasoningEffort = true;
+        warn(`${config.model} refused reasoning_effort "${config.reasoningEffort}" with HTTP 400; it is now asked without that setting.`);
+      }
+      yield event;
+    }
+  };
 }

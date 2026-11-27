@@ -98,7 +98,20 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
     else warnings.push(`KOOKR_LUCY_OPERATOR_PROVIDER="${rawProvider.slice(0, 40)}" is not one of ${LUCY_OPERATOR_PROVIDERS.join(', ')}; choosing by which key is configured.`);
   }
   const explicit = chosen !== undefined;
-  const provider: LucyOperatorProvider = chosen ?? (basetenKey ? 'baseten' : 'openrouter');
+  let provider: LucyOperatorProvider = chosen ?? (basetenKey ? 'baseten' : 'openrouter');
+
+  // Upgrade trap: an install that already runs on OpenRouter (both keys now set) and says so by an OpenRouter-only
+  // setting must not move to Baseten unasked, where that model id would fail every turn.
+  if (!explicit && provider === 'baseten' && openRouterKey) {
+    const modelSetting = env.KOOKR_LUCY_OPERATOR_MODEL?.trim();
+    const why = modelSetting === DEFAULT_LUCY_OPERATOR_MODEL
+      ? `KOOKR_LUCY_OPERATOR_MODEL is the OpenRouter model ${DEFAULT_LUCY_OPERATOR_MODEL}`
+      : rawProviders ? 'KOOKR_LUCY_OPERATOR_PROVIDERS is set, and it only applies to OpenRouter' : null;
+    if (why) {
+      provider = 'openrouter';
+      warnings.push(`Keeping Lucy's conversation on OpenRouter because ${why}. Set KOOKR_LUCY_OPERATOR_PROVIDER=baseten to use Baseten (and change or unset the model setting).`);
+    }
+  }
 
   // Left to the keys, with none of either: on only where a key is present, so a host without one sees no change.
   if (!explicit && !basetenKey && !openRouterKey) {
@@ -121,7 +134,7 @@ export function resolveLucyOperatorConfig(env: Record<string, string | undefined
       launch: isDefaultOnFlagEnabled(env.KOOKR_LUCY_LAUNCH),
       model: {
         apiKey: basetenKey,
-        // Lucy live's own Baseten settings apply only when this one is unset, so one line moves both together.
+        // The model falls back to Lucy live's Baseten model when the operator setting is unset; the address is always Lucy live's.
         model: modelFromOperatorSetting || env.KOOKR_BASETEN_MODEL?.trim() || DEFAULT_BASETEN_MODEL,
         baseUrl: env.KOOKR_BASETEN_BASE_URL?.trim() || DEFAULT_BASETEN_BASE_URL,
         reasoningEffort: reasoning,
