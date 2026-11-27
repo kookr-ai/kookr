@@ -1301,6 +1301,12 @@ describe('AskService.createSystem (issue #4215)', () => {
       await tap(r.ask, 1);
       expect(await h.service.expireWithOutcome(r.ask.id, 'No answer, so it was resumed.')).toEqual({ ok: false, reason: 'not_open' });
       expect(h.store.get(r.ask.id)?.expiryOutcome).toBeUndefined();
+      const cancelled = await h.service.createSystem({ ...systemInput, defaultOption: 'Resume' });
+      if (!cancelled.ok) throw new Error(JSON.stringify(cancelled.error));
+      await h.service.cancel(cancelled.ask.id, 'Withdrawn.');
+      expect(await h.service.expireWithOutcome(cancelled.ask.id, 'No answer, so it was resumed.')).toEqual({ ok: false, reason: 'not_open' });
+      expect(h.store.get(cancelled.ask.id)).toMatchObject({ state: 'cancelled' });
+      expect(h.store.get(cancelled.ask.id)?.expiryOutcome).toBeUndefined();
       const task = await createOk();
       expect(await h.service.expireWithOutcome(task.id, 'No answer.')).toEqual({ ok: false, reason: 'not_system' });
       expect(await h.service.expireWithOutcome('nope', 'No answer.')).toEqual({ ok: false, reason: 'not_found' });

@@ -236,6 +236,16 @@ describe('buildLucyBoard questions from tasks', () => {
     expect(board).toContain('the session that asked ended before an answer was given 4 minutes ago');
   });
 
+  test('names Kookr as the asker of its own question, and gives what was done when nobody answered', () => {
+    const board = buildLucyBoard({ ...base, asks: [
+      ask({ id: 's1', taskId: 'system:interrupted-tasks', taskName: undefined, system: 'interrupted-tasks', question: 'Resume them?' }),
+      ask({ id: 's2', taskId: 'system:interrupted-tasks', taskName: undefined, system: 'interrupted-tasks', state: 'expired', resolvedAt: NOW - 3 * 60_000, expiryOutcome: 'No answer, so the 4 tasks were resumed.' }),
+    ] }, NOW);
+    expect(board).toContain('- Kookr asked');
+    expect(board).not.toContain('a task asked');
+    expect(board).toContain('it expired with no answer 3 minutes ago; No answer, so the 4 tasks were resumed.');
+  });
+
   test('has no question section when there are no questions', () => {
     expect(buildLucyBoard(base, NOW)).not.toContain('Questions from tasks');
     expect(buildLucyBoard({ ...base, asks: [] }, NOW)).not.toContain('Questions from tasks');

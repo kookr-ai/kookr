@@ -43,7 +43,7 @@ export interface LucySaysMessage {
   /** Unique per message, so a browser that receives one twice writes it once. */
   id: string;
   kind: LucySaysKind;
-  /** One line, ready to be written: task names only when they may be said aloud, never an id, a path or a prompt. */
+  /** One line, ready to be written: a task's title when it may be said aloud, else its project and the start of its id; never a path or a prompt. */
   text: string;
   /** The tasks the line is about, in the order it mentions them; the first is the one to offer to open. */
   taskIds: string[];

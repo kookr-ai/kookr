@@ -149,8 +149,11 @@ describe('buildOperatorBriefing: caps', () => {
     expect(buildOperatorBriefing({ tasks: [task('t1', 'Fix login', 'stale_agent'), task('t2', 'Other', 'hook_disconnected')] }, NOW).chips)
       .toEqual(['What should I do first?', 'What went wrong?']);
     expect(buildOperatorBriefing({ tasks: [task('t1', 'Fix login', 'stale_agent')] }, NOW).chips).toEqual(['What went wrong with Fix login?']);
-    expect(buildOperatorBriefing({ tasks: [task('w1', 'A'), { ...task('d1', 'Done', undefined, 'completed'), endedAt: NOW - 60_000 }] }, NOW).chips)
-      .toEqual(['What finished while I was away?']);
+    // With nothing waiting the text is empty and so are the chips: the panel writes neither.
+    expect(buildOperatorBriefing({ tasks: [task('w1', 'A'), { ...task('d1', 'Done', undefined, 'completed'), endedAt: NOW - 60_000 }] }, NOW))
+      .toMatchObject({ text: '', chips: [] });
+    expect(buildOperatorBriefing({ tasks: [task('t1', 'Fix login', 'stale_agent'), { ...task('d1', 'Done', undefined, 'completed'), endedAt: NOW - 60_000 }] }, NOW).chips)
+      .toEqual(['What went wrong with Fix login?', 'What finished while I was away?']);
     // A task that ended long ago is not "while I was away".
     expect(buildOperatorBriefing({ tasks: [{ ...task('d1', 'Done', undefined, 'completed'), endedAt: NOW - RECENTLY_ENDED_MS - 1 }] }, NOW).chips).toEqual([]);
     expect(buildOperatorBriefing({ tasks: [], asks: [ask('o1', 'gone', undefined, { taskEnded: true })] }, NOW).chips).toEqual(['Which opinions are wanted?']);
@@ -251,8 +254,19 @@ describe('buildOperatorBriefing: nothing that should not be written', () => {
   it('shortens a title that is only too long to its first words instead of dropping it', () => {
     expect(sayableTaskName('Test Inkling 2 Mini Unsloth Context Throughput')).toBe('Test Inkling 2 Mini');
     expect(sayableTaskName('Review the whole billing migration plan before Friday')).toBe('Review the whole billing');
+    // The word limit and the character limit each hold on their own.
+    expect(sayableTaskName('a b c d e f g h i j')).toBeUndefined();
+    expect(sayableTaskName('Alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo')).toBeUndefined();
+    expect(sayableTaskName('Aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee ffffffffff')).toBeUndefined();
     // A request pasted in as a title is not shortened into a broken phrase.
     expect(sayableTaskName('can you check which of the tasks is terminated unexpectedly and tell me why please')).toBeUndefined();
+  });
+
+  it('does not end the cut on a word that leads into the next one', () => {
+    expect(sayableTaskName('Add support for the new export format')).toBe('Add support');
+    expect(sayableTaskName('Migrate billing to the new cluster today')).toBe('Migrate billing');
+    expect(sayableTaskName('Review the whole billing migration plan today')).toBe('Review the whole billing');
+    expect(sayableTaskName('The of and to in on a')).toBeUndefined();
   });
 
   it('cleans and caps a hostile title wherever it is named', () => {

@@ -92,6 +92,8 @@ export const SHORTENED_NAME_WORDS = 4;
  */
 const MAX_SHORTENABLE_WORDS = 9;
 const MAX_SHORTENABLE_CHARS = 64;
+/** Words a shortened title must not end on: they begin a phrase that the cut removed. */
+const DANGLING_WORDS: ReadonlySet<string> = new Set(['a', 'an', 'the', 'of', 'for', 'to', 'in', 'on', 'with', 'and', 'or']);
 
 /**
  * The task's title as she may write it, otherwise undefined. A title that may be said whole (the rules
@@ -112,7 +114,11 @@ export function sayableTaskName(name: string | undefined): string | undefined {
   const words = cleaned.split(' ');
   // A title already this short that still failed is cut off, unpronounceable or too long in letters: not shortened.
   if (words.length <= SHORTENED_NAME_WORDS || words.length > MAX_SHORTENABLE_WORDS || cleaned.length > MAX_SHORTENABLE_CHARS) return undefined;
-  const cut = redactSpeechSecrets(words.slice(0, SHORTENED_NAME_WORDS).join(' ').replace(/[\s,;:\-–—.…]+$/u, ''));
+  // The cut must not end on a word that leads into the next one ("Add support for").
+  const kept = words.slice(0, SHORTENED_NAME_WORDS);
+  while (kept.length > 0 && DANGLING_WORDS.has(kept[kept.length - 1]!.replace(/[,;:.…]+$/u, '').toLowerCase())) kept.pop();
+  const cut = redactSpeechSecrets(kept.join(' ').replace(/[\s,;:\-–—.…]+$/u, ''));
+  if (!cut) return undefined;
   const spoken = spokenTaskName(cut);
   return isGenericTaskName(spoken) ? undefined : spoken;
 }
@@ -355,5 +361,6 @@ function buildSignature(state: BriefingState): string {
 /** The briefing for the state of the work at `nowMs`. Pure: the same input gives the same result. */
 export function buildOperatorBriefing(input: OperatorBriefingInput, nowMs: number): OperatorBriefing {
   const state = readState(input, nowMs);
-  return { text: buildText(state), chips: buildChips(state), signature: buildSignature(state) };
+  const text = buildText(state);
+  return { text, chips: text ? buildChips(state) : [], signature: buildSignature(state) };
 }

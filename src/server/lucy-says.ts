@@ -183,17 +183,22 @@ function dollars(amount: number): string {
 }
 
 function isAmount(value: number | undefined): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && Number(value.toFixed(2)) > 0;
 }
 
 /**
  * Who the sentence is about: the task's title when it may be said, otherwise its project and the first
  * characters of its id, and only when the event carries neither, "a task".
  */
-function subjectOf(event: Partial<Pick<LucyTaskEvent, 'taskName' | 'taskId' | 'projectName'>>): string {
+function subjectOf(event: Partial<Pick<LucyTaskEvent, 'taskName' | 'taskId' | 'projectName'>>): { text: string; title: boolean } {
   const name = sayableTaskName(event.taskName);
-  if (name !== undefined) return name;
-  const project = boardText(event.projectName, 40);
+  if (name !== undefined) return { text: name, title: true };
+  return { text: fallbackSubject(event), title: false };
+}
+
+function fallbackSubject(event: Partial<Pick<LucyTaskEvent, 'taskId' | 'projectName'>>): string {
+  // A project name with markup characters is not used, like a title with them.
+  const project = /[<>`]/.test(event.projectName ?? '') ? '' : boardText(event.projectName, 40);
   const shortId = (event.taskId ?? '').replace(/[^A-Za-z0-9-]/g, '').slice(0, 8);
   if (project && shortId) return `a task in ${project} (${shortId})`;
   if (project) return `a task in ${project}`;
@@ -203,21 +208,23 @@ function subjectOf(event: Partial<Pick<LucyTaskEvent, 'taskName' | 'taskId' | 'p
 
 /** The sentence for one event. */
 export function singleEventSentence(event: Pick<LucyTaskEvent, 'kind'> & Partial<Pick<LucyTaskEvent, 'taskName' | 'taskId' | 'projectName' | 'budget'>>): string {
-  const subject = subjectOf(event);
+  const { text: subject, title } = subjectOf(event);
+  // A real title is written as it is ("iOS build"); only the fallback phrase starts a sentence.
+  const head = title ? subject : capital(subject);
   switch (event.kind) {
     case 'failed':
-      return `${capital(subject)} failed.`;
+      return `${head} failed.`;
     case 'stalled':
-      return `${capital(subject)} has gone quiet.`;
+      return `${head} has gone quiet.`;
     case 'lost_contact':
       return `Kookr lost contact with ${subject}.`;
     case 'over_budget': {
       const { costUsd, alertUsd, twice } = event.budget ?? {};
-      if (!isAmount(costUsd) || !isAmount(alertUsd)) return `${capital(subject)} has gone over its budget.`;
-      return `${capital(subject)} is at ${dollars(costUsd)}, ${twice ? 'twice' : 'over'} its ${dollars(alertUsd)} alert.`;
+      if (!isAmount(costUsd) || !isAmount(alertUsd)) return `${head} has gone over its budget.`;
+      return `${head} is at ${dollars(costUsd)}, ${twice ? 'more than twice' : 'over'} its ${dollars(alertUsd)} alert.`;
     }
     case 'wants_review':
-      return `${capital(subject)} says it is finished and wants your review.`;
+      return `${head} says it is finished and wants your review.`;
   }
 }
 

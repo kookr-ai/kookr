@@ -421,7 +421,7 @@ clicked in the page yet.
 
 Lucy writes first and speaks second. Three things appear in her thread without being asked for, as
 messages from her. None of them is spoken, and none calls a model: the server builds each sentence
-from its own records with fixed patterns, and names a task only when its title may be said aloud.
+from its own records with fixed patterns. A task is named by its title when that may be said aloud (cut to its first words when it is only too long), and otherwise, in a line about one task, by its project and the start of its id (the briefing counts a task it cannot name).
 
 The lines about a task (failed, gone quiet, lost contact, over budget, wants review) are also kept, for fifteen
 minutes, in the server's record of what she said unprompted, so she knows what "it" means when you
@@ -448,8 +448,8 @@ are turns of it); with the conversation off she writes none.
 
 **A word about a task.** When a task she did not launch fails, goes quiet or loses contact with
 Kookr, she writes one line at once: "Docs link audit failed." A task that goes over its spend alert
-carries the two amounts: "Test Inkling 2 Mini is at $51.25, over its $50.00 alert." (at twice the alert:
-"is at $101.00, twice its $50.00 alert."); when an amount is missing the line keeps the name and says
+carries the two amounts: "Test Inkling 2 Mini is at $51.25, over its $50.00 alert." (past twice the alert:
+"is at $101.00, more than twice its $50.00 alert."); when an amount is missing the line keeps the name and says
 "has gone over its budget." A task whose title cannot be said at all is named by its project and the
 first characters of its id ("A task in billing (0f3a9c1e) failed."), never only "a task". A task that says it is finished is
 different: Kookr closes almost every such task by itself within a few minutes, so she waits ten
