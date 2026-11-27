@@ -17,10 +17,11 @@
 //     `background_tasks`) is the lead WAITING, not finishing: allow it without
 //     claiming the sentinel, so the nudge lands at a later stop, after the delegated
 //     work has come back.
-//   - That deferral is bounded (issue #4261): the first deferred stop writes a
-//     per-session stamp, and once it is SUBAGENT_WAIT_BOUND_MS old a stop no longer
-//     defers, so a hung or abandoned subagent that stays `running` cannot withhold
-//     the nudge for the rest of the session.
+//   - That deferral is bounded (issue #4261): a stamp records which subagents the
+//     lead is waiting on and since when. Once one of them has stayed `running` for
+//     SUBAGENT_WAIT_BOUND_MS, a stop no longer defers, so a hung or abandoned
+//     subagent cannot withhold the nudge for the rest of the session. A subagent
+//     started later gets its own clock.
 //   - SubagentStop never nudges and never claims the sentinel. Blocking a subagent
 //     makes its answer to the nudge its last message, which is all its caller
 //     receives, so the report gets displaced; and a subagent that took the session's
@@ -31,7 +32,7 @@
 //     behaves the same.
 //
 // Fail-open: unparseable event, already-nudged, or any fs error -> allow (exit 0).
-import { readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -51,12 +52,6 @@ if (event.stop_hook_active) process.exit(0);
 
 // A subagent's stop never takes the session's nudge (see the header).
 if (event.hook_event_name === 'SubagentStop') process.exit(0);
-
-/** True when the Stop payload lists a background subagent that is still running. */
-function waitingOnSubagent(tasks) {
-  if (!Array.isArray(tasks)) return false;
-  return tasks.some((t) => t && t.type === 'subagent' && t.status === 'running');
-}
 
 const sid = String(event.session_id ?? event.sessionId ?? 'nosession').replace(/[^A-Za-z0-9._-]/g, '_');
 // NB_DIR with a leading `~` expanded the way agent-notebook and bin/nb.js expand it
@@ -79,29 +74,62 @@ const sentinel = join(dir, `.retro-${sid}`);
 // make it collide with a sentinel.
 const waitStamp = join(dir, `.retrowait-${sid}`);
 
-// How long a lead may keep deferring the nudge because a background subagent is
-// still `running`, counted from its first deferred stop (issue #4261). Same value
+// How long one background subagent may stay `running` before the lead stops deferring
+// the nudge for it (issue #4261). Same value
 // as bin/kookr-stop-nudge.js (kept in step by hand; a test pins the two together).
 const SUBAGENT_WAIT_BOUND_MS = 30 * 60_000;
 
 /**
- * True while this stop should still defer: the first deferred stop writes the stamp
- * (`wx`, so racing stops agree on one start time) and later ones read its age. If
- * the stamp cannot be written or read, keep deferring (the #4231 behaviour).
+ * The ids of the background subagents a Stop payload lists as running. An entry with
+ * no id gets a placeholder, so it still counts and is still bounded.
  */
-function withinWaitBound(stamp) {
+function runningSubagentIds(tasks) {
+  if (!Array.isArray(tasks)) return [];
+  return tasks
+    .filter((t) => t && t.type === 'subagent' && t.status === 'running')
+    .map((t) => (typeof t.id === 'string' && t.id !== '' ? t.id : '(no id)'));
+}
+
+/**
+ * True while this stop should still defer (issue #4261). The stamp holds the ids of
+ * the subagents that were running when it was written, and its mtime is when that
+ * wait began. While one of those ids is still running, the wait goes on, and once
+ * the stamp is SUBAGENT_WAIT_BOUND_MS old that subagent has run at least that long:
+ * it is treated as hung and the stop no longer defers. When none of them is running
+ * any more (they finished and new ones started, or the stamp is from an earlier run
+ * or unreadable), the stamp is rewritten for the subagents running now, so a fresh
+ * subagent always gets its own clock. If the stamp cannot be written or its age
+ * read, keep deferring (the #4231 behaviour).
+ */
+function withinWaitBound(stamp, running) {
+  let recorded = [];
+  try {
+    const parsed = JSON.parse(readFileSync(stamp, 'utf-8'));
+    if (Array.isArray(parsed)) recorded = parsed;
+  } catch {
+    /* absent or unreadable: a new wait */
+  }
+  if (recorded.some((id) => running.includes(id))) {
+    try {
+      return Date.now() - statSync(stamp).mtimeMs < SUBAGENT_WAIT_BOUND_MS;
+    } catch {
+      return true;
+    }
+  }
+  // Write-then-rename, so a racing stop never reads a half-written stamp.
+  const tmp = `${stamp}.tmp-${process.pid}`;
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(stamp, new Date().toISOString(), { flag: 'wx' });
-    return true;
-  } catch (e) {
-    if (!e || e.code !== 'EEXIST') return true;
-  }
-  try {
-    return Date.now() - statSync(stamp).mtimeMs < SUBAGENT_WAIT_BOUND_MS;
+    writeFileSync(tmp, JSON.stringify(running));
+    renameSync(tmp, stamp);
   } catch {
-    return true;
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* nothing to clean */
+    }
   }
+  return true;
 }
 
 // Already nudged: nothing to defer (and no wait stamp to write). The atomic claim
@@ -115,7 +143,8 @@ try {
 // The lead is waiting on delegated work: keep the nudge for a later stop, within the
 // bound above. Only a running SUBAGENT counts; a running shell or monitor can outlive
 // the task, and waiting on it would hold the nudge back for no reason.
-if (waitingOnSubagent(event.background_tasks) && withinWaitBound(waitStamp)) process.exit(0);
+const runningIds = runningSubagentIds(event.background_tasks);
+if (runningIds.length > 0 && withinWaitBound(waitStamp, runningIds)) process.exit(0);
 
 // Claim this session's sentinel atomically. `wx` makes create-if-absent one OS step,
 // so when several stops race on one session id (opencode, or an event that carries
