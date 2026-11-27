@@ -2,7 +2,7 @@
 
 ## Status
 
-**Implemented (v1)**
+**Implemented (v1 and v2).** v2, "fleet vitals" (27 Nov 2026), is described in its own section near the end: [V2: fleet vitals](#v2-fleet-vitals-implemented).
 
 **Date:** 2026-05-13
 **Author:** Jean Ibarz (with Codex)
@@ -59,6 +59,8 @@ Primary docs checked:
 - **R16.** Resource detail SHALL be available to keyboard and touch users through an accessible label and focus/tap behavior, not hover-only.
 
 ## Non-goals
+
+> **Updated (27 Nov 2026).** These are the v1 non-goals. GPU readings, a five-minute trend history and load average (in Details) were added by [V2: fleet vitals](#v2-fleet-vitals-implemented). The others still hold.
 
 - No per-agent process tree accounting in v1.
 - No historical charts.
@@ -321,11 +323,123 @@ Rejected for v1. A single current pressure signal is enough to explain slow stre
 
 ## V2 Path
 
+> **Updated (27 Nov 2026).** The historical mini-chart shipped as part of [V2: fleet vitals](#v2-fleet-vitals-implemented), together with GPU and fleet readings that this list did not anticipate. Disk free is already part of `resourceStatus`. The other items are still open.
+
 - Per-agent or per-task attribution using `pidusage` plus terminal-session process ownership.
 - Disk free/used for the workspace or host using a platform-safe probe.
 - Historical mini-chart if users need trend context.
 - Richer macOS memory semantics if the simple RAM estimate produces misleading real-world behavior.
 - Single-core saturation tooltip using per-core deltas if aggregate CPU hides real slowdowns.
+
+## V2: fleet vitals (implemented)
+
+**Date:** 2026-11-27. **Scope:** GPU, fleet activity and a short trend history, which v1 left out on purpose. This section replaces the v1 non-goals "no GPU", "no historical charts" and "no load-average UI"; every other v1 rule still holds, including "no persisted samples" and "no alerting, throttling or scheduling on these readings".
+
+### What the operator asked for
+
+One small panel that answers three questions without opening a terminal:
+
+1. Is this computer coping? CPU, memory, GPU load, video memory (VRAM).
+2. How much is running? Agents plus the subagents they started.
+3. How hard is the fleet working? Tokens generated and read per second, tool calls per minute.
+
+The second and third questions are new. The first gained the GPU, because on a workstation whose one GPU is shared between agents' work and local model runs, a full video memory makes the next model load fail outright, and v1 could not show it.
+
+### What is measured, and how honest each number is
+
+| Reading | Source | Caveat shown to the operator |
+|---|---|---|
+| CPU, memory, dashboard lag | the v1 sampler (no second sampler) | memory is an estimate that counts reclaimable cache as used |
+| Load average, core count | `os.loadavg()`, `os.cpus()` | in Details only |
+| GPU load, video memory, temperature, power | `nvidia-smi --query-gpu=... --format=csv,noheader,nounits` | whole GPU only; absent without an NVIDIA GPU |
+| Agents | tasks whose agent session is live (`inProgress`) | |
+| Subagents | SubagentStart events with no SubagentStop yet | approximate (shown with `~`): a lost stop signal is dropped after 30 minutes |
+| Tokens generated / read per second | growth of each live task's token totals, averaged over 30 seconds | a lower bound (shown with `≥`): Grok Build and OpenCode report tokens only when they stop |
+| Tool calls per minute | tool-call hook events in the last 60 seconds, from any session of the fleet | exact |
+
+Measured on the development host (16 pinned cores of 24, 31 GB, one RTX 3090): one `nvidia-smi` call takes about 0.1 s of wall time and 0.04 s of CPU. The fleet at that moment generated about 110 tokens per second and read about 13,900, of which 97.6 % came from the prompt cache; tool calls ran between 8 and 71 per minute.
+
+Two rules follow from those numbers:
+
+- **Tokens read cannot share a scale with tokens generated.** Read is over a hundred times larger, almost all of it cache. It gets its own, deliberately quiet line, and the cache share is printed next to it.
+- **A reading that cannot be measured is `null` on the wire and `--` on screen, never 0.** "Idle" and "unknown" must look different.
+
+### GPU probe
+
+`src/server/gpu-probe.ts` runs `nvidia-smi` without a shell, asynchronously, with a 3-second timeout, and never overlaps itself. The vitals sample reads the last finished result, so a slow or hung driver cannot delay the two-second tick that also feeds load shedding and disk admission.
+
+- The command runs every four seconds, and only while a dashboard is connected. Everything else in the sample is read from memory and stays on, so the trend history is already filled when a dashboard opens.
+- A host without the command (`ENOENT`) is probed again only every five minutes. After three failures in a row the probe drops to one attempt a minute.
+- A good reading is kept for 20 seconds across a failed probe, then dropped.
+- Several GPUs are summarised as one: the busiest device's load, the hottest temperature, summed memory and power.
+
+There is no environment switch. The feature is display-only, its only cost outside the process is that one command, and the command already backs off on its own when it is missing or failing.
+
+### Token rates, and the subagent fix they required
+
+`TokenRateMeter` (`src/core/fleet-activity-meter.ts`) receives every live task's cumulative token totals on each tick and averages their growth over the trailing 30 seconds. A task seen for the first time only sets its baseline: its existing total is history, not throughput. A total that went down starts a new baseline.
+
+Checking this against the live fleet found a problem in existing code. A subagent's transcript was registered with the token tracker only at SubagentStop, so the parent task's totals jumped by the whole subagent at once. In a four-minute recording, single steps added 41,925 and 32,118 output tokens, a sevenfold spike over the median rate; the same jump distorted the task's live cost. The transcript is now registered at SubagentStart, at the path worked out from the parent session's transcript and the subagent id. Across 7,071 recorded SubagentStop events that path matches the reported one 98 % of the time. The rest are workflow agents, stored one level deeper; for them the guessed file never appears, it is dropped when the real path is reported, and behaviour is as before.
+
+### Wire contract
+
+A new message, `fleetVitals`, defined in `src/shared/contracts/fleet-vitals.ts`. It rides the resource-status tick (one vitals sample per resource sample), and `resourceStatus` itself is unchanged, so nothing that reads it (alert rules, admission, load shedding) is affected.
+
+```typescript
+{ type: 'fleetVitals'; sample: FleetVitalsSample; history?: FleetVitalsHistoryPoint[] }
+```
+
+- `sample.machine`: CPU, load average, core count, memory, `gpu` (or `null` with `gpuUnavailable` saying why), dashboard lag.
+- `sample.fleet`: `agents`, `subagents`, `tokens` (`null` while warming up), `toolCallsPerMin`, `topTools`.
+- `history`: the last 150 samples (five minutes), reduced to the eight series the dashboard draws. Sent once, in the burst an owner's dashboard receives on connect; the dashboard appends later samples itself.
+
+Like every non-snapshot message it goes to owners and all-scope viewers only, never to a viewer scoped to some projects: the counts are fleet-wide.
+
+### Where it appears, and why there
+
+The dashboard's "quiet chrome" rule (issue #3561) keeps readouts out of the page at rest. Two forms respect it:
+
+1. **The vitals block, for everyone:** at the top of the System detail, in place of the two `CPU` / `RAM` pills. Nothing is added to the page at rest.
+2. **The vitals strip, opt-in:** a "Pin to top bar" switch in the block (off by default, remembered per browser) adds a few numbers beside the System indicator. It exists because an operator reading a task all day should see a filling GPU without clicking.
+
+The block, top to bottom:
+
+- A verdict computed from the current sample only: "Machine comfortable" with the tightest resource, or what is under pressure ("CPU saturated, VRAM nearly full"). Under pressure the line becomes a tinted banner.
+- Four meters in a fixed order (CPU, memory, GPU, video memory), neutral grey at rest, each with a tick where pressure starts. Under pressure the fill takes the state colour and a diagonal hatch, and the meter keeps its amount ("23.3 / 24 GB").
+- One dominant number, the running count, with the split in words ("9 agents", "~6 subagents", and "N need you" when findings wait).
+- Three rates, each a number with its unit, a five-minute trend line drawn from zero to its own peak, and that peak printed. An idle fleet draws a flat line on the floor.
+- Dashboard lag, a Details disclosure (load average, GPU model, disk, cache split, tool mix, what `≥` and `~` mean), and the pin switch.
+
+Thresholds (the verdict, the meter colours and the strip all use these):
+
+| Reading | watch (amber, dot) | bad (red, diamond) |
+|---|---:|---:|
+| CPU | 85 % "busy" | 95 % "saturated" |
+| Memory | 90 % "tight" | 95 % with under 1 GB free, "full" |
+| Video memory | 90 % "tight" | 97 % "nearly full" |
+| Dashboard lag | 150 ms "slow" | 500 ms "very slow" |
+| GPU load | never judged | never judged |
+
+GPU load is shown and never coloured: 100 % is the normal state of a training or inference run. The CPU, memory and lag thresholds are the ones the System indicator already used for "high" and "critical"; video-memory pressure was added to the indicator's reasons, so the indicator and the strip cannot disagree.
+
+The strip is neutral text at rest. Under pressure the cell in trouble gets a tint, a mark and a bold value, and memory and lag, which have no cell at rest, gain one. It measures the room between the left of the top bar and the System indicator and sheds cells to fit: fleet cells first, then cells that are fine, then all but the single most serious problem, then everything. A fixed breakpoint would not work, because the left of the bar grows with the findings text and the whole bar shrinks when Lucy's column is open.
+
+### How the design was chosen
+
+Eight design concepts were mocked up at high fidelity inside a static copy of the real dashboard (System-detail section, top-bar strip, sidebar card, floating widget, fleet-first overview card, terminal-monitor drawer, plain-language verdict card, shared-time-axis instrument) and scored by four reviewers with different concerns (the operator, data visualisation, the dashboard's design rules, implementation cost). No concept won; the reviewers converged on a default block plus an opt-in strip. Three variants of that synthesis were built and judged again, then the result was built for real and reviewed a third time from screenshots of the running dashboard with fixture readings. Decisions that came out of those rounds: neutral meters (teal is kept for fleet activity), one dominant number, zero-based trend lines with the peak printed, amounts kept under pressure, and no unit squares for the running count (the numbers beside them already said it).
+
+### Known limits
+
+- Token rates miss agents that report only at stop (Grok Build, OpenCode), and workflow subagents still land at their stop.
+- Per-agent CPU or video memory is not available (on this WSL host `nvidia-smi` lists no per-process usage at all).
+- Only NVIDIA GPUs are read. Apple Silicon and AMD GPUs show no GPU section.
+- The history is five minutes and lives in server memory; a restart empties it.
+
+### Tests
+
+- Unit: `gpu-metrics`, `gpu-probe`, `fleet-activity-meter`, `fleet-vitals-service`, `subagent-transcript-path`, the token-accounting processor, the dashboard logic (`fleet-vitals.test.ts`) and the components in every state (`FleetVitals.test.tsx`).
+- Server: a connecting dashboard receives the latest sample with its history, and the message passes the wire schema.
+- End to end (`e2e/fleet-vitals.spec.ts`), with fixture readings injected in place of the host's: the block's content and fit, pinning and its persistence, pressure naming the resource with the System indicator agreeing, no overlap with any top-bar control from 1100 to 1920 px, and a host without a GPU.
 
 ## Files to Change
 

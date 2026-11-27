@@ -1906,8 +1906,9 @@ applicable limit with WebSocket close code `1009`.
 
 On connect, the server sends a full `snapshot` first. Owner sessions may then
 receive startup alerts and the latest optional side-channel state
-(`resourceStatus`, `githubUpdate`, `projectSummaries`, `quotaStatus`,
-`circuitBreakerStatus`, `diagnosticReport`) when those stores have data.
+(`resourceStatus`, `fleetVitals`, `githubUpdate`, `projectSummaries`,
+`quotaStatus`, `circuitBreakerStatus`, `diagnosticReport`) when those stores
+have data.
 Read-only viewer sessions receive only a scope-filtered `snapshot` plus
 scope-filtered `projectSummaries`.
 
@@ -1942,6 +1943,7 @@ delta sequence number.
 | `achievement:reset:ack` | Acknowledge an achievement reset request. | `success`, optional `error` |
 | `quotaStatus` | Push current Claude API quota window utilization. | `quota` |
 | `resourceStatus` | Push sampled server-host CPU, memory, and event-loop status. | `status` |
+| `fleetVitals` | Push machine and fleet vitals for the dashboard, every 2 seconds with `resourceStatus`: CPU, memory, GPU load and video memory (`machine`), and agents, subagents, tokens per second and tool calls per minute (`fleet`). Display only; nothing is stored. A reading that cannot be measured is `null`, never `0`. The copy sent on connect also carries `history`, the last five minutes kept in memory, so trend lines draw at once. | `sample`, optional `history` |
 | `circuitBreakerStatus` | Push wrapped-dependency circuit breaker snapshots. | `breakers` |
 | `schedules` | Push scheduled-task list state. | `schedules`, `revision`, `status` |
 | `scheduleFired` | Notify that a schedule launched a task. | `scheduleId`, `taskId` |
