@@ -33,6 +33,7 @@ import {
 } from '../core/claude-accounts.js';
 import { testClaudeAccount, type ClaudeProbeRunner } from '../adapters/claude-account-test.js';
 import { SUPERVISOR_ACTOR_HEADER } from '../shared/contracts/supervisor-actions.js';
+import type { ClaudeAccountQuota, ClaudeAccountQuotaWindow } from '../shared/contracts/claude-accounts.js';
 import { resolveStopBaseUrl } from './kookr-stop.js';
 
 export const EXIT_OK = 0;
@@ -144,6 +145,20 @@ async function readAllStdin(): Promise<string> {
 }
 
 /** Read one line from the terminal without echoing it. */
+/**
+ * ` (5h 56%, 7d 99% near limit)` from the usage the test measured, or `''`
+ * when Claude Code reported none. Keeps `account test` to one line.
+ */
+export function quotaSuffix(quota: ClaudeAccountQuota | undefined): string {
+  const part = (label: string, w: ClaudeAccountQuotaWindow | undefined): string | undefined => {
+    if (!w) return undefined;
+    const note = w.status === 'allowed_warning' ? ' near limit' : w.status === 'rejected' ? ' limit reached' : '';
+    return `${label} ${Math.round(w.utilization)}%${note}`;
+  };
+  const parts = [part('5h', quota?.fiveHour), part('7d', quota?.sevenDay)].filter((p): p is string => p !== undefined);
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
 function readHiddenLine(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;
@@ -283,12 +298,14 @@ export async function runAccountCli(argv: string[], io: AccountCliIo = {}): Prom
         if (usage) return fail(EXIT_USER_ERROR, 'USER_ERROR', usage);
         const name = args.positionals[0]!;
         const result = await testClaudeAccount(loadClaudeAccounts(file), name, { env, ...(io.runClaude ? { run: io.runClaude } : {}) });
-        if (result.outcome === 'ok') return succeed(`Claude account "${name}" works.`, { name, outcome: 'ok' });
+        const suffix = quotaSuffix(result.quota);
+        const details = { name, outcome: result.outcome, ...(result.quota ? { quota: result.quota } : {}) };
+        if (result.outcome === 'ok') return succeed(`Claude account "${name}" works.${suffix}`, details);
         if (result.outcome === 'usage_limited') {
-          return fail(EXIT_FAILED, 'USAGE_LIMITED', `Claude account "${name}" is out of quota: ${result.message}`, { name, outcome: result.outcome });
+          return fail(EXIT_FAILED, 'USAGE_LIMITED', `Claude account "${name}" is out of quota: ${result.message}${suffix}`, details);
         }
         const code = result.outcome === 'auth_failed' ? 'AUTH_FAILED' : 'ERROR';
-        return fail(EXIT_FAILED, code, `Claude account "${name}" did not answer: ${result.message}`, { name, outcome: result.outcome });
+        return fail(EXIT_FAILED, code, `Claude account "${name}" did not answer: ${result.message}${suffix}`, details);
       }
       case 'switch':
         return await runSwitch(args, env, io, fail, succeed);

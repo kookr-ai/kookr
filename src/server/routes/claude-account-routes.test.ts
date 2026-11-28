@@ -147,6 +147,28 @@ describe('claude account routes', () => {
     expect((await send('POST', '/api/claude-accounts/ghost/test')).status).toBe(404);
   });
 
+  test('test route returns the quota the probe measured, and omits it when none was reported', async () => {
+    await add({ name: 'work', token: TOKEN });
+    const stdout = [
+      JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
+        five_hour: { utilization: 0.56, resetsAt: 1795395000, status: 'allowed' },
+        seven_day: { utilization: 0.22, resetsAt: 1795770000, status: 'allowed' },
+      } } }),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'OK' }),
+    ].join('\n');
+    runProbe.mockResolvedValueOnce({ status: 0, stdout, stderr: '' });
+    const body = await (await send('POST', '/api/claude-accounts/work/test')).json();
+    expect(body).toMatchObject({
+      outcome: 'ok',
+      quota: {
+        fiveHour: { utilization: 56, resetsAt: new Date(1795395000 * 1000).toISOString(), status: 'allowed' },
+        sevenDay: { utilization: 22, resetsAt: new Date(1795770000 * 1000).toISOString(), status: 'allowed' },
+      },
+    });
+    const plain = await (await send('POST', '/api/claude-accounts/work/test')).json();
+    expect(plain).not.toHaveProperty('quota');
+  });
+
   test('concurrent test requests for one account run a single probe', async () => {
     await add({ name: 'work', token: TOKEN });
     let release!: () => void;

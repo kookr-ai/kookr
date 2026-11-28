@@ -5,7 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ClaudeAccountsSection } from './ClaudeAccountsSection.js';
-import { resetClaudeAccountsStore } from '../store/claude-accounts.js';
+import { resetClaudeAccountsStore, useClaudeAccountsStore } from '../store/claude-accounts.js';
 import { installFakeAccountsServer, type FakeAccountsServer } from '../store/claude-accounts-fixtures.js';
 
 async function flush() {
@@ -85,6 +85,67 @@ describe('ClaudeAccountsSection', () => {
     await click(again);
     expect(q('[data-testid="claude-account-status-pro"]')!.textContent).toBe('Working');
     expect(server.calls.filter((c) => c.url === '/api/claude-accounts/pro/test')).toHaveLength(2);
+  });
+
+  test('a tested account shows the 5h/7d bars it measured, when they were measured, and the near-limit warning', async () => {
+    server = installFakeAccountsServer(['pro', 'work']);
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+    server.testQuotas = {
+      pro: {
+        fiveHour: { utilization: 56, resetsAt, status: 'allowed' },
+        sevenDay: { utilization: 99, resetsAt, status: 'allowed_warning' },
+      },
+    };
+    await mount();
+    const pro = () => q('[data-testid="claude-account-row-pro"]')!;
+    expect(pro().textContent).toContain('Test this account to see its 5-hour and 7-day usage.');
+    expect(pro().querySelector('[data-testid="usage-quota-5h"]')).toBeNull();
+
+    await click(buttonByText(pro(), 'Test'));
+    expect(pro().querySelector('[data-testid="usage-quota-5h"]')!.textContent).toContain('56%');
+    expect(pro().querySelector('[data-testid="usage-quota-7d"]')!.textContent).toContain('99%');
+    expect(pro().querySelector('[data-testid="claude-account-quota-warning-pro"]')!.textContent).toBe('7-day quota is close to its limit.');
+    expect(pro().querySelector('.claude-account-quota-measured')!.textContent).toMatch(/^Measured by the test at .+\.$/);
+    expect(q('[data-testid="claude-account-status-pro"]')!.textContent).toBe('Near limit');
+    expect(pro().querySelector('.claude-account-no-usage')).toBeNull();
+
+    // A test that reported no usage says so instead of drawing empty bars.
+    const work = q('[data-testid="claude-account-row-work"]')!;
+    await click(buttonByText(work, 'Test'));
+    expect(work.querySelector('[data-testid="usage-quota-5h"]')).toBeNull();
+    expect(work.textContent).toContain('The last test reported no usage for this account.');
+    expect(q('[data-testid="claude-account-status-work"]')!.textContent).toBe('Working');
+  });
+
+  test('a reading older than five minutes greys out and asks for a new test', async () => {
+    server = installFakeAccountsServer(['pro']);
+    await mount();
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+    act(() => {
+      useClaudeAccountsStore.setState({
+        tests: {
+          pro: {
+            name: 'pro', outcome: 'ok', message: 'OK',
+            testedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+            quota: { fiveHour: { utilization: 30, resetsAt, status: 'allowed' } },
+          },
+        },
+      });
+    });
+    const quota = q('[data-testid="claude-account-quota-pro"]')!;
+    expect(quota.querySelector('.usage-quotas')!.classList.contains('quota-stale')).toBe(true);
+    expect(quota.textContent).toContain('Test again for current usage.');
+  });
+
+  test('host keeps its live quota and never draws a second set from its test', async () => {
+    server = installFakeAccountsServer(['pro']);
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+    server.testQuotas = { host: { fiveHour: { utilization: 10, resetsAt, status: 'allowed' } } };
+    await mount();
+    const host = q('[data-testid="claude-account-row-host"]')!;
+    await click(buttonByText(host, 'Test'));
+    expect(host.querySelector('[data-testid="claude-account-quota-host"]')).toBeNull();
+    expect(host.querySelector('.claude-account-no-usage')).toBeNull();
   });
 
   test('remove asks inline first and only DELETEs after confirming; host has no Remove', async () => {
