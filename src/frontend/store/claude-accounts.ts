@@ -8,8 +8,10 @@ import {
   testClaudeAccount,
   type ClaudeAccountsApiError,
 } from '../api/claude-accounts.js';
+import type { QuotaStatus } from '../../shared/contracts/quota.js';
 import type {
   AddClaudeAccountRequest,
+  ClaudeAccountQuota,
   ClaudeAccountsResponse,
   ClaudeAccountTestOutcome,
   ClaudeAccountTestResponse,
@@ -175,12 +177,39 @@ export interface AccountStatus {
 /** Status chip content from the last test of an account. */
 export function accountStatus(test: ClaudeAccountTestResponse | undefined): AccountStatus {
   switch (test?.outcome) {
-    case 'ok': return { outcome: 'ok', label: 'Working', tone: 'ok' };
+    case 'ok':
+      return nearLimitWindows(test.quota).length > 0
+        ? { outcome: 'ok', label: 'Near limit', tone: 'warn' }
+        : { outcome: 'ok', label: 'Working', tone: 'ok' };
     case 'usage_limited': return { outcome: 'usage_limited', label: 'Out of quota', tone: 'warn' };
     case 'auth_failed': return { outcome: 'auth_failed', label: 'Sign-in failed', tone: 'bad' };
     case 'error': return { outcome: 'error', label: 'Test failed', tone: 'bad' };
     default: return { outcome: 'untested', label: 'Not tested', tone: 'idle' };
   }
+}
+
+/**
+ * The usage a test measured, shaped like the host's live quota so the same
+ * bars render it; `updatedAt` is the test time, so old readings show as stale.
+ * `null` when the test reported no window.
+ */
+export function testQuotaStatus(test: ClaudeAccountTestResponse | undefined): QuotaStatus | null {
+  const quota = test?.quota;
+  if (!quota || (!quota.fiveHour && !quota.sevenDay)) return null;
+  const updatedAt = Date.parse(test.testedAt);
+  return {
+    fiveHour: quota.fiveHour ?? null,
+    sevenDay: quota.sevenDay ?? null,
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+  };
+}
+
+/** Windows Claude Code flagged `allowed_warning` (close to the limit), as `5-hour` / `7-day`. */
+export function nearLimitWindows(quota: ClaudeAccountQuota | undefined): string[] {
+  const names: string[] = [];
+  if (quota?.fiveHour?.status === 'allowed_warning') names.push('5-hour');
+  if (quota?.sevenDay?.status === 'allowed_warning') names.push('7-day');
+  return names;
 }
 
 /** The display name of an account: `host` reads as the host's own login. */
