@@ -9,6 +9,7 @@ import {
   type ClaudeAccountsApiError,
 } from '../api/claude-accounts.js';
 import type { QuotaStatus } from '../../shared/contracts/quota.js';
+import type { ClientMessage, ServerMessage } from '../../shared/contracts/messages.js';
 import type {
   AddClaudeAccountRequest,
   ClaudeAccountQuota,
@@ -53,10 +54,19 @@ export const useClaudeAccountsStore = create<ClaudeAccountsState>(() => initialS
 /** Test helper: back to an empty, not-yet-loaded store. */
 export function resetClaudeAccountsStore(): void {
   inflight = null;
+  listGeneration = 0;
+  for (const pending of pendingSwitches.values()) clearTimeout(pending.timer);
+  pendingSwitches.clear();
   useClaudeAccountsStore.setState(initialState(), true);
 }
 
 let inflight: Promise<void> | null = null;
+/**
+ * Bumped by every list applied to the store. A load that started before a
+ * mutation answered drops its (older) result instead of overwriting the
+ * mutation's list.
+ */
+let listGeneration = 0;
 
 function isList(body: unknown): body is ClaudeAccountsResponse {
   return typeof body === 'object' && body !== null && Array.isArray((body as ClaudeAccountsResponse).accounts);
@@ -73,6 +83,7 @@ function errorText(body: unknown, status: number): string {
 }
 
 function applyList(list: ClaudeAccountsResponse): void {
+  listGeneration += 1;
   const names = new Set(list.accounts.map((a) => a.name));
   useClaudeAccountsStore.setState((s) => ({
     accounts: list.accounts,
@@ -86,12 +97,15 @@ function applyList(list: ClaudeAccountsResponse): void {
 /** Fetch the list. Concurrent callers share one request; failures never throw. */
 export function refreshClaudeAccounts(): Promise<void> {
   if (inflight) return inflight;
+  const generation = listGeneration;
   inflight = (async () => {
     try {
       const res = await getClaudeAccounts();
+      if (generation !== listGeneration) return;
       if (res.ok && isList(res.body)) applyList(res.body);
       else useClaudeAccountsStore.setState({ loaded: true, loadError: errorText(res.body, res.status) });
     } catch (err) {
+      if (generation !== listGeneration) return;
       useClaudeAccountsStore.setState({
         loaded: true,
         loadError: err instanceof Error ? err.message : 'Failed to load accounts',
@@ -101,6 +115,16 @@ export function refreshClaudeAccounts(): Promise<void> {
     }
   })();
   return inflight;
+}
+
+/**
+ * Reload the list if a surface already asked for it (it is `loaded`, maybe
+ * with an error), so it catches up with accounts added by `kookr account add`
+ * and recovers from a load that failed while the server was down. Run when
+ * the dashboard socket reconnects and when the window regains focus.
+ */
+export function refreshLoadedClaudeAccounts(): Promise<void> {
+  return useClaudeAccountsStore.getState().loaded ? refreshClaudeAccounts() : Promise.resolve();
 }
 
 async function mutate(
@@ -150,12 +174,14 @@ export async function testAccount(name: string): Promise<AccountActionResult> {
 
 /**
  * The shared list. The first mounted consumer triggers the load; later ones
- * reuse it. `registered` counts accounts besides `host`.
+ * reuse it. While any consumer is mounted, the list reloads when the window
+ * regains focus. `registered` counts accounts besides `host`.
  */
 export function useClaudeAccounts() {
   const state = useClaudeAccountsStore();
   const needsLoad = !state.loaded;
   useLoadOnce(needsLoad);
+  useRefreshOnFocus();
   const registered = state.accounts.filter((a) => a.name !== 'host');
   return { ...state, registered, hasRegistered: registered.length > 0 };
 }
@@ -164,6 +190,98 @@ function useLoadOnce(needsLoad: boolean): void {
   useEffect(() => {
     if (needsLoad) void refreshClaudeAccounts();
   }, [needsLoad]);
+}
+
+// One window listener however many surfaces show the list.
+let focusConsumers = 0;
+const onWindowFocus = () => { void refreshLoadedClaudeAccounts(); };
+
+function useRefreshOnFocus(): void {
+  useEffect(() => {
+    if (focusConsumers++ === 0) window.addEventListener('focus', onWindowFocus);
+    return () => {
+      if (--focusConsumers === 0) window.removeEventListener('focus', onWindowFocus);
+    };
+  }, []);
+}
+
+/** What a "move this task" click ended with, as one line to show inline. */
+export type TaskAccountSwitchResult = { kind: 'ok' | 'error'; text: string };
+
+type SwitchReply = Extract<ServerMessage, { type: 'claudeAccountSwitchResult' }>;
+
+/**
+ * How long to wait for the server's reply. A switch of a running task stops
+ * its sessions and relaunches it before answering, which can take a while.
+ */
+export const SWITCH_REPLY_TIMEOUT_MS = 120_000;
+
+const pendingSwitches = new Map<string, {
+  resolve: (result: TaskAccountSwitchResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}>();
+let switchSeq = 0;
+
+function settleSwitch(requestId: string, result: TaskAccountSwitchResult): void {
+  const pending = pendingSwitches.get(requestId);
+  if (!pending) return;
+  pendingSwitches.delete(requestId);
+  clearTimeout(pending.timer);
+  pending.resolve(result);
+}
+
+/**
+ * Move a task to another account over the dashboard socket
+ * (`switchClaudeAccount`). Unlike the HTTP route, this works when
+ * `KOOKR_SUPERVISOR_TOKEN` is set: the owner's connection is the credential.
+ * Resolves with the server's answer, or with an error when the socket is down
+ * or no answer comes. Never rejects.
+ */
+export function requestTaskAccountSwitch(
+  send: (msg: ClientMessage) => boolean,
+  taskId: string,
+  account: string,
+): Promise<TaskAccountSwitchResult> {
+  switchSeq += 1;
+  const requestId = `${Date.now().toString(36)}-${switchSeq}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => settleSwitch(requestId, {
+      kind: 'error',
+      text: 'No answer from Kookr. The switch may still be running: check the task in a moment.',
+    }), SWITCH_REPLY_TIMEOUT_MS);
+    pendingSwitches.set(requestId, { resolve, timer });
+    if (!send({ type: 'switchClaudeAccount', requestId, taskId, account })) {
+      settleSwitch(requestId, { kind: 'error', text: 'Not connected to Kookr. Try again in a moment.' });
+    }
+  });
+}
+
+/** Apply a `claudeAccountSwitchResult` message: the reply to a switch this tab sent. */
+export function handleClaudeAccountSwitchResult(msg: SwitchReply): void {
+  if (!msg.ok) {
+    settleSwitch(msg.requestId, { kind: 'error', text: msg.error || 'Could not switch account' });
+    return;
+  }
+  const to = msg.to ?? 'the new account';
+  const text = msg.outcome === 'queued'
+    ? `Moved to ${to}. It restarts when a slot frees.`
+    : msg.outcome === 'pinned'
+      ? `Moved to ${to}. It uses it from its next launch.`
+      : `Moved to ${to}.`;
+  settleSwitch(msg.requestId, { kind: 'ok', text });
+}
+
+/**
+ * The socket dropped: a reply to a switch sent on it can no longer arrive.
+ * The switch itself may still have happened, so say so instead of "failed".
+ */
+export function failPendingClaudeAccountSwitches(): void {
+  for (const requestId of [...pendingSwitches.keys()]) {
+    settleSwitch(requestId, {
+      kind: 'error',
+      text: 'Lost the connection to Kookr before it answered. Check the task once it reconnects.',
+    });
+  }
 }
 
 export type AccountStatusTone = 'ok' | 'warn' | 'bad' | 'idle';

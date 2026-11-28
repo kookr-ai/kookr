@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { loadClaudeAccounts, resolveClaudeAccountsFile } from '../core/claude-accounts.js';
+import { emptyClaudeAccountRegistry, loadClaudeAccounts, resolveClaudeAccountsFile } from '../core/claude-accounts.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
@@ -4298,6 +4298,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       relationTaskStore: taskStore,
     }),
     auditLogPath: join(kookrDir, 'audit.jsonl'),
+    // The dashboard's "Move this task to..." (switchClaudeAccount). Read on
+    // each switch, like the HTTP route: the loader is set later in boot.
+    loadClaudeAccounts: () => (launchServiceDeps.loadClaudeAccounts ?? emptyClaudeAccountRegistry)(),
     supervisorFeedbackCaseStore,
     feedbackDir: join(kookrDir, 'feedback'),
     taskSnapshotDir: join(kookrDir, 'task-snapshots'),

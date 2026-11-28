@@ -712,7 +712,9 @@ dashboard's WebSocket complete action does both inline.
 A [supervisor endpoint](#supervisor-surface), gated like
 `POST /api/tasks/:id/reopen`. Body: `{"account": "<name>"}`, where the name is
 `host` or a registered [Claude account](claude-accounts.md). It is what
-[`kookr account switch`](./cli.md#kookr-account) calls.
+[`kookr account switch`](./cli.md#kookr-account) calls. The dashboard runs the
+same command over its WebSocket (`switchClaudeAccount`, owner connections
+only), so it needs no supervisor token.
 
 The account is pinned on the task (`metadata.claudeAccount`). A task that is
 `inProgress` is relaunched in place: it moves to `pending` with a resume
@@ -1969,6 +1971,7 @@ delta sequence number.
 | `operatorAsks` | The `kookr ask` questions Lucy shows in the avatar panel: every question still waiting for the operator, plus those closed in the last 10 minutes (answered in Kookr or on Telegram, expired, cancelled). Always the whole list, newest first: every waiting question, and the 8 most recently closed ones. The list is sent again when a task that still has a waiting question completes, fails or is cancelled, so `taskEnded` changes on screen without waiting for another question to change. Sent to **owner** connections only, on connect and whenever a question is sent or closed on either channel. | `asks` (each `id`, `taskId`, `taskName?`, `taskEnded?`, `defaultOption?`, `expiryOutcome?` (only on Kookr's own questions), `question`, `context?`, `options`, `links?` (`{url, label?}`, shown as buttons), `allowText`, `state`, `createdAt`, `expiresAt`, `answer?`, `answeredVia?` (`telegram`/`dashboard`), `resolvedAt?` (always set once closed), `resolution?`, `taskDelivery?` (`delivered`/`failed`: whether the answer could be typed into the task)), `announce?` (id of the question just created; Lucy reads that one aloud once), `serverNow?` (the server's clock in ms when the list was built; the panel times the 10-minute closed-card window with it, so a wrong browser clock does not matter) |
 | `operatorAskResult` | Reply to the sender of `answerAsk`: whether the answer was recorded. A refusal is followed by a fresh `operatorAsks`. | `askId`, `ok`, `reason?` (`already_answered`, `expired`, `cancelled`, `task_gone`, `bad_option`, `text_not_allowed`, `not_found`, `unavailable`, `failed`) |
 | `lucyPermissionCards` | Lucy's permission cards (issue #3932): every task whose agent has waited on a permission prompt past `lucyPermissionNoticeAfterSeconds` (default 60). The whole list, owner connections only, on connect and on every change. `announce` is set only on the message that should make her speak: the panel then fetches the clip from `POST /api/lucy/permission-notice/speak` with the notice id. `announce.text` is the sentence itself; the panel writes it in her thread when no clip could be fetched (no speech service, or it failed), and never sends it back to be spoken. | `cards` (`promptId`, `taskId`, `agentId`, `taskName?`, `toolName`, `command`, `since`, `permissionRequest?`, `approveKey?`, `denyKey?`), `announce?` (`noticeId`, `promptIds`, `text?`) |
+| `claudeAccountSwitchResult` | Reply to the sender of `switchClaudeAccount`. | `requestId`, `taskId`, `ok`, `outcome?` (`relaunched`, `queued`, `pinned`, `unchanged`), `from?`, `to?`, `error?`, `code?` (the codes `POST /api/tasks/:id/claude-account` answers) |
 
 ### Client-to-server messages
 
@@ -2025,6 +2028,7 @@ delta sequence number.
 | `workspace:bulkRemoveProbablySafe` | Bulk-remove selected Probably-safe worktree paths, keeping their branches. | `rows` (each `projectId`, `worktreePath`, `branch`, optional `fingerprint`) |
 | `worktree:inspectCleanup` | Ask whether this task's worktrees can be removed. Read-only; replies with `worktreeCleanupVerdicts`. | `taskId` |
 | `answerAsk` | The operator answers a `kookr ask` question in Lucy's panel. Exactly one of `optionIndex` or `text`. Owner connections only; the answer is typed into the asking task and the Telegram message is edited to say it was answered in Kookr. | `askId`, `optionIndex?` (0–3), `text?` (at most 1000 characters) |
+| `switchClaudeAccount` | Move a claude-code task to another named Claude account (the task's account badge and the usage-limit banner). The same command as `POST /api/tasks/:id/claude-account`, without the supervisor token: owner connections only. Replies with `claudeAccountSwitchResult`. | `requestId` (echoed in the reply), `taskId`, `account` |
 
 ## Data Directory
 

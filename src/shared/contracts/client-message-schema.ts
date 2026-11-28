@@ -271,6 +271,12 @@ const ClientMessageSchemaImpl = z.union([
     text: z.string().max(ASK_LIMITS.maxAnswerTextChars).optional(),
   }),
   z.object({
+    type: z.literal('switchClaudeAccount'),
+    requestId: z.string().min(1).max(64),
+    taskId: z.string(),
+    account: z.string().min(1).max(200),
+  }),
+  z.object({
     type: z.literal('findingFeedback'),
     agentId: z.string(),
     anomalyType,

@@ -126,6 +126,8 @@ export interface MessageRouterDeps {
   buildSnapshotMessage?: () => ServerMessage;
   /** Append-only audit.jsonl path for destructive task lifecycle actions. */
   auditLogPath?: string;
+  /** Named Claude account registry, for `switchClaudeAccount`. Absent: only `host` is known. */
+  loadClaudeAccounts?: () => import('../core/claude-accounts.js').ClaudeAccountRegistry;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
@@ -240,7 +242,8 @@ export class MessageRouter {
         return logPath ? readInteractionLog(logPath) : [];
       },
       getLifecycleDeps: () => this.lifecycleDeps,
-      tryPromotePending: () => this.tryPromotePending(),
+      tryPromotePending: (opts) => this.tryPromotePending(opts),
+      ...(this.deps.loadClaudeAccounts ? { loadClaudeAccounts: this.deps.loadClaudeAccounts } : {}),
       reapWarningCoordinator: this.deps.reapWarningCoordinator,
       faaAckReapWarningCoordinator: this.deps.faaAckReapWarningCoordinator,
       hungSuspectTtlReapWarningCoordinator: this.deps.hungSuspectTtlReapWarningCoordinator,
@@ -503,6 +506,7 @@ export class MessageRouter {
       case 'ackTerminatedTask':
       case 'requestTaskSnapshotReflect':
       case 'worktree:inspectCleanup':
+      case 'switchClaudeAccount':
         await this.lifecycleHandler.handle(msg);
         return;
 
@@ -551,8 +555,8 @@ export class MessageRouter {
     }
   }
 
-  /** Promote pending tasks if slots are available. */
-  private async tryPromotePending(): Promise<void> {
+  /** Promote pending tasks if slots are available, `firstTaskId` first when given. */
+  private async tryPromotePending(opts?: { firstTaskId?: string }): Promise<void> {
     if (!this.deps.agentLifecycleDeps || !this.deps.broadcastToAll || !this.deps.adapterRegistry) return;
     await promotePendingTasks({
       taskStore: this.deps.taskStore,
@@ -561,6 +565,7 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       serverCwd: this.serverCwd,
       getMaxActiveTasks: this.deps.getMaxActiveTasks,
+      ...(opts?.firstTaskId ? { firstTaskId: opts.firstTaskId } : {}),
     });
   }
 

@@ -172,6 +172,8 @@ export interface WsConnectionDeps {
   buildSnapshotMessage?: () => ServerMessage;
   /** Append-only audit.jsonl path for destructive task lifecycle actions. */
   auditLogPath?: string;
+  /** Named Claude account registry, for `switchClaudeAccount`. Read lazily on each switch. */
+  loadClaudeAccounts?: () => import('../core/claude-accounts.js').ClaudeAccountRegistry;
   /** Persistent store for user-flagged supervisor FP/FN cases (offline analysis). */
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
   selectionController?: DashboardSelectionController;
@@ -298,6 +300,7 @@ export function handleWsConnection(
     takePredeleteSnapshot: deps.takePredeleteSnapshot,
     buildSnapshotMessage: deps.buildSnapshotMessage,
     auditLogPath: deps.auditLogPath,
+    loadClaudeAccounts: deps.loadClaudeAccounts,
     projectConfigStore,
     broadcastProjectSummaries,
     supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,

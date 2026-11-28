@@ -6,15 +6,6 @@ import type {
   ClaudeAccountTestResponse,
 } from '../../shared/contracts/claude-accounts.js';
 
-/** Body of `POST /api/tasks/:id/claude-account` on success. */
-export interface SwitchTaskClaudeAccountResponse {
-  ok: boolean;
-  outcome: string;
-  from: string;
-  to: string;
-  task?: unknown;
-}
-
 /** Refusal body shared by the account routes (`{error, code}`). */
 export type ClaudeAccountsApiError = ClaudeAccountsErrorResponse | { error: string; code?: string };
 
@@ -57,15 +48,4 @@ export function setDefaultClaudeAccount(name: string): Promise<ApiResult<ClaudeA
 /** POST a tiny real request on the account to see whether it still works. */
 export function testClaudeAccount(name: string): Promise<ApiResult<ClaudeAccountTestResponse | ClaudeAccountsApiError | null>> {
   return fetchResult<ClaudeAccountTestResponse | ClaudeAccountsApiError>(accountPath(name, '/test'), { method: 'POST' });
-}
-
-/** POST: restart a task in place on another Claude account. */
-export function switchTaskClaudeAccount(
-  taskId: string,
-  account: string,
-): Promise<ApiResult<SwitchTaskClaudeAccountResponse | ClaudeAccountsApiError | null>> {
-  return fetchResult<SwitchTaskClaudeAccountResponse | ClaudeAccountsApiError>(
-    `/api/tasks/${encodeURIComponent(taskId)}/claude-account`,
-    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ account }) },
-  );
 }

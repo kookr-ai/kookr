@@ -1,45 +1,45 @@
 import React, { useCallback, useRef, useState } from 'react';
 import type { AgentState } from '../../../shared/contracts/agent-state.js';
-import { switchTaskClaudeAccount } from '../../api/claude-accounts.js';
+import type { ClientMessage } from '../../../shared/contracts/messages.js';
 import { usePopoverDismiss } from '../../hooks/usePopoverDismiss.js';
 import {
   accountStatus,
   accountTitle,
   pickContinueAccount,
+  requestTaskAccountSwitch,
   testAccount,
   useClaudeAccounts,
+  type TaskAccountSwitchResult,
 } from '../../store/claude-accounts.js';
 
 /*
  * Claude account controls for one task: a header badge with a "Move this task
  * to..." menu, and a banner when the task stopped on its account's usage limit.
- * Both render nothing for agents other than Claude Code.
+ * Both render nothing for agents other than Claude Code. Moves go over the
+ * dashboard socket (`switchClaudeAccount`), so they work when the HTTP route's
+ * supervisor token is set.
  */
+
+type Send = (msg: ClientMessage) => boolean;
 
 /** The account a task runs on; absent means the host login. */
 export function taskClaudeAccount(agent: AgentState): string {
   return agent.claudeAccount ?? 'host';
 }
 
-type SwitchResult = { kind: 'ok' | 'error'; text: string };
-
-/** Ask the server to restart the task on `account`; returns a line to show inline. */
-async function switchAccount(taskId: string, account: string): Promise<SwitchResult> {
-  try {
-    const res = await switchTaskClaudeAccount(taskId, account);
-    const body = res.body as { error?: string; to?: string } | null;
-    if (res.ok) return { kind: 'ok', text: `Moved to ${body?.to ?? account}.` };
-    return { kind: 'error', text: body?.error ?? `Could not switch account (HTTP ${res.status})` };
-  } catch (err) {
-    return { kind: 'error', text: err instanceof Error ? err.message : 'Could not switch account' };
-  }
+/**
+ * A queued task with no account recorded yet. The adapter records the account
+ * at launch, and it will be the default, whatever the default is then.
+ */
+export function awaitsDefaultAccount(agent: AgentState): boolean {
+  return agent.claudeAccount === undefined && agent.taskStatus === 'pending';
 }
 
-export function TaskAccountBadge({ agent }: { agent: AgentState }) {
-  const { accounts, hasRegistered } = useClaudeAccounts();
+export function TaskAccountBadge({ agent, send }: { agent: AgentState; send: Send }) {
+  const { accounts, hasRegistered, defaultName } = useClaudeAccounts();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<SwitchResult | null>(null);
+  const [result, setResult] = useState<TaskAccountSwitchResult | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
@@ -47,14 +47,17 @@ export function TaskAccountBadge({ agent }: { agent: AgentState }) {
 
   if (agent.agentType !== 'claude-code' || !agent.taskId) return null;
   const taskId = agent.taskId;
-  const current = taskClaudeAccount(agent);
+  const onDefault = awaitsDefaultAccount(agent);
+  // `null` while the task waits for the default: no item is current then, so
+  // every account, the default included, can be pinned from the menu.
+  const current = onDefault ? null : taskClaudeAccount(agent);
   // Nothing to choose between until a second account exists.
-  if (!hasRegistered && current === 'host') return null;
+  if (!hasRegistered && (current ?? defaultName) === 'host') return null;
 
   async function moveTo(name: string) {
     setBusy(true);
     setResult(null);
-    const outcome = await switchAccount(taskId, name);
+    const outcome = await requestTaskAccountSwitch(send, taskId, name);
     setResult(outcome);
     setBusy(false);
     if (outcome.kind === 'ok') setOpen(false);
@@ -71,7 +74,7 @@ export function TaskAccountBadge({ agent }: { agent: AgentState }) {
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        Account {current} {'▾'}
+        Account {current ?? `Default (${defaultName})`} {'▾'}
       </button>
       {result && !open && (
         <span
@@ -98,6 +101,7 @@ export function TaskAccountBadge({ agent }: { agent: AgentState }) {
             >
               <span>{account.name}</span>
               {account.name === current && <span className="task-account-current">current</span>}
+              {onDefault && account.name === defaultName && <span className="task-account-current">default</span>}
             </button>
           ))}
           <div className="settings-desc">Restarts the agent in place and continues its conversation</div>
@@ -112,14 +116,16 @@ export function TaskAccountBadge({ agent }: { agent: AgentState }) {
 
 export function TaskAccountBanner({
   agent,
+  send,
   onOpenAccountSettings,
 }: {
   agent: AgentState;
+  send: Send;
   onOpenAccountSettings?: () => void;
 }) {
   const { accounts, tests, testing, registered } = useClaudeAccounts();
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<SwitchResult | null>(null);
+  const [result, setResult] = useState<TaskAccountSwitchResult | null>(null);
 
   if (agent.agentType !== 'claude-code' || !agent.taskId || agent.stuckReason !== 'provider_paused') return null;
   const taskId = agent.taskId;
@@ -130,7 +136,7 @@ export function TaskAccountBanner({
   async function continueOn(name: string) {
     setBusy(true);
     setResult(null);
-    setResult(await switchAccount(taskId, name));
+    setResult(await requestTaskAccountSwitch(send, taskId, name));
     setBusy(false);
   }
 

@@ -1116,7 +1116,7 @@ export function DetailPanel({ agent, send, sendComposerDraft, onLaunch, onLaunch
                   Permissions bypassed
                 </span>
               )}
-              <TaskAccountBadge agent={agent} />
+              <TaskAccountBadge agent={agent} send={send} />
               {operatorNeeded && (
                 <span
                   className="detail-badge permission"
@@ -1162,7 +1162,7 @@ export function DetailPanel({ agent, send, sendComposerDraft, onLaunch, onLaunch
       <div className="detail-body">
       <div className="detail-body-main">
       {hasAgentNotices && !noticesInCard && renderAgentNotices('banner')}
-      <TaskAccountBanner agent={agent} onOpenAccountSettings={onOpenAccountSettings} />
+      <TaskAccountBanner agent={agent} send={send} onOpenAccountSettings={onOpenAccountSettings} />
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}

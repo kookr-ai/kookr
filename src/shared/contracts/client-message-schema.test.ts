@@ -679,6 +679,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'permissionChoice', agentId: 'agent-1', keystroke: '1', permissionRequest }),
   clientMessageCase({ type: 'rearmCircuitBreaker', name: 'github-refresh' }),
   clientMessageCase({ type: 'answerAsk', askId: 'a1b2c3d4e5f6', optionIndex: 1 }),
+  clientMessageCase({ type: 'switchClaudeAccount', requestId: 'r1', taskId: 'task-1', account: 'work' }),
   clientMessageCase({
     type: 'findingFeedback',
     agentId: 'agent-1',

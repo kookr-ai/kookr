@@ -10,12 +10,14 @@ import type { SnapshotPayloadSizeObservation } from './snapshot-payload-size-pol
 // the initial-connection burst doesn't touch real state.
 const handleMessageSafe = vi.fn(async () => {});
 const handleConnect = vi.fn(() => {});
+const routerDeps: MessageRouterDeps[] = [];
 vi.mock('./ws.js', () => ({
   MessageRouter: class {
     lastLaunchDuplicate = false;
     private readonly send: MessageRouterDeps['send'];
     constructor(deps: MessageRouterDeps) {
       this.send = deps.send;
+      routerDeps.push(deps);
     }
     handleConnect = () => {
       handleConnect();
@@ -65,6 +67,7 @@ const KNOWN_TYPES: ClientMessage['type'][] = [
   'rearmCircuitBreaker', 'findingFeedback', 'missedFinding',
   'workspace:getView', 'workspace:getCleanupDetail', 'workspace:cleanupCandidate',
   'workspace:bulkSafeCleanup', 'workspace:runCleanupDiagnostic', 'workspace:sweep',
+  'switchClaudeAccount',
 ];
 
 describe('isAllowedViewerInbound (#806 WS read-only gate)', () => {
@@ -523,6 +526,15 @@ describe('handleWsConnection — Lucy\'s permission cards on connect (issue #393
     handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER);
     expect(sentOf(ws).some((m) => m.type === 'lucyPermissionCards')).toBe(false);
     expect(list).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleWsConnection — Claude account registry', () => {
+  it('hands the registry loader to the router, which moves tasks between accounts with it (switchClaudeAccount)', () => {
+    const loadClaudeAccounts = vi.fn();
+    routerDeps.length = 0;
+    handleWsConnection(makeFakeWs() as unknown as WebSocket, registrar, { ...makeDeps(), loadClaudeAccounts } as WsConnectionDeps, OWNER);
+    expect(routerDeps.at(-1)?.loadClaudeAccounts).toBe(loadClaudeAccounts);
   });
 });
 
