@@ -91,9 +91,11 @@ Common traps to avoid:
 - Test struct fields may be populated in a different block than where you're looking
 - `require.Equal(t, expected, actual)` — make sure you read `expected`, not `actual`
 
-## Temp directories
+## Mutation checks and temp directories
 
-Create any scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
+To check whether a test fails when the code it protects breaks, run `kookr mutation-check` instead of building a scratch copy by hand. It works from any repository, changes one line in a throwaway git worktree, runs the test before and after, prints `killed` or `survived`, and removes the worktree. Example: `kookr mutation-check --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts` (`--help` lists the options; use `-- <test command>` for a runner other than vitest). Never edit a file in `{repoDir}` to try it.
+
+Create any other scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
 
 ## Output format
 

@@ -318,8 +318,13 @@ carries the implementer's summaries and framing; a reviewer that reads it is no
 longer blind to the implementer. Build the reviewer prompt only from the three
 inputs above.
 
-**Temp directories (put this rule in the reviewer prompt).** The reviewer often
-builds a scratch copy for a mutation check. Create any scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
+**Mutation checks and temp directories (put this rule in the reviewer prompt).**
+For a mutation check, run `kookr mutation-check` from the checkout under review
+instead of building a scratch copy by hand: it makes one line change in a
+throwaway git worktree, runs the test before and after, prints `killed` or
+`survived`, and removes the worktree. Example: `kookr mutation-check --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts`
+(`--help` lists the options; use `-- <test command>` for a runner other than
+vitest). Create any other scratch directory with `mktemp -d "<scratchpad>/<name>.XXXXXX"` (the session scratchpad directory, or `/tmp` when there is none), note the path it prints, and remove it by that literal path, for example `rm -rf /tmp/claude-1000/<session>/scratchpad/mut.ab12cd`. Never run `rm -r` on a path built from a variable or a command substitution (`rm -rf "$(cat f)"`, `rm -rf "$DIR"`): Claude Code asks a human before running it even in bypass mode, so an unattended task stalls until someone answers (issue #3867).
 
 Instruct the reviewer to return a verdict:
 

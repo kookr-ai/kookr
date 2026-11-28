@@ -2790,3 +2790,44 @@ Inspect and clean up opencode worker containers (experimental; see
 [opencode-agent.md](opencode-agent.md#worker-container-housekeeping-kookr-containers)). `ls` is read-only;
 `prune --instance` is a dry run unless `--yes`, and needs `--force` to remove containers of live tasks. Run it with the
 server's `KOOKR_TASK_STORE`: it reads the task store itself and picks the store from its own environment.
+
+## `kookr mutation-check`
+
+Check that a test fails when the code it protects is changed, from any
+repository (issue #4137). It runs `plugin/scripts/mutation-check.sh` (#4105)
+from the Kookr checkout that `kookr` belongs to, with your working directory, so
+reviewers reach it by one name: `kookr` is on `PATH` in every Kookr task, while
+`CLAUDE_PLUGIN_ROOT` is unset there and the plugin cache can hold an older
+plugin without the script.
+
+```bash
+kookr mutation-check --file PATH --line N --from OLD --to NEW --vitest TEST_FILE...
+kookr mutation-check --file PATH --line N --from OLD --to NEW -- TEST_COMMAND [ARG...]
+kookr mutation-check --help
+```
+
+Example: `kookr mutation-check --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts`.
+
+The script creates a detached git worktree of `--rev` (default `HEAD`) in a new
+temp directory, runs the test there unchanged, replaces `OLD` with `NEW` on line
+`N` of `PATH`, runs the test again, and removes the worktree. Your checkout is
+never written to. `--with-uncommitted` adds your uncommitted changes, `--repo DIR`
+checks another checkout, and `--timeout SECONDS` (default 300) limits each test
+run. Every argument goes to the script unchanged; `--help` prints its full
+usage.
+
+| Exit | Result | Meaning |
+|---|---|---|
+| `0` | `killed` | The test passed before the change and fails after it. |
+| `1` | `survived` | The test still passes with the change: it does not catch it. |
+| `2` | refused | Bad arguments, or the change does not address exactly one line. |
+| `3` | red | The test already fails before the change, so the check proves nothing. |
+| `4` | setup | Not a git repository, the worktree could not be made, or the script was not found. |
+| `5` | timeout | The test ran past `--timeout` before the change: raise the limit. |
+| `6` | `killed (timeout)` | The change made the test hang; a kill only when a hang is what the change should cause. |
+
+The script is looked up at `$KOOKR_PLUGIN_DIR/scripts/mutation-check.sh` when
+that variable is set, then at `plugin/scripts/mutation-check.sh` in the Kookr
+checkout. The npm package does not ship `plugin/`, so from an npm install the
+command exits 4 unless `KOOKR_PLUGIN_DIR` names a kookr-toolkit plugin
+directory.

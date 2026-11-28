@@ -30,6 +30,7 @@ Usage:
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr merge <PR> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]  Review-gated squash-merge from any repo; deletes the head branch via the API.
   kookr check-verification <PR> [--repo OWNER/NAME] [--json]  Classify a PR head's CI checks from any repo (exit 0 green/none, 10 never-executed, 20 executed-red, 30 pending).
+  kookr mutation-check --file PATH --line N --from OLD --to NEW (--vitest FILE... | -- CMD...)  Check that a test fails when one line changes, in a throwaway worktree, from any repo (killed / survived).
   kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
                                                         Print a read-only server snapshot.
   kookr brief [--json]          What is waiting on you, across all projects (permission prompts, questions, reviews, train).
@@ -213,6 +214,13 @@ async function main({
   // against the caller's repository; its exit code is passed through as is.
   if (command === 'check-verification') {
     return exit(runCheckVerificationCommand(rest, { env, err }));
+  }
+
+  // Mutation check (issue #4137). Runs plugin/scripts/mutation-check.sh from
+  // this checkout with the caller's cwd, so a reviewer in any repository
+  // reaches it by one name; its exit codes are passed through as is.
+  if (command === 'mutation-check') {
+    return exit(await runMutationCheckCommand(rest, { env, err }));
   }
 
   if (command === 'status') {
@@ -499,6 +507,21 @@ function runCheckVerificationCommand(argv, { env = process.env, err = console } 
     return 1;
   }
   return result.status ?? (result.signal ? 128 + (osConstants.signals[result.signal] ?? 0) : 1);
+}
+
+async function runMutationCheckCommand(argv, { env = process.env, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-mutation-check.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-mutation-check.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    // Exit 4 (setup), not 1: the script's exit 1 means "survived".
+    err.error('[kookr] mutation-check module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    return 4;
+  }
+  const mod = await importMaybeTs(entry);
+  return mod.runMutationCheckCli(argv, { env, err, kookrRoot: join(here, '..') });
 }
 
 async function startServer({ err = console, exit = process.exit } = {}) {
