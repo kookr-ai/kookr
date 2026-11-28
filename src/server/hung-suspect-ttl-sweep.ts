@@ -740,6 +740,17 @@ async function snapshotPastTtlCandidateJobs(
   }
 }
 
+/**
+ * True when this coordinator's last reap attempt on `taskId` threw and the
+ * task has not been reclaimed or cleared since (issue #4291). Such a task is
+ * re-warned every grace cycle, so its warning alone must not hide it from the
+ * hungSuspect residual page: "terminate keeps throwing" must still page.
+ * Read-only.
+ */
+export function hasFailedHungSuspectTtlReap(coordinator: ReapWarningCoordinator, taskId: string): boolean {
+  return failedReapAtByCoordinator.get(coordinator)?.has(taskId) ?? false;
+}
+
 function failedReapAtFor(coordinator: ReapWarningCoordinator): Map<string, number> {
   let map = failedReapAtByCoordinator.get(coordinator);
   if (!map) {
