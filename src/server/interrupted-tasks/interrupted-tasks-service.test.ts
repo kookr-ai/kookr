@@ -433,6 +433,42 @@ describe('InterruptedTasksService', () => {
     expect(h.reopened).toEqual([RESUMABLE.taskId]);
   });
 
+  test('KOOKR_AUTO_RELAUNCH=false: a batch an earlier process left pending is left stopped on start, not resumed (issue #4295)', async () => {
+    const first = harness();
+    await first.service.start();
+    await first.service.park([RESUMABLE], 'restart');
+    first.service.stop();
+
+    // Restarted with automatic relaunch off, before and after the deadline: nothing is relaunched.
+    for (const elapsed of [4 * MIN, 30 * MIN]) {
+      const filePath = join(dir, `copy-${elapsed}.json`);
+      await writeFile(filePath, await readFile(first.filePath, 'utf8'));
+      const next = harness({ autoResume: false }, { filePath });
+      next.clock.now = first.clock.now + elapsed;
+      await next.service.start();
+      next.clock.now += 60 * MIN;
+      next.fireDue();
+      expect(next.service.pending()).toBeUndefined();
+      expect(next.reopened).toEqual([]);
+      expect(next.decided[0]?.decision).toMatchObject({ choice: 'leave', by: 'policy' });
+      // The open question is withdrawn with what happened, not expired as if the deadline resumed it.
+      expect(next.closed).toEqual([{ askId: 'ask-1', text: expect.stringContaining('KOOKR_AUTO_RELAUNCH=false') }]);
+    }
+  });
+
+  test('KOOKR_AUTO_RELAUNCH=false still applies an answer the operator gave during the restart', async () => {
+    const first = harness();
+    await first.service.start();
+    await first.service.park([RESUMABLE], 'restart');
+    first.service.stop();
+
+    const second = harness({ autoResume: false }, { filePath: first.filePath });
+    second.answers.set('ask-1', 'resume');
+    await second.service.start();
+    expect(second.decided[0]?.decision).toMatchObject({ choice: 'resume', by: 'operator' });
+    expect(second.reopened).toEqual([RESUMABLE.taskId]);
+  });
+
   test('a corrupt batch file is quarantined and the service starts empty', async () => {
     const filePath = join(dir, 'interrupted-tasks.json');
     await writeFile(filePath, '{not json');
@@ -451,14 +487,16 @@ describe('InterruptedTasksService', () => {
 
 describe('resolveInterruptedTasksPolicy', () => {
   test('defaults to ask with a 10 minute timeout', () => {
-    expect(resolveInterruptedTasksPolicy({})).toEqual({ mode: 'ask', timeoutMs: 10 * MIN });
+    expect(resolveInterruptedTasksPolicy({})).toEqual({ mode: 'ask', timeoutMs: 10 * MIN, autoRelaunch: true });
   });
 
   test('reads auto and a custom timeout, and ignores an out-of-range one', () => {
     expect(resolveInterruptedTasksPolicy({ KOOKR_INTERRUPTED_TASKS: 'auto', KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN: '3' }))
-      .toEqual({ mode: 'auto', timeoutMs: 3 * MIN });
+      .toEqual({ mode: 'auto', timeoutMs: 3 * MIN, autoRelaunch: true });
     expect(resolveInterruptedTasksPolicy({ KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN: '0' }).timeoutMs).toBe(10 * MIN);
     expect(resolveInterruptedTasksPolicy({ KOOKR_INTERRUPTED_TASKS: 'bogus' }).mode).toBe('ask');
+    expect(resolveInterruptedTasksPolicy({ KOOKR_AUTO_RELAUNCH: 'false' }).autoRelaunch).toBe(false);
+    expect(resolveInterruptedTasksPolicy({ KOOKR_AUTO_RELAUNCH: 'true' }).autoRelaunch).toBe(true);
   });
 });
 

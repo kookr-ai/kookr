@@ -883,6 +883,45 @@ describe('ask routes', () => {
     expect((await app.request('/api/asks/zzz/cancel', { method: 'POST' })).status).toBe(404);
   });
 
+  describe('cancel is gated to the asker or the operator (issue #4295)', () => {
+    const cancel = (app: Hono, id: string, body?: unknown) => app.request(`/api/asks/${id}/cancel`, {
+      method: 'POST',
+      ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    });
+
+    it('another task cannot withdraw a task\'s question; the asking task and the operator can', async () => {
+      const app = appFor(h.service);
+      const one = await createOk();
+      const other = await cancel(app, one.id, { callerTaskId: 't2' });
+      expect(other.status).toBe(403);
+      expect((await other.json()).code).toBe('not_asker');
+      expect(h.store.get(one.id)?.state).toBe('pending');
+      expect((await cancel(app, one.id, { callerTaskId: 't1' })).status).toBe(200);
+
+      const two = await createOk({ question: 'Second?' });
+      expect((await cancel(app, two.id)).status).toBe(200);
+    });
+
+    it('no task can withdraw Kookr\'s own question, whatever caller id it sends or omits', async () => {
+      const app = appFor(h.service);
+      const r = await h.service.createSystem({ system: 'interrupted-tasks', question: 'Resume?', options: ['Resume', 'Leave stopped'] });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      for (const body of [{ callerTaskId: 't1' }, { callerTaskId: 'system:interrupted-tasks' }, {}, undefined]) {
+        const res = await cancel(app, r.ask.id, body);
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('system_ask');
+      }
+      expect(h.store.get(r.ask.id)?.state).toBe('pending');
+    });
+
+    it('rejects a caller id that is not a string', async () => {
+      const app = appFor(h.service);
+      const one = await createOk();
+      expect((await cancel(app, one.id, { callerTaskId: 7 })).status).toBe(400);
+      expect(h.store.get(one.id)?.state).toBe('pending');
+    });
+  });
+
   it('adds the task name and whether the task has ended to each listed or read ask, in the same order', async () => {
     const statuses: Record<string, ContractTaskStatus> = { t1: 'inProgress' };
     const app = new Hono();

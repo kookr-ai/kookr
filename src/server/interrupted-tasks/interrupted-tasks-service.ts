@@ -19,7 +19,9 @@
  * which the operator may have withdrawn since, so it needs an explicit yes.
  *
  * The batch file survives a restart: `start()` re-arms a pending batch, or
- * decides it at once when its deadline passed while the server was down.
+ * decides it at once when its deadline passed while the server was down. With
+ * automatic relaunch off (`KOOKR_AUTO_RELAUNCH=false`), `start()` leaves such a
+ * batch stopped instead, unless the operator already answered it.
  */
 import { randomBytes } from 'node:crypto';
 import { atomicWriteFile, readJsonFile } from '../../core/persistence-utils.js';
@@ -50,6 +52,12 @@ export interface InterruptedTaskSnapshot {
 
 export type InterruptedBatchChoice = 'resume' | 'resume_all' | 'leave';
 
+/**
+ * Who decided a batch. `policy`: left stopped at start-up because automatic relaunch is off
+ * (`KOOKR_AUTO_RELAUNCH=false`, issue #4295).
+ */
+export type InterruptedBatchDecisionBy = 'operator' | 'timeout' | 'policy';
+
 export interface InterruptedTaskOutcome {
   taskId: string;
   outcome: 'resumed' | 'restarted' | 'left_stopped' | 'skipped' | 'failed';
@@ -68,7 +76,7 @@ export interface InterruptedBatch {
   askId?: string;
   decision?: {
     choice: InterruptedBatchChoice;
-    by: 'operator' | 'timeout';
+    by: InterruptedBatchDecisionBy;
     at: number;
     outcomes: InterruptedTaskOutcome[];
     /**
@@ -127,6 +135,12 @@ export interface InterruptedTasksServiceDeps {
    */
   liveDuplicateOf?: (taskId: string) => { taskId: string } | undefined;
   ask?: InterruptedTasksAskPort;
+  /**
+   * `false` when automatic relaunch is off (`KOOKR_AUTO_RELAUNCH=false`): a batch an earlier process
+   * left pending is then left stopped at {@link InterruptedTasksService.start} instead of being
+   * resumed at its deadline. An answer the operator already gave is still applied. Default `true`.
+   */
+  autoResume?: boolean;
   /** Told about every decided batch. */
   onDecided?: (batch: InterruptedBatch) => void;
   now?: () => number;
@@ -177,11 +191,14 @@ export class InterruptedTasksService {
       const batch = this.pending();
       if (!batch) return undefined;
       const answered = batch.askId !== undefined ? this.deps.ask?.answerOf?.(batch.askId) : undefined;
-      if (answered) return { batchId: batch.id, choice: answered };
+      if (answered) return { batchId: batch.id, choice: answered, by: 'operator' as const };
+      // Automatic relaunch is off: nobody answering must not relaunch anything, so the batch is
+      // settled now as "leave stopped" rather than re-armed for a deadline that would resume it.
+      if (this.deps.autoResume === false) return { batchId: batch.id, choice: 'leave' as const, by: 'policy' as const };
       if (batch.askId === undefined && batch.deadlineAt > this.now()) await this.raiseAsk(batch);
       return undefined;
     }).then(async (answered) => {
-      if (answered) await this.decide(answered.batchId, answered.choice, 'operator', { fromAsk: true });
+      if (answered) await this.decide(answered.batchId, answered.choice, answered.by, { fromAsk: answered.by === 'operator' });
       this.armOrExpire();
     });
   }
@@ -264,7 +281,7 @@ export class InterruptedTasksService {
   decide(
     batchId: string,
     choice: InterruptedBatchChoice,
-    by: 'operator' | 'timeout',
+    by: InterruptedBatchDecisionBy,
     opts: { fromAsk?: boolean } = {},
   ): Promise<InterruptedBatch | undefined> {
     return this.serialize(async () => {
@@ -293,7 +310,7 @@ export class InterruptedTasksService {
     const done = new Set(decision.outcomes.map((o) => o.taskId));
     for (const entry of batch.tasks) {
       if (done.has(entry.taskId)) continue;
-      decision.outcomes.push(await this.apply(entry, decision.choice));
+      decision.outcomes.push(await this.apply(entry, decision.choice, decision.by));
       await this.persist();
     }
     delete decision.applying;
@@ -305,7 +322,9 @@ export class InterruptedTasksService {
     if (batch.askId && !fromAsk) {
       await (by === 'timeout'
         ? this.closeAsk(batch.askId, `No answer in time: ${summarizeOutcomes(batch)}.`, expiryOutcomeOf(batch))
-        : this.closeAsk(batch.askId, `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`));
+        : by === 'policy'
+          ? this.closeAsk(batch.askId, `Automatic relaunch is off (KOOKR_AUTO_RELAUNCH=false), so the tasks were left stopped: ${summarizeOutcomes(batch)}. Reopen them from the dashboard to resume them.`)
+          : this.closeAsk(batch.askId, `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`));
     }
     this.log(`[interrupted-tasks] batch ${batch.id} decided (${choice}, by ${by}): ${summarizeOutcomes(batch)}`);
     try {
@@ -316,9 +335,9 @@ export class InterruptedTasksService {
     return structuredClone(batch);
   }
 
-  private async apply(entry: InterruptedTaskEntry, choice: InterruptedBatchChoice): Promise<InterruptedTaskOutcome> {
+  private async apply(entry: InterruptedTaskEntry, choice: InterruptedBatchChoice, by: InterruptedBatchDecisionBy): Promise<InterruptedTaskOutcome> {
     const { taskId } = entry;
-    if (choice === 'leave') return { taskId, outcome: 'left_stopped', detail: 'operator chose to leave it stopped' };
+    if (choice === 'leave') return { taskId, outcome: 'left_stopped', detail: by === 'policy' ? 'automatic relaunch is off (KOOKR_AUTO_RELAUNCH=false)' : 'operator chose to leave it stopped' };
     if (entry.mode === 'fresh' && choice !== 'resume_all') {
       return { taskId, outcome: 'left_stopped', detail: `no conversation to resume (${entry.reason ?? 'unknown reason'})` };
     }
@@ -418,6 +437,11 @@ export interface InterruptedTasksPolicy {
   /** `ask`: park interrupted tasks and ask the operator. `auto`: relaunch them at once (the old behaviour). */
   mode: 'ask' | 'auto';
   timeoutMs: number;
+  /**
+   * `false` under `KOOKR_AUTO_RELAUNCH=false`: crash recovery parks nothing, and a batch an earlier
+   * process left pending is left stopped at start-up instead of resuming at its deadline.
+   */
+  autoRelaunch: boolean;
 }
 
 const DEFAULT_TIMEOUT_MINUTES = 10;
@@ -425,13 +449,14 @@ const DEFAULT_TIMEOUT_MINUTES = 10;
 /**
  * `KOOKR_INTERRUPTED_TASKS` (`ask`, the default, or `auto`) and
  * `KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN` (1..1440, default 10). `KOOKR_AUTO_RELAUNCH=false`
- * still turns crash recovery off altogether, before either applies.
+ * still turns crash recovery off altogether, before either applies, and also stops a batch an
+ * earlier process left pending from resuming (`autoRelaunch`).
  */
 export function resolveInterruptedTasksPolicy(env: NodeJS.ProcessEnv): InterruptedTasksPolicy {
   const mode = env.KOOKR_INTERRUPTED_TASKS?.trim().toLowerCase() === 'auto' ? 'auto' : 'ask';
   const raw = Number(env.KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN);
   const minutes = Number.isFinite(raw) && raw >= 1 && raw <= 1440 ? raw : DEFAULT_TIMEOUT_MINUTES;
-  return { mode, timeoutMs: minutes * 60_000 };
+  return { mode, timeoutMs: minutes * 60_000, autoRelaunch: env.KOOKR_AUTO_RELAUNCH !== 'false' };
 }
 
 function dedupeEntries(entries: InterruptedTaskEntry[]): InterruptedTaskEntry[] {
