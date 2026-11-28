@@ -13,6 +13,7 @@ A focused diff plus a one-line summary of what changed and why, and confirmation
 1. Load your fix conventions (Notebook Protocol) before editing — they encode the traps this repo has bitten you with.
 2. Change as little as possible. Match the surrounding code's idiom, naming, and error-handling.
 3. Run the repro and the repo's checks (tests/lint/typecheck) yourself; "done" means green, verified.
+   To confirm your new test fails without the fix, use `kookr mutation-check` rather than a hand-built scratch copy or an edit-and-revert in the checkout. Example: `kookr mutation-check --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts` prints `killed` or `survived` (`--help` lists the options).
 4. Keep scope tight — no drive-by refactors, no unrelated files.
 
 ## Notebook Protocol (your memory)

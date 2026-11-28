@@ -435,6 +435,22 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--repo', '--sha', '--from-file', '--json', '-h', '--help'],
   },
   {
+    name: 'mutation-check',
+    flags: [
+      '--file',
+      '--line',
+      '--from',
+      '--to',
+      '--repo',
+      '--rev',
+      '--timeout',
+      '--with-uncommitted',
+      '--vitest',
+      '-h',
+      '--help',
+    ],
+  },
+  {
     name: 'context-pack',
     flags: [
       '--spec',
@@ -604,6 +620,7 @@ function renderBashCompletion(): string {
   const prChecklistFlags = flagsFor('pr-checklist');
   const mergeFlags = flagsFor('merge');
   const checkVerificationFlags = flagsFor('check-verification');
+  const mutationCheckFlags = flagsFor('mutation-check');
   const contextPackFlags = flagsFor('context-pack');
   const signalEmitSubcommands = subcommandsFor('signal-emit');
   const signalEmitFlags = flagsFor('signal-emit');
@@ -942,6 +959,9 @@ _kookr()
     check-verification)
       COMPREPLY=( $(compgen -W "${checkVerificationFlags}" -- "\${cur}") )
       ;;
+    mutation-check)
+      COMPREPLY=( $(compgen -W "${mutationCheckFlags}" -- "\${cur}") )
+      ;;
     context-pack)
       COMPREPLY=( $(compgen -W "${contextPackFlags}" -- "\${cur}") )
       ;;
@@ -1058,6 +1078,7 @@ function renderZshCompletion(): string {
   const prChecklistFlags = flagsFor('pr-checklist');
   const mergeFlags = flagsFor('merge');
   const checkVerificationFlags = flagsFor('check-verification');
+  const mutationCheckFlags = flagsFor('mutation-check');
   const contextPackFlags = flagsFor('context-pack');
   const signalEmitSubcommands = subcommandsFor('signal-emit');
   const signalEmitFlags = flagsFor('signal-emit');
@@ -1338,6 +1359,9 @@ _kookr()
       ;;
     check-verification)
       compadd -- ${checkVerificationFlags}
+      ;;
+    mutation-check)
+      compadd -- ${mutationCheckFlags}
       ;;
     context-pack)
       compadd -- ${contextPackFlags}

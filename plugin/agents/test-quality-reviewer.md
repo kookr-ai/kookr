@@ -130,11 +130,11 @@ Test passes → Good.
 
 Static reasoning about "what wrong result would still pass this assertion?" is reliable for obvious tautologies, but it is error-prone for **loose bounds** — `< N`, `>= 0`, `toContain(...)`, `.length > 0`, off-by-one caps, truncation thresholds. Do not guess whether such a test catches the bug: **prove it by mutation.**
 
-Run the check with `mutation-check.sh`, which the kookr-toolkit plugin ships: `plugin/scripts/mutation-check.sh` in the kookr repository, `${CLAUDE_PLUGIN_ROOT}/scripts/mutation-check.sh` in an installed plugin (find it with `ls ~/.claude/plugins/cache/*/kookr-toolkit/*/scripts/mutation-check.sh` when that variable is unset). Never edit, `sed` or `git checkout` a file in the checkout under review, and do not build a scratch copy by hand: a partial copy misses directories the test config imports, and the author may be editing or pushing from that checkout.
+Run the check with `kookr mutation-check`, which works from any repository (`kookr` is on `PATH` in every Kookr task; it runs the `mutation-check.sh` script that ships with Kookr). Never edit, `sed` or `git checkout` a file in the checkout under review, and do not build a scratch copy by hand: a partial copy misses directories the test config imports, and the author may be editing or pushing from that checkout.
 
 1. Pick the *specific* bug the test claims to guard against: flip the comparison, return a wrong constant, drop the guard clause, shift the cap by one. Note the line number and the exact text you will replace on that line.
 2. Run the script with that one-line change and only that test, for example:
-   `bash plugin/scripts/mutation-check.sh --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts`
+   `kookr mutation-check --file src/limits.ts --line 17 --from 'n < MAX' --to 'n <= MAX' --vitest src/limits.test.ts`
    It creates a git worktree of `HEAD` in a new temp directory, runs the test there once unchanged, makes the change, runs it again, and removes the worktree. Add `--with-uncommitted` to include the author's uncommitted edits. Use `-- <test command>` instead of `--vitest` for any other runner.
 3. Read the result:
    - `killed` (exit 0): the test fails with the change. The script prints the failed assertion; check it is the assertion you expected, not a crash or a syntax error.
@@ -150,7 +150,7 @@ A loose `< N` bound or a single oversized-input truncation test very often survi
 
 ## Constraints
 
-- **Read-only on the files under review** — do NOT modify any file in the repo being reviewed. The mutation check above runs in a throwaway git worktree that `mutation-check.sh` creates and removes; the originals are never touched. Report findings only.
+- **Read-only on the files under review** — do NOT modify any file in the repo being reviewed. The mutation check above runs in a throwaway git worktree that `kookr mutation-check` creates and removes; the originals are never touched. Report findings only.
 - **Be specific** — reference exact test names, line numbers, and the specific problem.
 - **Provide fix direction** — for each finding, briefly say what a better test would look like (1 sentence).
 - **Don't nitpick style** — naming conventions, formatting, import order are irrelevant.
