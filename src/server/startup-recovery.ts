@@ -786,6 +786,9 @@ export async function recordInterruptedDecisionDispositions(
     let disposition: DispositionKind;
     let detail: string;
     if (outcome.outcome === 'resumed' || outcome.outcome === 'restarted') {
+      // Stopped again since (a crash part-way through the decision, finished on the next start):
+      // that boot's recovery recorded the task's new receipt, which this outcome must not overwrite.
+      if (isTerminalStatus(task.status)) continue;
       workDisposition = 'relaunched';
       disposition = 'respawned';
       detail = `respawned-as: ${outcome.outcome === 'resumed' ? 'resumed conversation' : 'fresh launch'} after the interrupted-tasks decision (${choice})`;

@@ -1550,6 +1550,9 @@ describe('interrupted tasks: parked dispositions (issue #4294)', () => {
     const resumed = restartTerminated(deps, 'resumed task');
     const fresh = restartTerminated(deps, 'fresh task');
     const parkedAs = { status: 'terminated', sessions: 0 };
+    // What the decision's Reopen did: the resumed task is queued again.
+    deps.taskStore.reopenTask(resumed.id);
+    deps.taskStore.pendTask(resumed.id);
     await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('resume',
       [{ taskId: resumed.id, name: 'r', mode: 'resume', parkedAs }, { taskId: fresh.id, name: 'f', mode: 'fresh', parkedAs }],
       [
@@ -1561,6 +1564,19 @@ describe('interrupted tasks: parked dispositions (issue #4294)', () => {
     expect(deps.taskStore.getTask(fresh.id)!.terminalReceipt?.workDisposition).toBe('abandoned');
     const entries = await readDispositionEntries(ledgerPath);
     expect(entries.map((e) => [e.taskId, e.disposition])).toEqual([[resumed.id, 'respawned'], [fresh.id, 'needs-human']]);
+  });
+
+  test('a resumed task that has stopped again by the time the decision finishes keeps its new receipt', async () => {
+    const deps = fakeDeps();
+    const task = restartTerminated(deps, 'resumed then crashed');
+    // The next boot's recovery recorded this restart's receipt before the decision was finished.
+    deps.taskStore.recordRecoveryDisposition(task.id, { workDisposition: 'abandoned', recoveryCorrelationId: 'epoch-2' });
+    await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('resume',
+      [{ taskId: task.id, name: 't', mode: 'resume', parkedAs: { status: 'terminated', sessions: 0 } }],
+      [{ taskId: task.id, outcome: 'resumed' }],
+    ), ledgerPath);
+    expect(deps.taskStore.getTask(task.id)!.terminalReceipt).toMatchObject({ workDisposition: 'abandoned', recoveryCorrelationId: 'epoch-2' });
+    expect(await readDispositionEntries(ledgerPath)).toEqual([]);
   });
 
   test('a task changed since it was parked, a skipped task, and an operator-raised batch are left alone', async () => {

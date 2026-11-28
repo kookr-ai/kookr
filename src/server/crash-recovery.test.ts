@@ -2029,6 +2029,18 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(task.id)!.sessions[0]!.parkedForOperator).toBeUndefined();
   });
 
+  test('parkForOperator: a task skipped mid-report does not make its same-prompt twin a duplicate (#4294)', async () => {
+    const first = await setupCrashedTask('Twin prompt', join(tempDir, 'twin-a'));
+    const second = await setupCrashedTask('Twin prompt', join(tempDir, 'twin-b'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    resumeHooks.afterDescribe = (taskId) => {
+      if (taskId === first.id) taskStore.cancelTask(taskId);
+    };
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked?.map((p) => p.taskId)).toEqual([second.id]);
+    expect(result.skipped.map((s) => s.reason)).not.toContain('duplicate prompt already running or relaunched');
+  });
+
   test('findLivePromptDuplicate: finds a queued or running task with the same prompt, not a terminal one or itself (#4294)', async () => {
     const parked = await setupCrashedTask('Nightly sweep', join(tempDir, 'dup-parked'));
     await reconcile(taskStore, terminal);

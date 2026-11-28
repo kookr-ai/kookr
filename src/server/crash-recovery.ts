@@ -327,10 +327,6 @@ export async function recoverCrashedSessions(
         result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: notInterruptedReason(current?.status) });
         continue;
       }
-      // The same-pass bookkeeping the relaunch path does: a second dead session of this task, or
-      // another task with the same prompt, is then skipped as a duplicate instead of parked again.
-      relaunchedTaskIds.add(task.id);
-      relaunchedPromptHashes.add(promptHash);
       // The baseline a decision compares against, taken before any await: the operator may
       // acknowledge or cancel the task from here on, and a decision must then leave it alone.
       const parkedAs = { status: current.status, sessions: current.sessions.length };
@@ -340,6 +336,11 @@ export async function recoverCrashedSessions(
         result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: notInterruptedReason(afterReport?.status) });
         continue;
       }
+      // The same-pass bookkeeping the relaunch path does, once the task is really parked: a second
+      // dead session of this task, or another task with the same prompt, is then skipped as a
+      // duplicate instead of parked again. A task skipped above must not shadow a twin this way.
+      relaunchedTaskIds.add(task.id);
+      relaunchedPromptHashes.add(promptHash);
       // Durable mark for the crash-loop cap: the session a resume decision starts continues this
       // session's relaunch chain (see relaunchChainOf).
       taskStore.updateSession(task.id, tmuxName, { parkedForOperator: true });
