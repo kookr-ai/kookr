@@ -1,6 +1,11 @@
 ---
 name: opencode scoped-fix pipeline
 description: One small GitHub issue -> opencode scoped-fix worker -> fresh opencode reviewer -> bounded fix rounds -> Claude independent-merge-review gate -> optional merge. See docs/rfc/rfc-opencode-scoped-fix-pipeline.md.
+# Mid tier, not small (RFC section 3). The orchestrator is the dominant cost: on the
+# operator default (fable, effort high) one run cost ~$11 against ~$0.05 for its
+# children; a claude-sonnet-5-5 orchestrator reached a gate PASS for ~$1 (#3582).
+# A launch pin (dialog picker, kookr spawn, schedule, POST /api/tasks) still wins.
+model: claude-sonnet-5-5
 parameters:
   - name: issueNumber
     description: "GitHub issue number (must be labelled opencode-eligible)"
@@ -14,7 +19,7 @@ parameters:
     required: false
     default: "false"
   - name: usdCap
-    description: "Total USD cap across all child tasks"
+    description: "Total USD cap: child tasks plus this orchestrator's own cost (gate review included)"
     required: false
     default: "3"
 checklist:
@@ -26,7 +31,10 @@ checklist:
   - All child tasks stopped before the gate review
   - Claude independent-merge-review verdict bound to the final head sha
   - Merge only when mergeEnabled is true and the gate passes; otherwise PR left open
+  - usdSpent counts the children AND the orchestrator's own cost, refreshed before every spawn
+  - Gate review cost recorded as its own row (Claude lane, metered in this task), never "not metered"
   - Accounting table (with any unfixed LOW findings) posted on the PR; claim released on every terminal path
+  - After the terminal path - post accounting, release claim, signal completion-ready, stop
 ---
 
 ## Derived values
@@ -47,11 +55,15 @@ Deliver one small, well-scoped issue through a cheap opencode worker, then make 
 
 ## State file
 
-Write the JSON state file after EVERY transition and read it first on start (resume): `{stage, round, head, branch, worktree, pr, children:[{id,role,startedAt,endedAt,usd,tokens}], usdSpent, startedAt}`. On resume, `kookr stop` every child still listed as live, confirm terminal state, then continue from the recorded stage. Keep every helper/scratch file (prompts, spawn output, review text) in a directory `ocpipe-{{issueNumber}}/` next to the state file, never loose beside it (stage 2 puts `review-input.md` in the per-issue review folder instead): pipelines for different issues share the state directory and must not read each other's leftovers.
+Write the JSON state file after EVERY transition and read it first on start (resume): `{stage, round, head, branch, worktree, pr, children:[{id,role,startedAt,endedAt,usd,tokens}], orchestrators:[{id,usd,tokens}], gates:[{startUsd,usd,lane,verdict}], usdSpent, startedAt}`. On resume, `kookr stop` every child still listed as live, confirm terminal state, then continue from the recorded stage. A resumed run is usually a new task: append your `$KOOKR_TASK_ID` to `orchestrators` unless it is already listed (one entry per task id; crash recovery can relaunch the same task, whose `tokenUsage` already covers its earlier sessions) and keep the earlier entries, so a killed run's cost stays counted. Keep every helper/scratch file (prompts, spawn output, review text) in a directory `ocpipe-{{issueNumber}}/` next to the state file, never loose beside it (stage 2 puts `review-input.md` in the per-issue review folder instead): pipelines for different issues share the state directory and must not read each other's leftovers.
+
+## Own cost
+
+Your own cost is your task's own usage: `curl -s ${KOOKR_API_TOKEN:+-H "Authorization: Bearer $KOOKR_API_TOKEN"} "$KOOKR_API_BASE_URL/api/tasks/$KOOKR_TASK_ID" | jq '.tokenUsage'`, field `costUsd`. Use `tokenUsage`, never `aggregateTokenUsage`: the aggregate already adds the children, so it would count them twice. Claude subagents you run (the stage-4 gate reviewer included) are counted in your own `tokenUsage`, each priced at its own model. Read an earlier orchestrator's cost the same way with its id. `usdSpent` = the sum of `children[].usd` + the sum of `orchestrators[].usd`; refresh your own entry before every cap check and before posting the Accounting comment. When a cost cannot be read (missing field, API error), record it as `unknown`, never as 0, and mark every total built from it as a lower bound (`>= $x`).
 
 ## Child task protocol (applies to every spawn below)
 
-1. Before each spawn: `kookr orchestration status --json` — if `paused` is true, save state and stop cleanly. Refuse to spawn when `usdSpent >= {{usdCap}}` or total wall time > 2h, and record the reason. Then, if the refused spawn is a stage-3 fix round called for only by a LOW-only stage-2 parse of the current head (not by a gate `block`), go to stage 4 on the current head: one gate review past the cap (the gate runs in the Claude lane, not as a `kookr spawn` child, so this step does not refuse it). Otherwise go to **Failure exit**.
+1. Before each spawn: `kookr orchestration status --json` — if `paused` is true, save state and stop cleanly. Refresh your own cost (**Own cost**) and recompute `usdSpent`. Refuse to spawn when `usdSpent >= {{usdCap}}` or total wall time > 2h, and record the reason. Then, if the refused spawn is a stage-3 fix round called for only by a LOW-only stage-2 parse of the current head (not by a gate `block`), go to stage 4 on the current head: one gate review past the cap (the gate runs in the Claude lane, not as a `kookr spawn` child, so this step does not refuse it). Otherwise go to **Failure exit**.
 2. Spawn with `kookr spawn --agent opencode --profile <p> --cwd <dir> --parent-task-id $KOOKR_TASK_ID --no-auto-idempotency --unattended --wait=<seconds> --json --prompt-file <file>`. Never pass `--claim-issue` (you hold the claim).
 3. Record the child id in the state file at once. Exit codes: 0 = done; 6 = timeout OR claim conflict; 4 = failed task OR API error. On ANY non-zero exit: `kookr stop <child>`, wait until it is terminal, read its status to distinguish failure from API error, then treat the stage as failed (no blind retry).
 4. After the child ends read its `tokenUsage`/`costUsd` from the task API and add to the state file.
@@ -92,7 +104,7 @@ While findings are present and `round < 2`: findings are present when the latest
 
 ## Stage 4 — Gate review
 
-Confirm no child is live (`kookr stop` leftovers). Run the `independent-merge-review` skill on the final head sha (hard gate; Claude lane at full strength). A `block` is a failure of this attempt: if rounds remain treat its findings like blocking stage-2 findings, otherwise **Failure exit**. That includes the LOW-only path from stage 3 and the LOW-only cap path from the Child task protocol: a `block` there is a **Failure exit**, even if rounds remain; a `pass` continues to stage 5 like any other pass.
+Confirm no child is live (`kookr stop` leftovers). Stage 4 can run more than once (a `block` with rounds left loops back), so each gate run gets its own new entry in `gates`. Read your own `costUsd` (**Own cost**) and save it as that entry's `startUsd`. Run the `independent-merge-review` skill on the final head sha (hard gate; Claude lane at full strength): spawn the reviewer as an `Agent` subagent with an explicit strong model (`model: "opus"`), never inheriting this orchestrator's mid-tier model, so the gate keeps the skill's strength floor. When the verdict is posted, wait about 5 seconds (one token scan) and read your own `costUsd` again: the entry's `usd` = that minus its `startUsd`, `lane` = the verdict's `review-lane`, `verdict` = `pass` or `block`. This figure also holds your own turns during the stage, so it is an upper bound on the reviewer alone, and it is already inside your orchestrator cost. If the verdict came from a lane that runs outside this task (`codex`), Kookr does not count it: record that entry's `usd` as `unknown (codex lane)`. A `block` is a failure of this attempt: if rounds remain treat its findings like blocking stage-2 findings, otherwise **Failure exit**. That includes the LOW-only path from stage 3 and the LOW-only cap path from the Child task protocol: a `block` there is a **Failure exit**, even if rounds remain; a `pass` continues to stage 5 like any other pass.
 
 ## Stage 5 — Merge (only when `{{mergeEnabled}}` is `true`)
 
@@ -100,11 +112,15 @@ Re-read the PR head; it MUST equal the sha in the latest `pass` verdict (else go
 
 ## Accounting
 
-Post ONE PR comment: a table of stage, child id, wall seconds, tokens, USD, verdict, plus rounds used and total USD. When the gate passed with LOW findings left by the last stage-2 review, add them below the table under the heading "Unfixed LOW findings", quoted as reviewer output, so a human sees them. Keep the state file as the audit record.
+Post ONE PR comment: a table of stage, child id, wall seconds, tokens, USD, verdict, plus rounds used and total USD. Add one row per entry in `orchestrators` (task id, tokens, USD from **Own cost**) and one `gate review` row per entry in `gates` with its `usd` and verdict; say under the table that the gate rows are already inside the orchestrator rows. Total USD = children + orchestrators, the dominant cost, so the gate is not added twice. When the PR is merged, add the line `Cost per merged PR: $<total>`. When the gate passed with LOW findings left by the last stage-2 review, add them below the table under the heading "Unfixed LOW findings", quoted as reviewer output, so a human sees them. Keep the state file as the audit record.
 
 ## Failure exit
 
-Post a short summary comment on the issue (stage reached, last findings, cost), add label `opencode-pipeline-failed`, `kookr issue release {{issueNumber}}`, stop all children, keep the PR/branch for a human. Every terminal path releases the claim.
+Post a short summary comment on the issue (stage reached, last findings, total USD with the orchestrator included, as in Accounting), add label `opencode-pipeline-failed`, `kookr issue release {{issueNumber}}`, stop all children, keep the PR/branch for a human. Every terminal path releases the claim.
+
+## Finish (every exit)
+
+On every exit (a preflight refusal, a pause stop, the **Failure exit**, `ready-for-merge`, or merged) finish in this order, then stop: post the Accounting comment when a PR exists (the Failure exit posts its issue summary), release the claim if you took it (`kookr issue release {{issueNumber}}`), emit the lesson decision (`printf 'No generic KB lesson: %s\n' '<reason>'` unless the run taught something generic), run `kookr signal completion-ready --note "<PR url or reason>"`, and stop. After the real work is done, do not investigate unrelated PR comments or issues, do not draft or polish a report, and do not send anything to a review subagent: each extra minute is orchestrator cost. Your final message is a few lines: issue, PR, verdict, total USD.
 
 ## Idempotency
 
