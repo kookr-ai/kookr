@@ -310,6 +310,26 @@ describe('summarizeAgent', () => {
     expect(result.fallbackReason).toBe('denylist');
   });
 
+  // Issue #3656: the same instruction check as the task summary, not "any action verb anywhere".
+  test.each([
+    'The agent needs your permission to force-push the branch.',
+    'The agent will rebase, push, and open a pull request.',
+    'The login test fails about one run in five.',
+  ])('a recap that describes an action is spoken: %s', async (recap) => {
+    const result = await summarizeAgent(mkClient(JSON.stringify({ recap })), baseContext, 'medium', 'activity');
+    expect(result).toMatchObject({ usedFallback: false, fallbackReason: null });
+  });
+
+  test.each([
+    'The tests pass. Merge the branch into main.',
+    'The agent finished, merge it now.',
+    'The agent will switch to release and merge it.',
+    'The plan is now to merge it.',
+  ])('a recap that instructs the listener is still rejected: %s', async (recap) => {
+    const result = await summarizeAgent(mkClient(JSON.stringify({ recap })), baseContext, 'medium', 'activity');
+    expect(result).toMatchObject({ usedFallback: true, fallbackReason: 'denylist' });
+  });
+
   test('denylist still fires for push_notifications-style identifiers', async () => {
     const client = mkClient('{"recap":"Agent edited push_notifications settings"}');
     const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
@@ -412,12 +432,15 @@ describe('summarizeAgent', () => {
     });
   });
 
-  test('passes maxTokens scaled to the verbosity rung', async () => {
-    let capturedReq: { maxTokens?: number } | undefined;
-    const client = mkClient('{"recap":"ok"}', (r) => { capturedReq = r as { maxTokens?: number }; });
-    await summarizeAgent(client, baseContext, 'detailed', 'activity');
-    expect(capturedReq?.maxTokens).toBe(360);
-  });
+  test.each<[VerbosityScale, number]>([['terse', 512], ['brief', 512], ['medium', 640], ['detailed', 768]])(
+    'leaves room for hidden reasoning: maxTokens at verbosity=%s is %i',
+    async (rung, expected) => {
+      let capturedReq: { maxTokens?: number } | undefined;
+      const client = mkClient('{"recap":"ok"}', (r) => { capturedReq = r as { maxTokens?: number }; });
+      await summarizeAgent(client, baseContext, rung, 'activity');
+      expect(capturedReq?.maxTokens).toBe(expected);
+    },
+  );
 
   test('strips trailing period from recap so success text avoids "..".', async () => {
     const client = mkClient('{"recap":"All tests passed."}');

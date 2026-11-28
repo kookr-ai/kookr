@@ -26,7 +26,7 @@ import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises
 import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
 import { hasDockerRuntime } from './docker-runtime.js';
-import { MATILDA_VOICE_ID, SPEAK_VOICE_OPTIONS } from '../shared/contracts/speech.js';
+import { MATILDA_VOICE_ID, SPEAK_VOICE_OPTIONS, isKokoroVoiceId } from '../shared/contracts/speech.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -38,7 +38,7 @@ const TTS_FAILED_STAMP_FILE = '.kookr-tts-failed.hash';
 const TTS_CONTAINER_NAME = 'kookr-tts';
 /** `af_*` voices are served by Kokoro; every other voice by Pocket TTS (see tts/src/server.py). */
 const KOKORO_VOICE_IDS: ReadonlySet<string> = new Set(
-  SPEAK_VOICE_OPTIONS.map((option) => option.id).filter((id) => id.startsWith('af_')),
+  SPEAK_VOICE_OPTIONS.map((option) => option.id).filter(isKokoroVoiceId),
 );
 const KOKORO_WARM_UP_VOICE = 'af_heart';
 /** Loading an engine on CPU takes far longer than on a GPU. */

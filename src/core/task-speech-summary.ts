@@ -61,8 +61,12 @@ const ACTION_WORDS = 'execute|run|delete|cancel|merge|push|commit|click';
 const ACTION = `(?:${ACTION_WORDS})`;
 const MENTIONS_ACTION = new RegExp(`\\b${ACTION}\\b`, 'i');
 
-/** How a descriptive main clause starts: with its subject. Words that can also be read as a command ("test", "work", "issue") are left out. */
-const SUBJECT_OPENER = /^(?:the|it|its|it['’]s|this|that|these|those|a|an|both|all|each|every|no|none|nothing|everything|some|several|most|many|another|one|two|three|four|five|six|seven|eight|nine|ten|\d+|there|meanwhile|earlier|currently|agents?|pull request|his|her|their|your|they|he|she)\b/i;
+/**
+ * How a descriptive main clause starts: with its subject. Words that can also be read as a
+ * command ("test", "work", "issue") are left out; "issue" counts only with its number
+ * ("issue 7", the form the prompt asks for), and "tests" only in the plural.
+ */
+const SUBJECT_OPENER = /^(?:issue\s+(?:number\s+)?\d+|ci|tests|the|it|its|it['’]s|this|that|these|those|a|an|both|all|each|every|no|none|nothing|everything|some|several|most|many|another|one|two|three|four|five|six|seven|eight|nine|ten|\d+|there|meanwhile|earlier|currently|agents?|pull request|his|her|their|your|they|he|she)\b/i;
 /** A sentence may also start with a clause that leads to the subject: "After the rebase, the agent …". */
 const LEAD_IN = /^(?:after|once|when|while|before|since|because|although|though|during|until|with|without|in|on|at|for|from|by)\b/i;
 
@@ -82,16 +86,24 @@ function opensWithSubject(sentence: string): boolean {
  * so a broad list costs nothing that was spoken before. "your" is not on it: "needs
  * your permission to push" describes.
  */
-const LISTENER_CUE = /\b(?:you|we|i|please|kindly|let['’]s|let us|let (?:it|them|him|her)|feel free|free to|don['’]t|do not|never|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|good to|time to|turn to|all set|necessary|important|remains|reminder|nothing left|is left|by all means|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|alright|all right|yes|clear to|want to|operator|user|human|developer|someone|anyone|somebody)\b/i;
-
-/** "The right move is to merge it", "the agent says to merge it": a command reported as a fact. */
-const REPORTED_COMMAND = new RegExp(`\\b(?:is|are|was|were|says?|said|tells?|told)\\s+to\\s+(?:force-|re-)?${ACTION}\\b`, 'i');
+const LISTENER_CUE = /\b(?:you|yourself|yourselves|we|i|please|kindly|let['’]s|let us|let (?:it|them|him|her)|feel free|free to|don['’]t|do not|never|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|good to|time to|turn to|all set|necessary|important|remains|reminder|nothing left|is left|by all means|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|alright|all right|yes|clear to|want to|operator|user|human|developer|someone|anyone|somebody)\b/i;
 
 /**
  * In a description an action verb is governed by what stands before it. In a command it
  * is not: it follows a full stop, a comma, a quote, "so", "then", or nothing at all.
  */
 const ADVERB = '(?:not|then|now|also|just|still|only|soon|again|later|automatically|finally|already)';
+/** {@link ADVERB} without "not": "will not merge" states a condition, not a plan. */
+const PLAN_ADVERB = '(?:then|now|also|just|still|only|soon|again|later|automatically|finally|already)';
+
+/**
+ * "The right move is to merge it", "the plan is now to merge it", "the next step would be
+ * to merge it", "the agent says to merge it": a command reported as a fact.
+ */
+const REPORTED_COMMAND = new RegExp(
+  `\\b(?:is|are|was|were|be|says?|said|tells?|told)(?:\\s+${ADVERB}){0,2}\\s+to\\s+(?:force-|re-)?${ACTION}\\b`,
+  'i',
+);
 const GOVERNOR = `(?:to|will|would|can|could|may|might|shall|did|does|cannot|can['\\u2019]t|won['\\u2019]t|didn['\\u2019]t|doesn['\\u2019]t|couldn['\\u2019]t|wouldn['\\u2019]t)`;
 // "wants to run", "will then push", "cannot delete", "did not commit".
 const AFTER_GOVERNOR = new RegExp(`\\b${GOVERNOR}(?:\\s+${ADVERB}){0,2}\\s+$`, 'i');
@@ -113,13 +125,14 @@ const STARTS_WITH_PLAN_VERB = new RegExp(`^${PLAN_VERB}\\b`, 'i');
 /** Later in the same sentence, a closing "and/or" plus a plan verb: what makes a comma-separated verb a list item. */
 const LIST_CLOSES_LATER = new RegExp(`^[^.!?;:]*?\\b(?:and|or)\\s+${PLAN_VERB}\\b`, 'i');
 /**
- * Governors that announce what the agent itself is about to do. Only these start a list
- * that runs across commas. "ready to", "unable to", "nothing to", "did not" and "cannot"
- * state a condition; what follows their comma is a new clause, often a command ("It is
- * ready to merge, merge it and push.").
+ * Governors that announce what the agent itself is about to do. Only these start a list,
+ * across commas or joined by "and/or" alone. "ready to", "unable to", "nothing to", "did
+ * not", "will not" and "cannot" state a condition, and a bare "to" may be a preposition
+ * ("switch to release"); what follows is a new clause, often a command ("It is ready to
+ * merge, merge it and push.", "The agent did not commit and commit the files.").
  */
 const PLAN_GOVERNOR = new RegExp(
-  `\\b(?:will|would|(?:is|are|was) going to|plans? to|planned to|wants? to|wanted to|intends? to|intended to|tries to|tried to|starts? to|started to|begins? to|began to|goes on to|went on to|proceeds? to|proceeded to|decided to|chose to|is about to|permission to)(?:\\s+${ADVERB}){0,2}\\s+$`,
+  `\\b(?:will|would|(?:is|are|was) going to|plans? to|planned to|wants? to|wanted to|intends? to|intended to|tries to|tried to|starts? to|started to|begins? to|began to|goes on to|went on to|proceeds? to|proceeded to|decided to|chose to|is about to|permission to)(?:\\s+${PLAN_ADVERB}){0,2}\\s+$`,
   'i',
 );
 /** Words and marks that start a new clause or a quotation: none of them belongs inside one verb phrase of a list. */
@@ -132,9 +145,10 @@ const BREAKS_PHRASE = /\b(?:so|then|but|because|if|when|while|after|before|and|o
  * - "planned to commit and [run]": joined by "and/or" to one plan phrase.
  * - "will rebase, [push], and open": after a comma, with the list closing later.
  * - "will rebase, test, and [push]": after ", and", closing a list of two or more.
- * Across a comma this needs a governor that announces a plan, and no verb twice. So not
- * "ready to merge, [merge] it and push", not "go to main and [merge] it" ("main" is no
- * verb), not "it can wait, or [merge] it now".
+ * This needs a governor that announces a plan, and no verb twice. So not "ready to merge,
+ * [merge] it and push", not "go to main and [merge] it" ("main" is no verb), not "it can
+ * wait, or [merge] it now", not "switch to release and [merge] it" (a preposition), not
+ * "did not commit and [commit] the files", not "will commit and [commit] the files".
  */
 function continuesGovernedVerb(before: string, after: string, verb: string): boolean {
   const governor = LAST_GOVERNOR.exec(before);
@@ -147,14 +161,17 @@ function continuesGovernedVerb(before: string, after: string, verb: string): boo
   const tail = pieces[pieces.length - 1];
   const items = pieces.slice(0, -1).map((piece) => piece.replace(/^(?:and|or)\b\s*/i, ''));
   if (!items.every(isPlanPhrase)) return false;
-  const joined = /^(.+?)\s+(?:and|or)$/i.exec(tail);
-  if (items.length === 0) return joined !== null && isPlanPhrase(joined[1]);
-  // From here on the list runs across at least one comma.
   if (!PLAN_GOVERNOR.test(before.slice(0, governorEnd))) return false;
-  if (items.some((item) => new RegExp(`^(?:force-|re-)?${verb}\\b`, 'i').test(item))) return false;
+  const repeatsVerb = (phrase: string): boolean => new RegExp(`^(?:force-|re-)?${verb}\\b`, 'i').test(phrase);
+  if (items.some(repeatsVerb)) return false;
+  const joined = /^(.+?)\s+(?:and|or)$/i.exec(tail);
+  const joinedPhrase = joined?.[1].replace(/^(?:and|or)\b\s*/i, '');
+  const joinedPlan = joinedPhrase !== undefined && isPlanPhrase(joinedPhrase) && !repeatsVerb(joinedPhrase);
+  if (items.length === 0) return joinedPlan;
+  // From here on the list runs across at least one comma.
   if (tail === '') return LIST_CLOSES_LATER.test(after);
   if (/^(?:and|or)$/i.test(tail)) return items.length >= 2;
-  return joined !== null && isPlanPhrase(joined[1].replace(/^(?:and|or)\b\s*/i, ''));
+  return joinedPlan;
 }
 
 function isPlanPhrase(phrase: string): boolean {
@@ -215,8 +232,10 @@ const SENTENCE_BREAK = /(?<=[.!?;:…])(?=\s|[A-Z"'“(])|[—–\n]|\s-\s|--+/;
  * merge it now" and "this needs a merge". The boundary is
  * elsewhere: the summary is only spoken and shown, and the operator decides in the
  * dashboard with the real prompt in front of them.
+ *
+ * The agent speak route (agent-speak-summary.ts) applies the same check to its recaps.
  */
-function givesInstruction(text: string): boolean {
+export function givesInstruction(text: string): boolean {
   if (DECISION_WORD_DENYLIST.test(text)) return true;
   return text
     .split(SENTENCE_BREAK)
@@ -420,7 +439,7 @@ const GLUED_TO_GENERATED_PHRASE = new RegExp(`\\b(?:pull request|issue|number) \
  * phrase's number ("issue 4approve it", "pull request 12merge it") becomes a word of its
  * own once the phrase is removed; that was always rejected, and still is.
  */
-function spokenGivesInstruction(spoken: string): boolean {
+export function spokenGivesInstruction(spoken: string): boolean {
   const stripped = stripGeneratedPhrases(spoken);
   if (DECISION_WORD_DENYLIST.test(stripped)) return true;
   if (GLUED_TO_GENERATED_PHRASE.test(spoken)) return true;

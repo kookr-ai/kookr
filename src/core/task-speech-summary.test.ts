@@ -7,7 +7,7 @@ import {
   summarizeTaskForSpeech,
   type TaskSpeechSummaryInput,
 } from './task-speech-summary.js';
-import { makeSpeakable } from './speakable-text.js';
+import { makeSpeakable, stripGeneratedPhrases } from './speakable-text.js';
 import type { LlmClient } from './llm-client.js';
 import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from './llm-factory.js';
 import { CircuitBreakerLlmClient } from './circuit-breaker-llm-client.js';
@@ -580,6 +580,12 @@ describe('summarizeTaskForSpeech', () => {
       'The nightly job has been run twice since the fix.',
       'The agent did not push the branch.',
       'It started a local profiled export run, but that command has been running for forty-nine minutes.',
+      // Openers the prompt itself asks for (issue #3656).
+      'Issue 7 is fixed, and the agent will push the branch.',
+      'CI failed on the first run.',
+      'Tests pass and the agent will push the branch.',
+      // A plan joined by "and" alone, with no comma.
+      'The agent is going to rebase and push the branch.',
     ];
     // Summaries that must be replaced by the template: [what it shows, the summary].
     const REJECTED: Array<[string, string]> = [
@@ -705,6 +711,15 @@ describe('summarizeTaskForSpeech', () => {
       ['a command joined to an unpunctuated earlier sentence', 'The reviewer wants to cancel the old job The agent finished and push the branch'],
       ['an action verb glued to a generated phrase beside a real one', 'The agent will run the tests. It opened pull request 12merge it.'],
       ['a prohibition with a contraction', "The agent is done but don't merge yet."],
+      // Issue #3656: a chain joined by "and/or" alone needs a governor that announces a plan, and no verb twice.
+      ['a command after a prepositional "to" and a noun that is also a verb', 'The agent will switch to release and merge it.'],
+      ['a repeated verb after a condition', 'The agent did not commit and commit the files.'],
+      ['a repeated verb after a plan', 'The agent will commit and commit the files.'],
+      ['a repeated verb across a comma after a plan', 'The agent will merge, merge it and push.'],
+      ['commands after "will not"', 'The agent will not rebase, merge it and push.'],
+      ['a request addressed to "yourself"', 'The branch is ready to merge yourself.'],
+      ['a command reported with "is now to"', 'The plan is now to merge it.'],
+      ['a command reported with "would be to"', 'The next move would be to merge it.'],
     ];
     /** The rule this one replaces: any of these words, anywhere. */
     const FORMER_RULE = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;
@@ -735,6 +750,60 @@ describe('summarizeTaskForSpeech', () => {
         const result = await summarizeTaskForSpeech(mockClient(JSON.stringify({ summary })), baseInput);
         expect(result.usedFallback, summary).toBe(false);
       }
+    });
+
+    describe('seeded differential test: nothing the former rule spoke is rejected now', () => {
+      /** A copy of the former rule (before #3637), both stages: the model text, then its spoken form without the generated phrases. */
+      const formerRuleRejects = (summary: string): boolean => {
+        if (FORMER_RULE.test(summary)) return true;
+        const spoken = makeSpeakable(summary.trim());
+        return spoken !== '' && FORMER_RULE.test(stripGeneratedPhrases(spoken));
+      };
+
+      function mulberry32(seed: number): () => number {
+        let state = seed >>> 0;
+        return () => {
+          state = (state + 0x6d2b79f5) | 0;
+          let t = Math.imul(state ^ (state >>> 15), 1 | state);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      // Rich in what the new rule looks at (listener cues, openers, "to", commas, quotes,
+      // numbers) and in near-misses of the former words, so most samples pass the former rule.
+      const WORDS = [
+        'the', 'agent', 'it', 'you', 'yourself', 'we', 'please', 'should', 'must', 'safe', 'now', 'then', 'so',
+        'to', 'is', 'be', 'would', 'will', 'not', 'did', 'can', 'and', 'or', 'but', 'go', 'ahead', 'type', 'say',
+        'yes', 'issue', '7', 'pull request', '#12', 'CI', 'tests', 'test', 'rebase', 'deploy', 'ship', 'fix',
+        'release', 'branch', 'main', 'switch', 'ready', 'plan', 'next', 'step', 'operator', 'time', 'merged',
+        'running', 'pushed', 'commits', 'approved', 'deleting', 'run_tests', 'merge', 'push', 'run', 'approve',
+      ];
+      const MARKS = [' ', ' ', ' ', ' ', ', ', '. ', '; ', ': ', ' - ', ' "', '" ', ' (', ') ', '\n'];
+
+      function sample(random: () => number): string {
+        const words = 2 + Math.floor(random() * 14);
+        let text = WORDS[Math.floor(random() * WORDS.length)]!;
+        for (let i = 1; i < words; i++) {
+          text += MARKS[Math.floor(random() * MARKS.length)]! + WORDS[Math.floor(random() * WORDS.length)]!;
+        }
+        return `${random() < 0.5 ? text[0]!.toUpperCase() + text.slice(1) : text}.`;
+      }
+
+      test('2,000 seeded summaries: every one the former rule spoke is still spoken', async () => {
+        const random = mulberry32(3656);
+        let formerAccepted = 0;
+        const newlyRejected: string[] = [];
+        for (let i = 0; i < 2_000; i++) {
+          const summary = sample(random);
+          if (formerRuleRejects(summary)) continue;
+          formerAccepted++;
+          const result = await summarizeTaskForSpeech(mockClient(JSON.stringify({ summary })), baseInput);
+          if (result.usedFallback) newlyRejected.push(`${summary} (${result.fallbackReason})`);
+        }
+        expect(formerAccepted).toBeGreaterThan(600);
+        expect(newlyRejected).toEqual([]);
+      });
     });
 
     test('fallback output is made speakable and reports rawText when it changed', async () => {

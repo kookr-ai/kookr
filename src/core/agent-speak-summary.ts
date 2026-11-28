@@ -6,16 +6,14 @@ import type {
   SpeakModeRequest,
   VerbosityScale,
 } from '../shared/contracts/speech.js';
-import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
+import { identifierToWords, makeSpeakable, spokenFindingPhrase } from './speakable-text.js';
 import { isGenericTaskName, spokenTaskName } from './spoken-task-name.js';
-import { redactedTaskName, redactSpeechSecrets } from './task-speech-summary.js';
-
-/**
- * Verbs that imply an action recommendation. Carried forward from the v1 spec
- * (rfc-speak-finding-summary.md / D5) so a model that drifts into
- * "Approve the request" is rejected and the rung-aware fallback runs instead.
- */
-const ADVICE_VERB_DENYLIST = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;
+import {
+  givesInstruction,
+  redactedTaskName,
+  redactSpeechSecrets,
+  spokenGivesInstruction,
+} from './task-speech-summary.js';
 
 interface RungConfig {
   maxWords: number;
@@ -24,11 +22,18 @@ interface RungConfig {
   maxTokens: number;
 }
 
+/**
+ * `maxTokens` is the recap (at most about maxChars / 4 tokens, plus the JSON around it)
+ * plus room for hidden reasoning: a model that reasons by default spends tokens before
+ * any JSON is emitted, and the former budgets of 80 to 360 could run out first, so the
+ * template was spoken instead. 512 is the floor the task summary and task naming use
+ * (issue #1555); the longer rungs add their own output on top.
+ */
 const RUNG_CONFIG: Record<VerbosityScale, RungConfig> = {
-  terse:    { maxWords: 15,  maxChars: 90,  sentences: '1',   maxTokens: 80  },
-  brief:    { maxWords: 30,  maxChars: 180, sentences: '1–2', maxTokens: 120 },
-  medium:   { maxWords: 60,  maxChars: 360, sentences: '2–4', maxTokens: 240 },
-  detailed: { maxWords: 120, maxChars: 720, sentences: '3–5', maxTokens: 360 },
+  terse:    { maxWords: 15,  maxChars: 90,  sentences: '1',   maxTokens: 512 },
+  brief:    { maxWords: 30,  maxChars: 180, sentences: '1–2', maxTokens: 512 },
+  medium:   { maxWords: 60,  maxChars: 360, sentences: '2–4', maxTokens: 640 },
+  detailed: { maxWords: 120, maxChars: 720, sentences: '3–5', maxTokens: 768 },
 };
 
 const PER_RUNG_TIMEOUT_MS = 5_000;
@@ -92,7 +97,7 @@ function buildConstraints(verbosity: VerbosityScale): string {
   return [
     'CONSTRAINTS:',
     `- Output is ${cfg.sentences} declarative sentence(s), ≤ ${cfg.maxWords} words, ≤ ${cfg.maxChars} characters.`,
-    '- Do NOT recommend any action (no "approve", "deny", "run", "merge", etc.).',
+    '- Describe, do not instruct. Say what the agent did or is waiting for ("is waiting for your permission to push the branch"). Never tell the listener what to do, never use the words "approve", "deny", "reject", "allow" or "dismiss", and never say that an action is safe.',
     '- Write for the ear in plain spoken English: say what the task is about in everyday words.',
     '- Never include file paths, URLs, commit hashes, identifiers such as snake_case or camelCase names, or markdown. Name a file by its plain name at most.',
     '- Say "pull request 123" or "issue 123", never "#123" or a link. Speak numbers plainly.',
@@ -166,12 +171,16 @@ function endClause(text: string): string {
 
 type RecapCheck = { ok: true; recap: string } | { ok: false; reason: SpeakAgentFallbackReason };
 
-/** Caps and denylist, applied to the recap text as given. */
+/**
+ * Caps and the instruction check, applied to the recap text as given. The check is the
+ * task summary's (see {@link givesInstruction}): a decision word is always rejected, an
+ * action verb only in a sentence that does not read as a plain description.
+ */
 function checkRecapLimits(text: string, verbosity: VerbosityScale): RecapCheck {
   const cfg = RUNG_CONFIG[verbosity];
   if (text.length > cfg.maxChars) return { ok: false, reason: 'validator-reject' };
   if (countWords(text) > cfg.maxWords) return { ok: false, reason: 'validator-reject' };
-  if (ADVICE_VERB_DENYLIST.test(text)) return { ok: false, reason: 'denylist' };
+  if (givesInstruction(text)) return { ok: false, reason: 'denylist' };
   return { ok: true, recap: text };
 }
 
@@ -180,7 +189,7 @@ const SPOKEN_CEILING = 1.5;
 
 /**
  * Checks for the spoken form. The rewrite can lengthen text ("#42" -> "number 42"),
- * so only a generous ceiling applies, and the denylist ignores phrases the
+ * so only a generous ceiling applies, and the instruction check ignores phrases the
  * rewrite generates itself ("a commit" for a hash) but still catches words that
  * come from identifiers ("run_tests" -> "run tests").
  */
@@ -188,7 +197,7 @@ function checkSpokenLimits(text: string, verbosity: VerbosityScale): RecapCheck 
   const cfg = RUNG_CONFIG[verbosity];
   if (text.length > cfg.maxChars * SPOKEN_CEILING) return { ok: false, reason: 'validator-reject' };
   if (countWords(text) > cfg.maxWords * SPOKEN_CEILING) return { ok: false, reason: 'validator-reject' };
-  if (ADVICE_VERB_DENYLIST.test(stripGeneratedPhrases(text))) return { ok: false, reason: 'denylist' };
+  if (spokenGivesInstruction(text)) return { ok: false, reason: 'denylist' };
   return { ok: true, recap: text };
 }
 
