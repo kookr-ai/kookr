@@ -121,6 +121,11 @@ export const SPEAK_VOICE_OPTIONS = [
 
 export type SpeakVoiceId = (typeof SPEAK_VOICE_OPTIONS)[number]['id'];
 
+/** True for a voice the Kokoro engine speaks (the `af_*` ids); every other voice is Pocket TTS. */
+export function isKokoroVoiceId(id: string): boolean {
+  return id.startsWith('af_');
+}
+
 export function isSpeakVoiceId(value: unknown): value is SpeakVoiceId {
   return typeof value === 'string' && SPEAK_VOICE_OPTIONS.some((option) => option.id === value);
 }

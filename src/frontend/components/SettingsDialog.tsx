@@ -20,7 +20,13 @@ import {
   type ShortcutActionId,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { DEFAULT_LUCY_AUTONOMY, type LucyAutonomy } from '../../shared/contracts/lucy-launch.js';
-import { SPEAK_VOICE_OPTIONS, isSpeakVoiceId, type SpeakVoiceId, type VerbosityScale } from '../../shared/contracts/speech.js';
+import {
+  SPEAK_VOICE_OPTIONS,
+  isKokoroVoiceId,
+  isSpeakVoiceId,
+  type SpeakVoiceId,
+  type VerbosityScale,
+} from '../../shared/contracts/speech.js';
 import type { QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
 import { MAX_REPLY_SNIPPETS, type ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { useSoundPreference } from '../audio/sound.js';
@@ -48,6 +54,7 @@ import {
   getRelayConnection,
   getSettings,
   getShareCsrfToken,
+  getSpeechServiceKokoroVoices,
   mutateRelayConnection,
   runSessionSharingRecovery,
   saveSettings as saveSettingsRequest,
@@ -653,6 +660,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
   const [settings, setSettings] = useState<ServerSettings | null>(null);
+  // Kokoro voices the speech service in use can speak; none until it says so.
+  const [kokoroVoices, setKokoroVoices] = useState<ReadonlySet<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -704,6 +713,16 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     return () => {
       document.removeEventListener('visibilitychange', sync);
       window.removeEventListener('focus', sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getSpeechServiceKokoroVoices().then((voices) => {
+      if (!cancelled) setKokoroVoices(new Set(voices));
+    });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -1446,15 +1465,25 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                     <div className="settings-row settings-row-fieldset">
                       <label className="settings-audio-sound">
                         <span className="settings-label">Voice</span>
-                        <span className="settings-desc">Heart, Sky and Sarah need a GPU to respond quickly.</span>
+                        <span className="settings-desc">
+                          {kokoroVoices.size > 0
+                            ? 'Heart, Sky and Sarah need a GPU to respond quickly.'
+                            : 'Heart, Sky and Sarah appear here when the speech service in use can speak them.'}
+                        </span>
                         <select
                           value={settings.speakVoice ?? ''}
                           onChange={(e) => handleSpeakVoiceChange(e.target.value)}
                           aria-label="Voice"
                         >
                           <option value="">Install default</option>
-                          {SPEAK_VOICE_OPTIONS.map((option) => (
-                            <option key={option.id} value={option.id}>{option.label}</option>
+                          {SPEAK_VOICE_OPTIONS.filter((option) => (
+                            !isKokoroVoiceId(option.id) || kokoroVoices.has(option.id) || option.id === settings.speakVoice
+                          )).map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {isKokoroVoiceId(option.id) && !kokoroVoices.has(option.id)
+                                ? `${option.label} (this speech service cannot speak it)`
+                                : option.label}
+                            </option>
                           ))}
                         </select>
                       </label>

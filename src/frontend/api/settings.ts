@@ -19,6 +19,22 @@ export function getSettingsSnapshot<T>(): Promise<ApiResult<T | null>> {
 }
 
 /**
+ * The Kokoro voice ids the speech service in use says it can speak, read from its health
+ * report as the server relays it. Empty when speech is off or unreachable, or when the
+ * service does not list them: an older bundled service, or another speech server set with
+ * KOOKR_TTS_URL.
+ */
+export async function getSpeechServiceKokoroVoices(): Promise<string[]> {
+  try {
+    const { ok, body } = await fetchResult<{ kokoro_voices?: unknown }>('/api/health/tts', { cache: 'no-store' });
+    const voices = ok && body && typeof body === 'object' ? body.kokoro_voices : undefined;
+    return Array.isArray(voices) ? voices.filter((voice): voice is string => typeof voice === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * PUT updated server settings. Parses the body before inspecting `ok` so the
  * caller can surface the server's `error` on failure or the normalized saved
  * settings on success.

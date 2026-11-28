@@ -246,7 +246,10 @@ def get_voice_state(voice_name_or_path: str):
 def health_check():
     if model is None and kokoro_pipeline is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    return {"status": "ok"}
+    # Kookr's Settings offers a Kokoro voice only when the speech service lists it here, so
+    # an older service or another speech server (which does not) never shows voices it
+    # cannot speak.
+    return {"status": "ok", "kokoro_voices": list(KOKORO_VOICES)}
 
 def move_to_device(obj, device):
     if torch.is_tensor(obj):

@@ -285,8 +285,26 @@ describe('SettingsDialog tabs', () => {
     expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
   });
 
-  test('persists the speak voice, and clears it again with Install default', async () => {
+  /** Mount the dialog again with a speech service that reports `health` on GET /api/health/tts. */
+  async function remountWithSpeechHealth(health: unknown, settings: object = DEFAULT_SETTINGS) {
+    await act(async () => {
+      root.unmount();
+    });
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/health/tts') return { ok: true, status: 200, json: async () => health };
+      if (init?.method === 'PUT') return { ok: true, status: 200, json: async () => JSON.parse(String(init.body)) };
+      return { ok: true, status: 200, json: async () => settings };
+    }));
+    root = renderDialog(container);
     await flush();
+  }
+  const voiceOptions = () => Array.from(
+    container.querySelector<HTMLSelectElement>('select[aria-label="Voice"]')!.options,
+  ).map((o) => o.textContent);
+  const KOKORO_HEALTH = { status: 'ok', kokoro_voices: ['af_heart', 'af_sky', 'af_sarah'] };
+
+  test('persists the speak voice, and clears it again with Install default', async () => {
+    await remountWithSpeechHealth(KOKORO_HEALTH);
 
     const select = container.querySelector<HTMLSelectElement>('select[aria-label="Voice"]');
     expect(select).not.toBeNull();
@@ -313,6 +331,31 @@ describe('SettingsDialog tabs', () => {
 
     await choose('');
     expect('speakVoice' in lastPutBody()).toBe(false);
+  });
+
+  // Issue #3656: an older bundled service, another speech server, or no speech service at all.
+  test.each<[string, unknown]>([
+    ['a service that does not list them', { status: 'ok' }],
+    ['speech turned off', { status: 'disabled' }],
+    ['an unreachable service', { status: 'unavailable' }],
+    ['a malformed list', { status: 'ok', kokoro_voices: 'af_sky' }],
+  ])('hides the Kokoro voices for %s', async (_label, health) => {
+    await remountWithSpeechHealth(health);
+    expect(voiceOptions()).toEqual(['Install default', 'Matilda']);
+    expect(container.textContent).toContain('Heart, Sky and Sarah appear here when the speech service in use can speak them.');
+    expect(container.textContent).not.toContain('need a GPU');
+  });
+
+  test('offers only the Kokoro voices the speech service lists', async () => {
+    await remountWithSpeechHealth({ status: 'ok', kokoro_voices: ['af_heart'] });
+    expect(voiceOptions()).toEqual(['Install default', 'Heart', 'Matilda']);
+  });
+
+  test('keeps a saved Kokoro voice visible, marked, when the speech service cannot speak it', async () => {
+    await remountWithSpeechHealth({ status: 'ok' }, { ...DEFAULT_SETTINGS, speakVoice: 'af_sky' });
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Voice"]')!;
+    expect(select.value).toBe('af_sky');
+    expect(voiceOptions()).toEqual(['Install default', 'Sky (this speech service cannot speak it)', 'Matilda']);
   });
 
   test('blacklists an agent with a struck-through label and persists the list', async () => {

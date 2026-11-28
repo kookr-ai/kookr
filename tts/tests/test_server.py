@@ -213,6 +213,15 @@ def test_health_is_ok_with_only_kokoro_loaded_and_503_with_neither(server):
     assert client.get("/health").status_code == 200
 
 
+def test_health_lists_the_kokoro_voices_the_service_can_speak(server):
+    server.model = FakeModel()
+    server.kokoro_pipeline = None
+
+    body = TestClient(server.app).get("/health").json()
+
+    assert body == {"status": "ok", "kokoro_voices": ["af_heart", "af_sky", "af_sarah"]}
+
+
 def test_a_kokoro_voice_that_yields_no_audio_is_a_server_error(server):
     class EmptyPipeline:
         def __call__(self, text, *, voice, speed):
