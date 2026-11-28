@@ -17,6 +17,7 @@ import { formatClockTime, formatReclaimWarningLine } from '../core/long-running-
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 import {
+  hasFailedHungSuspectTtlReap,
   reclaimAgedHungSuspectTasks,
   HungSuspectTtlReclaimMetrics,
   type ReclaimHungSuspectTasksDeps,
@@ -207,6 +208,8 @@ describe('hungSuspect TTL reclaim: warn the parent, let it keep the worker alive
       const failed = await sweep(START + GRACE_MS, { lifecycleDeps: failing });
       expect(failed.reclaimedTaskIds).toEqual([]);
       expect(sendLineToSession).toHaveBeenCalledTimes(1);
+      // The hung:residual count reads this to keep counting the task (#4291).
+      expect(hasFailedHungSuspectTtlReap(coordinator, WORKER_ID)).toBe(true);
 
       const rewarn = await sweep(START + GRACE_MS + 60_000, { lifecycleDeps: failing });
       expect(rewarn.warnedTaskIds).toEqual([]);
@@ -216,6 +219,7 @@ describe('hungSuspect TTL reclaim: warn the parent, let it keep the worker alive
       expect(coordinator.getWarning(WORKER_ID)).toBeDefined();
       const retried = await sweep(START + 2 * GRACE_MS + 60_000);
       expect(retried.reclaimedTaskIds).toEqual([WORKER_ID]);
+      expect(hasFailedHungSuspectTtlReap(coordinator, WORKER_ID)).toBe(false);
     } finally {
       warn.mockRestore();
     }

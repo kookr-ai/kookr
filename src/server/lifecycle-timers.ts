@@ -2290,8 +2290,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         // false-page while byClass.hungSuspect stays 0. Skip ids just
         // reclaimed this tick — hungSuspectSignalsCache may still say true
         // for them (filled during reclaim before terminate/purge). Skip tasks
-        // only warned or deliberately kept alive (issue #4291): a reaper has
-        // already scheduled them, so they are not slots reclaim cannot free.
+        // only warned or deliberately kept alive (issue #4291): a reaper owns
+        // their close deadline, so they are not slots reclaim cannot free.
         const reclaimedIds = new Set(hungSuspectTtlResult.reclaimedTaskIds);
         const ttlCoordinator = deps.hungSuspectTtlReapWarningCoordinator;
         const residualNowMs = Date.now();
