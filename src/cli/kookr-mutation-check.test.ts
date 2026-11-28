@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -8,6 +9,7 @@ import {
   MUTATION_CHECK_SETUP_EXIT,
   resolveMutationCheckScript,
   runMutationCheckCli,
+  type SignalSource,
 } from './kookr-mutation-check.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -117,31 +119,90 @@ describe('runMutationCheckCli', () => {
     expect(errors.join('\n')).toContain(join(kookrRoot, 'plugin', 'scripts', 'mutation-check.sh'));
   });
 
+  /** A fake child the test drives: `emit('exit', code, signal)` or `emit('error', e)`. */
+  function fakeChild() {
+    const child = new EventEmitter() as EventEmitter & { kills: string[]; kill: (signal?: string) => boolean };
+    child.kills = [];
+    child.kill = (signal?: string) => {
+      child.kills.push(signal ?? 'SIGTERM');
+      return true;
+    };
+    return child;
+  }
+
+  function fakeSignals(): SignalSource & EventEmitter {
+    return new EventEmitter() as SignalSource & EventEmitter;
+  }
+
   it('passes every argument to the script unparsed and returns its exit code', async () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const code = await runMutationCheckCli(['--file', 'a.ts', '--', 'node', '--help'], {
+    const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+    const child = fakeChild();
+    const running = runMutationCheckCli(['--file', 'a.ts', '--', 'node', '--help'], {
       env: {},
       err: { error: () => {} },
       kookrRoot: repoRoot,
-      spawn: (command, args) => {
-        calls.push({ command, args });
-        const child = {
-          kill: () => true,
-          on(event: string, listener: (...values: unknown[]) => void) {
-            if (event === 'exit') queueMicrotask(() => listener(6, null));
-            return child;
-          },
-        };
+      signals: fakeSignals(),
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options });
         return child as never;
       },
     });
-    expect(code).toBe(6);
+    child.emit('exit', 6, null);
+    expect(await running).toBe(6);
     expect(calls).toEqual([
       {
         command: 'bash',
         args: [join(repoRoot, 'plugin', 'scripts', 'mutation-check.sh'), '--file', 'a.ts', '--', 'node', '--help'],
+        options: expect.objectContaining({ stdio: 'inherit', detached: true }),
       },
     ]);
+  });
+
+  it('exits 4 (setup), not 1 (survived), when bash cannot be started', async () => {
+    const child = fakeChild();
+    const errors: string[] = [];
+    const running = runMutationCheckCli([], {
+      env: {},
+      err: { error: (line: string) => errors.push(line) },
+      kookrRoot: repoRoot,
+      signals: fakeSignals(),
+      spawn: () => child as never,
+    });
+    child.emit('error', new Error('spawn bash ENOENT'));
+    expect(await running).toBe(MUTATION_CHECK_SETUP_EXIT);
+    expect(errors.join('\n')).toContain('spawn bash ENOENT');
+  });
+
+  it('reports a script killed by a signal as 128 + the signal number', async () => {
+    const child = fakeChild();
+    const running = runMutationCheckCli([], {
+      env: {},
+      err: { error: () => {} },
+      kookrRoot: repoRoot,
+      signals: fakeSignals(),
+      spawn: () => child as never,
+    });
+    child.emit('exit', null, 'SIGTERM');
+    expect(await running).toBe(143);
+  });
+
+  it('forwards the first signal to the script once, under the same name, and then stops listening', async () => {
+    const child = fakeChild();
+    const signals = fakeSignals();
+    const running = runMutationCheckCli([], {
+      env: {},
+      err: { error: () => {} },
+      kookrRoot: repoRoot,
+      signals,
+      spawn: () => child as never,
+    });
+    signals.emit('SIGINT', 'SIGINT');
+    signals.emit('SIGTERM', 'SIGTERM');
+    signals.emit('SIGINT', 'SIGINT');
+    expect(child.kills).toEqual(['SIGINT']);
+    child.emit('exit', 130, null);
+    expect(await running).toBe(130);
+    expect(signals.listenerCount('SIGINT') + signals.listenerCount('SIGTERM') + signals.listenerCount('SIGHUP')).toBe(0);
   });
 });
 
@@ -169,4 +230,37 @@ describe('kookr mutation-check from another repository', () => {
     expect(result.stdout).toMatch(/^survived\b/m);
     expect(result.status).toBe(1);
   });
+
+  // A terminal Ctrl-C, or an aborted tool call, signals the whole process
+  // group. The script must get one signal, finish its cleanup and leave no
+  // worktree behind in the repository under review.
+  for (const [signal, expectedCode] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
+    it(`removes its worktree when the process group gets ${signal} mid-run (exit ${expectedCode})`, async () => {
+      const env = taskShellEnv();
+      const repo = makeScratchRepo(env);
+      const child = spawn(kookrBin, ['mutation-check', '--file', 'limit.js', '--line', '1', '--from', 'n < 3', '--to', 'n <= 3', '--', 'sleep', '30'], {
+        cwd: repo,
+        env,
+        detached: true, // its own process group, so the test can signal the whole group
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stdout.resume();
+      const exited = new Promise<number | null>((resolveExit) => child.on('exit', (code) => resolveExit(code)));
+      await new Promise<void>((resolveBaseline, rejectBaseline) => {
+        const timer = setTimeout(() => rejectBaseline(new Error(`baseline never started: ${stderr}`)), 30_000);
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+          if (stderr.includes('baseline:')) {
+            clearTimeout(timer);
+            resolveBaseline();
+          }
+        });
+      });
+      process.kill(-child.pid!, signal);
+      expect(await exited).toBe(expectedCode);
+      const worktrees = spawnSync('git', ['worktree', 'list', '--porcelain'], { cwd: repo, env, encoding: 'utf8' });
+      expect(worktrees.stdout.match(/^worktree /gm)).toHaveLength(1);
+    }, 60_000);
+  }
 });

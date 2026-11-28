@@ -68,19 +68,33 @@ interface ChildLike {
   on(event: 'error', listener: (error: Error) => void): this;
 }
 
-type SpawnLike = (command: string, args: string[], options: { stdio: 'inherit'; env: NodeJS.ProcessEnv }) => ChildLike;
+type SpawnLike = (
+  command: string,
+  args: string[],
+  options: { stdio: 'inherit'; env: NodeJS.ProcessEnv; detached: true },
+) => ChildLike;
+
+/** Where termination signals are received; `process` outside tests. */
+export interface SignalSource {
+  on(signal: NodeJS.Signals, listener: (signal: NodeJS.Signals) => void): unknown;
+  off(signal: NodeJS.Signals, listener: (signal: NodeJS.Signals) => void): unknown;
+}
+
+export const MUTATION_CHECK_FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 export interface RunMutationCheckOptions {
   env?: NodeJS.ProcessEnv;
   err?: Pick<Console, 'error'>;
   kookrRoot: string;
   spawn?: SpawnLike;
+  signals?: SignalSource;
 }
 
 /** Run the script with `argv`; resolves to the exit code to pass on. */
 export function runMutationCheckCli(argv: string[], options: RunMutationCheckOptions): Promise<number> {
   const env = options.env ?? process.env;
   const err = options.err ?? console;
+  const signals: SignalSource = options.signals ?? process;
   const { script, tried } = resolveMutationCheckScript({ env, kookrRoot: options.kookrRoot });
   if (!script) {
     err.error('[kookr] mutation-check: script not found. Looked at:');
@@ -90,22 +104,29 @@ export function runMutationCheckCli(argv: string[], options: RunMutationCheckOpt
     return Promise.resolve(MUTATION_CHECK_SETUP_EXIT);
   }
   const spawn: SpawnLike = options.spawn ?? ((command, args, spawnOptions) => nodeSpawn(command, args, spawnOptions));
-  // Forward a signal aimed at this node process alone, so the script's
-  // cleanup trap removes its worktree instead of leaving it behind.
+  // The script must receive exactly one signal. A second one cuts its EXIT
+  // cleanup short and leaves the worktree registered in the caller's
+  // repository. So bash runs in a session of its own (`detached`), where a
+  // terminal Ctrl-C or a signal to this process group does not reach it, and
+  // the first signal this process gets is forwarded to it, under the same
+  // name, once. The script runs the test command in a process group of its
+  // own and stops it during cleanup.
   return new Promise((resolvePromise) => {
-    const child = spawn('bash', [script, ...argv], { stdio: 'inherit', env });
-    const forwarded: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-    const forward = () => {
-      try { child.kill('SIGTERM'); } catch { /* child already gone */ }
+    const child = spawn('bash', [script, ...argv], { stdio: 'inherit', env, detached: true });
+    let forwarded = false;
+    const forward = (signal: NodeJS.Signals) => {
+      if (forwarded) return;
+      forwarded = true;
+      try { child.kill(signal); } catch { /* child already gone */ }
     };
     let settled = false;
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
-      for (const signal of forwarded) process.off(signal, forward);
+      for (const signal of MUTATION_CHECK_FORWARDED_SIGNALS) signals.off(signal, forward);
       resolvePromise(code);
     };
-    for (const signal of forwarded) process.on(signal, forward);
+    for (const signal of MUTATION_CHECK_FORWARDED_SIGNALS) signals.on(signal, forward);
     child.on('error', (error) => {
       err.error(`[kookr] could not run mutation-check: ${error.message}`);
       finish(MUTATION_CHECK_SETUP_EXIT);
