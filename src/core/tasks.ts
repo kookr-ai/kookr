@@ -1251,6 +1251,21 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /**
+   * Remove the operator's reopen note (issue #4265), together with any pending
+   * request to put it in front of the next resumed conversation, so no later
+   * relaunch carries it.
+   */
+  clearReopenNote(id: string): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    delete task.reopenNote;
+    this.reopenNoteOnNextResume.delete(id);
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   reopenTask(id: string): Task {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);

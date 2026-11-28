@@ -1846,6 +1846,7 @@ conversation away.
 ```bash
 kookr reopen <taskId>                                # reopen and print resume vs fresh
 kookr reopen <taskId> --note "Do not merge; stop at an open PR."
+kookr reopen <taskId> --clear-note                   # drop a note stored earlier
 kookr reopen <taskId> --json                         # machine-readable envelope
 ```
 
@@ -1891,6 +1892,16 @@ restart after a server crash, another reopen that cannot resume) carries it
 too. Reopening again with `--note` replaces it. The server trims it and refuses a blank note or one
 longer than 8000 characters (HTTP 400, `invalid_reopen_note`).
 
+`--clear-note` (issue #4265) removes the stored note: this relaunch and every
+later one start from the original prompt alone, and a resumed conversation is
+not sent the note either. Use it when the note no longer applies, for example a
+"do not merge" note once the task may merge. A reopen without `--note` or
+`--clear-note` keeps the stored note. Like a new note, the note is only cleared
+when the reopen is accepted: a refused reopen (a task that is not terminal, an
+unknown task) leaves it in place. `--note` and `--clear-note` cannot be combined
+(exit 2). A server older than `--clear-note` refuses it with exit 2
+(`INVALID_NOTE`) and leaves the note unchanged.
+
 When the outcome is `not_resumable` and the task has no note, the command
 prints a warning that the task restarts from its original prompt unchanged.
 Send any correction to the running task with `kookr reply`.
@@ -1899,7 +1910,8 @@ Send any correction to the running task with `kookr reply`.
 `details.resume` carries `{ mode: "resume" | "fresh" | "not_resumable",
 conversationId?, caveat?, reason? }`, and `details.status` is the task's status
 after the call (`pending` while it waits for a slot). `details.note` is the
-note the relaunch carries, when there is one, and `details.warnings` is a list
+note the relaunch carries, when there is one, `details.noteCleared` is `true`
+after a `--clear-note` the server applied, and `details.warnings` is a list
 of warning strings (empty when there is nothing to warn about), including the
 `not_resumable` warning above. The resume request lives
 in server memory only: if the server restarts while the task is still

@@ -791,8 +791,12 @@ reopen leaves the task's note unchanged). A fresh relaunch puts it in front of
 the original prompt; when this reopen resumes the conversation, the note starts
 the first message typed into it (once: later resumes do not repeat it). It
 stays on the task for later relaunches that replay the prompt, and a later
-note replaces it. An empty body means no note. A body that is not a JSON object, or a `note`
-that is not a non-blank string of at most 8000 characters, returns
+note replaces it. An empty body, or one without `note`, means no new note and
+keeps a stored one. `{"note": null}` (issue #4265) clears the stored note and any
+pending request to send it to a resumed conversation, so this relaunch and later
+ones carry no note; like a new note, it takes effect only once the reopen is
+accepted. A body that is not a JSON object, or a `note` that is neither `null`
+nor a non-blank string of at most 8000 characters, returns
 `400 {"error": "...", "code": "invalid_reopen_note"}` before the task is
 touched. The response's `task.reopenNote` shows the note the relaunch carries.
 
