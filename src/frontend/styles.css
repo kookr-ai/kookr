@@ -18023,6 +18023,9 @@ button.coordinator-chain-member:focus-visible {
 }
 .claude-account-meta { overflow-wrap: anywhere; }
 .claude-account-quota { margin-top: 6px; max-width: 360px; }
+.claude-account-quota-warning { color: var(--amber); }
+.claude-account-quota .claude-account-quota-warning,
+.claude-account-quota .claude-account-quota-measured { margin-top: 4px; }
 .claude-account-actions {
   display: flex;
   flex-wrap: wrap;
@@ -18092,6 +18095,8 @@ button.coordinator-chain-member:focus-visible {
 }
 .account-popover-row input[type='radio'] { accent-color: var(--teal); }
 .account-popover-row .claude-account-status { font-size: 12px; }
+/* A tested account's quota bars span the whole popover row, under its name. */
+.account-popover-row .claude-account-quota { grid-column: 1 / -1; margin-top: 0; padding-left: 19px; }
 .account-popover-name {
   font-family: var(--font-mono);
   font-size: 12px;

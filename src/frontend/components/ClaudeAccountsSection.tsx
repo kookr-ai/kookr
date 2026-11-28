@@ -10,7 +10,8 @@ import {
   useClaudeAccounts,
 } from '../store/claude-accounts.js';
 import type { ClaudeAccountView } from '../../shared/contracts/claude-accounts.js';
-import { QuotaRows } from './UsageSummary.js';
+import { QuotaRows } from './QuotaRows.js';
+import { AccountTestQuota } from './AccountTestQuota.js';
 
 /**
  * Settings → Accounts. Lists the host login and every registered Claude
@@ -81,8 +82,11 @@ function AccountRow({ account }: { account: ClaudeAccountView }) {
             <QuotaRows quota={quotaStatus} />
           </div>
         )}
-        {!isHost && (
-          <div className="settings-desc claude-account-no-usage">Usage not available for this account.</div>
+        {!isHost && <AccountTestQuota test={test} />}
+        {!isHost && !test?.quota && (
+          <div className="settings-desc claude-account-no-usage">
+            {test ? 'The last test reported no usage for this account.' : 'Test this account to see its 5-hour and 7-day usage.'}
+          </div>
         )}
         {error && <div className="settings-error claude-account-error" role="alert">{error}</div>}
       </div>
@@ -217,7 +221,7 @@ export function ClaudeAccountsSection(): React.ReactElement {
       <div className="settings-section" data-testid="claude-accounts-section">
         <div className="settings-section-title">Claude accounts</div>
         <div className="settings-desc claude-accounts-intro">
-          Pick the Claude account new tasks run on. Quota bars in the sidebar always show the host login.
+          Pick the Claude account new tasks run on. Quota bars in the sidebar show the host login; Test shows another account&apos;s usage.
         </div>
         {!loaded && <div className="settings-loading">Loading...</div>}
         {loadError && <div className="settings-error" role="alert">{loadError}</div>}

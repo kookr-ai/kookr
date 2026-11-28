@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { EXIT_FAILED, EXIT_OK, EXIT_USER_ERROR, runAccountCli } from './kookr-account.js';
+import { EXIT_FAILED, EXIT_OK, EXIT_USER_ERROR, quotaSuffix, runAccountCli } from './kookr-account.js';
 
 const TOKEN = 'sk-ant-oat01-' + 'z'.repeat(36) + 'WXYZ';
 
@@ -97,5 +97,30 @@ describe('kookr account', () => {
     const runClaude = vi.fn(async () => ({ status: 1, stdout: "You've hit your limit - resets 3pm", stderr: '' }));
     expect(await runAccountCli(['test', 'work'], io({ runClaude }))).toBe(EXIT_FAILED);
     expect(errors.join('\n')).toContain('Claude account "work" is out of quota: You\'ve hit your limit - resets 3pm');
+  });
+  test('test adds the measured 5h/7d usage to its one line', async () => {
+    await runAccountCli(['add', 'work'], io({ readSecret: async () => TOKEN }));
+    const windows = {
+      five_hour: { utilization: 0.56, resetsAt: 1795395000, status: 'allowed' },
+      seven_day: { utilization: 0.99, resetsAt: 1795770000, status: 'allowed_warning' },
+    };
+    const stdout = [
+      JSON.stringify({ type: 'system', subtype: 'init' }),
+      JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: windows } }),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'OK' }),
+    ].join('\n');
+    const runClaude = vi.fn(async () => ({ status: 0, stdout, stderr: '' }));
+    logs = [];
+    expect(await runAccountCli(['test', 'work'], io({ runClaude }))).toBe(EXIT_OK);
+    const out = logs.join('\n');
+    expect(out).toContain('Claude account "work" works. (5h 56%, 7d 99% near limit)');
+    expect(out.trim().split('\n')).toHaveLength(1);
+  });
+
+  test('quotaSuffix shows only the windows Claude Code reported', () => {
+    expect(quotaSuffix(undefined)).toBe('');
+    expect(quotaSuffix({})).toBe('');
+    expect(quotaSuffix({ sevenDay: { utilization: 73, resetsAt: '2026-12-01T00:00:00.000Z', status: 'allowed' } })).toBe(' (7d 73%)');
+    expect(quotaSuffix({ fiveHour: { utilization: 100, resetsAt: '2026-12-01T00:00:00.000Z', status: 'rejected' } })).toBe(' (5h 100% limit reached)');
   });
 });
