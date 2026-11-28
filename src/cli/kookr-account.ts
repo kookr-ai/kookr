@@ -144,7 +144,6 @@ async function readAllStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-/** Read one line from the terminal without echoing it. */
 /**
  * ` (5h 56%, 7d 99% near limit)` from the usage the test measured, or `''`
  * when Claude Code reported none. Keeps `account test` to one line.
@@ -159,6 +158,7 @@ export function quotaSuffix(quota: ClaudeAccountQuota | undefined): string {
   return parts.length > 0 ? ` (${parts.join(', ')})` : '';
 }
 
+/** Read one line from the terminal without echoing it. */
 function readHiddenLine(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin;

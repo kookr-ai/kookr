@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { emptyClaudeAccountRegistry, withAccount, ClaudeAccountError } from '../core/claude-accounts.js';
-import { classifyClaudeProbe, testClaudeAccount, type ClaudeProbeResult } from './claude-account-test.js';
+import { classifyClaudeProbe, defaultClaudeProbeRunner, testClaudeAccount, type ClaudeProbeResult } from './claude-account-test.js';
 
 const TOKEN = 'sk-ant-oat01-' + 'k'.repeat(40);
 const registry = withAccount(emptyClaudeAccountRegistry(), 'work', TOKEN);
@@ -156,6 +156,22 @@ describe('classifyClaudeProbe on stream-json', () => {
     expect(classifyClaudeProbe(probe(1, stream(INIT))).message).toBe('exit status 1');
   });
 
+  test('a JSON stream with no result line is never ok, even when the CLI exits 0', () => {
+    expect(classifyClaudeProbe(probe(0, stream(INIT, OK_ASSISTANT)))).toEqual({ outcome: 'error', message: 'exit status 0' });
+  });
+
+  test.each([
+    [{ api_error_status: 401 }, 'auth_failed'],
+    [{ api_error_status: 403 }, 'auth_failed'],
+    [{ api_error_type: 'authentication_error' }, 'auth_failed'],
+    [{ api_error_status: 429 }, 'usage_limited'],
+    [{ api_error_type: 'rate_limit_error' }, 'usage_limited'],
+    [{ api_error_type: 'billing_error', api_error_status: 429 }, 'error'],
+  ])('a failed result with %o and neutral text is %s', (fields, outcome) => {
+    const result = JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Request failed', ...fields });
+    expect(classifyClaudeProbe(probe(1, stream(INIT, result))).outcome).toBe(outcome);
+  });
+
   test('a stdout whose head was cut mid-line still classifies on its tail', () => {
     const cut = stream(INIT, OK_ASSISTANT, rateLimitEvent(BOTH_WINDOWS), OK_RESULT).slice(20);
     expect(classifyClaudeProbe(probe(0, cut)).outcome).toBe('ok');
@@ -201,6 +217,18 @@ describe('testClaudeAccount', () => {
   test('a throwing runner becomes an error outcome', async () => {
     const res = await testClaudeAccount(registry, 'work', { run: async () => { throw new Error('boom'); } });
     expect(res).toEqual({ outcome: 'error', message: 'boom' });
+  });
+
+  test('the real runner keeps the tail of a stdout larger than the 64 KB cap', async () => {
+    // A system/init line past the cap, then the lines the classifier needs.
+    const script = [
+      "process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', pad: 'x'.repeat(100000) }) + '\\n');",
+      "process.stdout.write(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.5, resetsAt: 1795395000, status: 'allowed' } } } }) + '\\n');",
+      "process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'OK' }) + '\\n');",
+    ].join('\n');
+    const res = await defaultClaudeProbeRunner(process.execPath, ['-e', script], { PATH: process.env.PATH }, 30_000);
+    expect(res.stdout.length).toBeLessThanOrEqual(64 * 1024);
+    expect(classifyClaudeProbe(res)).toMatchObject({ outcome: 'ok', message: 'OK', quota: { fiveHour: { utilization: 50 } } });
   });
 
   test('concurrent tests of one account share a single probe', async () => {

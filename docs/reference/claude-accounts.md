@@ -93,7 +93,7 @@ The server side is `POST /api/tasks/:id/claude-account`; see the
 
 ## Usage limits and the quota gate
 
-Kookr's plan-quota admission gate (and the quota shown in the dashboard) reads
+Kookr's plan-quota admission gate (and the quota bars in the sidebar) reads
 the usage of the host login only. A launch on another account is therefore not
 refused or rotated to another agent because the host account is exhausted.
 Kookr does not follow the usage of other accounts over time: it sees an

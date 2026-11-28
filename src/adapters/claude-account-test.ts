@@ -124,7 +124,7 @@ function quotaWindow(raw: unknown): ClaudeAccountQuotaWindow | undefined {
 }
 
 /** The 5-hour and 7-day windows of a `rate_limit_event`; undefined when it carries neither. */
-export function quotaFromRateLimitEvent(event: JsonObject): ClaudeAccountQuota | undefined {
+function quotaFromRateLimitEvent(event: JsonObject): ClaudeAccountQuota | undefined {
   const windows = asObject(asObject(event.rate_limit_info)?.unifiedWindows);
   if (!windows) return undefined;
   const fiveHour = quotaWindow(windows.five_hour);
