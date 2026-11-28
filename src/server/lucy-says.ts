@@ -45,7 +45,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { boardText } from '../core/lucy-operator/board.js';
-import { countWord, sayableTaskName } from '../core/lucy-operator/operator-briefing.js';
+import { MAX_NAMED_TASKS, countWord, sayableTaskName } from '../core/lucy-operator/operator-briefing.js';
 import {
   LUCY_SAYS_GROUP_WINDOW_MS,
   LUCY_SAYS_REPEAT_MS,
@@ -168,8 +168,6 @@ const WIRE_KIND: Record<LucyTaskEventKind, LucySaysKind> = {
   over_budget: 'task_over_budget',
   wants_review: 'task_wants_review',
 };
-/** At most this many tasks are named in a grouped line; the others are counted. */
-const MAX_NAMED = 3;
 /** Remembered "said about this task" times; older ones are forgotten first. */
 const MAX_REMEMBERED = 500;
 
@@ -232,7 +230,7 @@ export function singleEventSentence(event: Pick<LucyTaskEvent, 'kind'> & Partial
 function nameList(events: readonly LucyTaskEvent[]): string {
   const names = events.map((event) => sayableTaskName(event.taskName)).filter((name): name is string => name !== undefined);
   if (names.length === 0) return '';
-  const shown = names.slice(0, MAX_NAMED);
+  const shown = names.slice(0, MAX_NAMED_TASKS);
   const others = events.length - shown.length;
   const items = others > 0 ? [...shown, `${countWord(others)} ${others === 1 ? 'other' : 'others'}`] : shown;
   const listed = items.length === 1 ? items[0]! : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;

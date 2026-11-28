@@ -15,8 +15,10 @@
  * When nothing needs them she writes nothing: the text is empty, and the panel adds no entry.
  *
  * Every sentence names its task when it can: a question reads "<task> is stopped on a question, 117
- * minutes left." (the one that closes soonest is named, the others counted), and a question Kookr asks
- * itself reads "Kookr is waiting for your answer about the interrupted tasks." A task is named only
+ * minutes left." (the one that closes soonest is named, the others counted), several tasks in trouble
+ * read "Two tasks have stalled or hit a problem: A and B." (up to {@link MAX_NAMED_TASKS} named, the
+ * others counted), and a question Kookr asks itself reads "Kookr is waiting for your answer about the
+ * interrupted tasks." A task is named only
  * when its title may be said aloud (no path, id or secret: the rules of `spokenLabel`), cut to its
  * first words when it is only too long ({@link sayableTaskName}); otherwise it is counted. Ids, paths,
  * prompts and the text of a question never appear: an agent cannot shape her sentence, and the card
@@ -65,6 +67,11 @@ export interface OperatorBriefing {
 
 export const MAX_OPERATOR_BRIEFING_WORDS = 45;
 export const MAX_OPERATOR_BRIEFING_CHIPS = 3;
+/**
+ * At most this many tasks are named in a sentence about several tasks; the others are counted. Her
+ * event lines (`src/server/lucy-says.ts`) use the same limit.
+ */
+export const MAX_NAMED_TASKS = 3;
 /** A task that ended within this time makes "What finished while I was away?" worth offering. */
 export const RECENTLY_ENDED_MS = 8 * 60 * 60 * 1000;
 
@@ -279,6 +286,31 @@ function groupSentence(group: NeedGroup, tasks: readonly Need[], first: boolean,
   return `${subject} ${words.many}.`;
 }
 
+/**
+ * ": A, B and C" for the first {@link MAX_NAMED_TASKS} tasks that can be named, the rest counted
+ * (": A, B, C and two more"); empty when none can be named.
+ */
+function namedList(tasks: readonly Need[]): string {
+  const names = tasks.map((need) => need.name).filter((name): name is string => name !== undefined);
+  if (names.length === 0) return '';
+  const shown = names.slice(0, MAX_NAMED_TASKS);
+  const others = tasks.length - shown.length;
+  const items = others > 0 ? [...shown, `${countWord(others)} more`] : shown;
+  return `: ${items.length === 1 ? items[0]! : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`}`;
+}
+
+/**
+ * The sentences that may be written for a group, the preferred first. Several tasks in trouble are
+ * also named ("Two tasks have stalled or hit a problem: A and B."); when that does not fit, the
+ * sentence that only counts them is used.
+ */
+function groupSentences(group: NeedGroup, tasks: readonly Need[], first: boolean, nowMs: number): string[] {
+  const plain = groupSentence(group, tasks, first, nowMs);
+  if (group !== 'trouble' || tasks.length < 2) return [plain];
+  const names = namedList(tasks);
+  return names ? [`${plain.slice(0, -1)}${names}.`, plain] : [plain];
+}
+
 function opinionSentence(count: number): string {
   return count === 1
     ? 'One finished task would like your opinion.'
@@ -306,10 +338,13 @@ function buildText(state: BriefingState): string {
   let used = 0;
   let untold = 0;
   for (const [index, group] of groups.entries()) {
-    const sentence = groupSentence(group, state.needs[group], index === 0, state.nowMs);
     // Room is kept for the sentence that counts what did not fit, unless this is the last group.
     const reserve = index < groups.length - 1 ? 5 : 0;
-    if (untold === 0 && used + wordCount(sentence) + reserve <= MAX_OPERATOR_BRIEFING_WORDS) {
+    const sentence = untold === 0
+      ? groupSentences(group, state.needs[group], index === 0, state.nowMs)
+        .find((candidate) => used + wordCount(candidate) + reserve <= MAX_OPERATOR_BRIEFING_WORDS)
+      : undefined;
+    if (sentence !== undefined) {
       sentences.push(sentence);
       used += wordCount(sentence);
     } else {
