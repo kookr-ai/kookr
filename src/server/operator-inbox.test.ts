@@ -145,6 +145,26 @@ describe('buildOperatorInbox', () => {
     expect(inbox.items.map((item) => item.kind)).toEqual(['permission', 'question', 'review', 'train']);
   });
 
+  test('a question Kookr asks itself names Kookr and links to no task (issue #4295)', () => {
+    const base = fixtureSources();
+    const inbox = buildOperatorInbox({
+      ...base,
+      asks: [...base.asks, {
+        ...base.asks[0],
+        id: 'f0f0f0f0f0f0',
+        taskId: 'system:interrupted-tasks',
+        system: 'interrupted-tasks',
+        question: 'Kookr restarted and found 2 interrupted tasks. Resume them?',
+        options: ['Resume', 'Leave stopped'],
+      }],
+      getTask: () => undefined,
+    });
+    const item = inbox.items.find((i) => i.askId === 'f0f0f0f0f0f0');
+    expect(item).toMatchObject({ kind: 'question', taskName: 'Kookr', question: expect.stringContaining('interrupted tasks') });
+    expect(item).not.toHaveProperty('taskId');
+    expect(item).not.toHaveProperty('link');
+  });
+
   test('a question whose task is no longer live still names its task through getTask', () => {
     const base = fixtureSources();
     const asker = base.liveTasks.find((task) => task.id === 'ask')!;

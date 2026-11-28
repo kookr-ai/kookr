@@ -270,13 +270,17 @@ export function buildOperatorInbox(sources: OperatorInboxSources): OperatorInbox
 
   for (const ask of sources.asks) {
     if (ask.state !== 'pending') continue;
-    const task = liveById.get(ask.taskId) ?? sources.getTask?.(ask.taskId);
+    // Kookr's own question (issue #4215) has the synthetic task id `system:<component>`: no task
+    // exists, so the item names Kookr and has no task id or task link (issue #4295).
+    const task = ask.system !== undefined ? undefined : liveById.get(ask.taskId) ?? sources.getTask?.(ask.taskId);
     items.push({
       kind: 'question',
       summary: 'asks you a question',
       since: isoOrEmpty(ask.createdAt),
       howToAnswer: HOW_TO_ANSWER.question,
-      ...(task ? taskFields(task) : { taskId: ask.taskId, link: taskLink(ask.taskId) }),
+      ...(ask.system !== undefined
+        ? { taskName: 'Kookr' }
+        : task ? taskFields(task) : { taskId: ask.taskId, link: taskLink(ask.taskId) }),
       askId: ask.id,
       question: redactSecrets(ask.question),
       options: ask.options.map((option) => redactSecrets(option)),

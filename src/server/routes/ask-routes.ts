@@ -172,9 +172,36 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     return c.json({ ask: withTask(ask) });
   });
 
+  // Withdraw a pending question (issue #4295). Body: `{ callerTaskId? }`. The asking task (its own
+  // `KOOKR_TASK_ID`) or the operator (no `callerTaskId`) may withdraw a task's question; any other task
+  // gets 403. Kookr's own questions (`ask.system`) are never withdrawn over HTTP: Kookr closes them
+  // itself once they are settled, so whatever id a caller sends, or omits, it gets 403. The server has
+  // no per-task credential, so the caller id is taken on trust (like keep-alive, #4241): this stops a
+  // task from withdrawing another task's question by mistake, not one that lies about who it is.
   app.post('/api/asks/:id/cancel', async (c) => {
     if (!service) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
-    const result = await service.cancel(c.req.param('id'));
+    const raw = await c.req.text().catch(() => '');
+    let callerTaskId: string | undefined;
+    if (raw.trim().length > 0) {
+      let body: unknown;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return c.json({ error: 'invalid JSON body', code: 'invalid' }, 400);
+      }
+      const value = body !== null && typeof body === 'object' ? (body as Record<string, unknown>).callerTaskId : undefined;
+      if (value !== undefined && typeof value !== 'string') return c.json({ error: 'callerTaskId must be a string', code: 'invalid' }, 400);
+      callerTaskId = value?.trim() || undefined;
+    }
+    const existing = await service.get(c.req.param('id'));
+    if (!existing) return c.json({ error: 'ask not found', code: 'not_found' }, 404);
+    if (existing.system !== undefined) {
+      return c.json({ error: 'this question was asked by Kookr itself; answer it instead of withdrawing it', code: 'system_ask' }, 403);
+    }
+    if (callerTaskId !== undefined && callerTaskId !== existing.taskId) {
+      return c.json({ error: `only the task that asked (${existing.taskId}) or the operator can withdraw this question`, code: 'not_asker' }, 403);
+    }
+    const result = await service.cancel(existing.id);
     if (!result.ok) {
       return result.reason === 'not_found'
         ? c.json({ error: 'ask not found', code: 'not_found' }, 404)

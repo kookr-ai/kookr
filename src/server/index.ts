@@ -1403,6 +1403,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const interruptedTasks = new InterruptedTasksService({
     filePath: join(kookrDir, 'interrupted-tasks.json'),
     timeoutMs: interruptedTasksPolicy.timeoutMs,
+    // KOOKR_AUTO_RELAUNCH=false (issue #4295): a batch an earlier process left pending is left stopped.
+    autoResume: interruptedTasksPolicy.autoRelaunch,
     reopenTask: async (taskId) => {
       if (!reopenForInterruptedTasks) return { ok: false, detail: 'the server is not ready to relaunch tasks yet' };
       const result = await reopenForInterruptedTasks(taskId);
