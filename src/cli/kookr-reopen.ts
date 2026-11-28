@@ -7,9 +7,10 @@
  * `kookr spawn` with a handwritten brief throws that conversation away. This is
  * a thin client over the same lifecycle command:
  *
- *   kookr reopen <taskId> [--note "<text>"] [--json]
+ *   kookr reopen <taskId> [--note "<text>" | --clear-note] [--json]
  *
  * Endpoint: POST /api/tasks/:id/reopen [{ note }] → { ok, task, resume }
+ * (`{ "note": null }` for `--clear-note`)
  *
  * `resume` says what the relaunch does with the prior conversation: `resume`
  * (continues it), `fresh` (starts from the prompt by design, e.g. a Ralph loop),
@@ -20,7 +21,8 @@
  * prompt, or of the first message of a resumed conversation, so an instruction
  * given after launch (e.g. "do not merge") survives a restart. Without it, a
  * `not_resumable` outcome prints a warning: the task replays its original
- * prompt unchanged.
+ * prompt unchanged. `--clear-note` (issue #4265) removes a stored note, so this
+ * and later relaunches carry none.
  *
  * The route is supervisor-token gated like `/complete`: the CLI forwards
  * `KOOKR_SUPERVISOR_TOKEN` when set, else `KOOKR_API_TOKEN`, else nothing.
@@ -42,7 +44,7 @@ export const EXIT_AMBIGUOUS = 5;
 export const REOPEN_HELP_TEXT = `kookr reopen — reopen a terminal task, resuming its conversation when possible.
 
 Usage:
-  kookr reopen <taskId> [--note "<text>"] [--json]
+  kookr reopen <taskId> [--note "<text>" | --clear-note] [--json]
 
 Reopens a completed, terminated, or cancelled task via POST /api/tasks/:id/reopen
 (the dashboard's Reopen button). The task is re-queued and relaunched as soon as
@@ -63,6 +65,8 @@ Options:
                   after launch that the original prompt contradicts (e.g.
                   "Do not merge; stop at an open PR."). The note stays on the
                   task for later relaunches; a later --note replaces it.
+  --clear-note    Remove the note stored by an earlier --note: this relaunch
+                  and later ones carry no note. Cannot be combined with --note.
   --json          Print one machine-readable JSON envelope to stdout
                   (with --help, the help text is in details.help).
   -h, --help      Show this help.
@@ -86,6 +90,8 @@ Exit codes:
 export interface ParsedReopenArgs {
   taskId?: string;
   note?: string;
+  /** `--clear-note` (issue #4265): send `{ "note": null }`. Set only when given. */
+  clearNote?: true;
   json: boolean;
   help: boolean;
   error?: string;
@@ -101,6 +107,8 @@ export function parseReopenArgs(argv: string[]): ParsedReopenArgs {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--clear-note') {
+      out.clearNote = true;
     } else if (tok === '--note' || tok.startsWith('--note=')) {
       const value = tok === '--note' ? argv[++i] : tok.slice('--note='.length);
       // `--note --json` is a missing value, not a note; a note that starts
@@ -118,6 +126,9 @@ export function parseReopenArgs(argv: string[]): ParsedReopenArgs {
     } else {
       positionals.push(tok);
     }
+  }
+  if (out.note !== undefined && out.clearNote) {
+    return { ...out, error: '--note and --clear-note cannot be used together' };
   }
   if (positionals.length > 1) {
     return { ...out, error: `expected one <taskId>, got ${positionals.length}` };
@@ -167,25 +178,31 @@ export function notResumableNoNoteWarning(taskId: string): string {
 
 /**
  * Warnings for a reopen that succeeded (issue #4227): a `not_resumable` relaunch
- * with no note replays the original prompt unchanged, and a server that did not
- * store a note it was sent is too old to support `--note`.
+ * with no note replays the original prompt unchanged, a server that did not
+ * store a note it was sent is too old to support `--note`, and one that still
+ * reports a note after `--clear-note` (sentNote `null`, issue #4265) did not
+ * clear it.
  */
-export function reopenWarnings(body: ReopenResponse, sentNote: string | undefined): string[] {
+export function reopenWarnings(body: ReopenResponse, sentNote: string | null | undefined): string[] {
   const warnings: string[] = [];
   const stored = typeof body.task.reopenNote === 'string' && body.task.reopenNote !== '';
-  if (sentNote !== undefined && body.task.reopenNote !== sentNote) {
+  if (typeof sentNote === 'string' && body.task.reopenNote !== sentNote) {
     warnings.push('the server did not store the --note (it may predate --note support); the relaunch does not carry it.');
+  }
+  if (sentNote === null && stored) {
+    warnings.push('the server did not clear the stored note; the relaunch still carries it.');
   }
   if (body.resume.mode === 'not_resumable' && !stored) warnings.push(notResumableNoNoteWarning(body.task.id));
   return warnings;
 }
 
-export function formatReopenResult(body: ReopenResponse, warnings: string[] = []): string {
+export function formatReopenResult(body: ReopenResponse, warnings: string[] = [], noteCleared = false): string {
   const state = body.task.status === 'pending'
     ? 'queued as pending; it launches when a slot is free'
     : `now ${body.task.status}`;
   const lines = [`Reopened task ${body.task.id} (${state}).`, formatResumeLine(body.resume)];
   if (body.task.reopenNote) lines.push(`Note: the relaunch carries the reopen note (${body.task.reopenNote.length} chars).`);
+  else if (noteCleared) lines.push('Note: the reopen note was cleared; the relaunch carries none.');
   for (const warning of warnings) lines.push(`Warning: ${warning}`);
   return lines.join('\n');
 }
@@ -233,6 +250,8 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
   if (args.error) return fail(EXIT_USER_ERROR, 'USER_ERROR', args.error);
   if (!args.taskId) return fail(EXIT_USER_ERROR, 'USER_ERROR', 'a <taskId> is required.');
   const taskId = args.taskId;
+  // `undefined` sends no body (keeps a stored note), `null` clears it (#4265).
+  const sentNote: string | null | undefined = args.clearNote ? null : args.note;
 
   const base = await resolveStopBaseUrl({ env, fetchImpl });
   if (base.kind === 'invalid_port') {
@@ -254,10 +273,10 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
       headers: {
         [SUPERVISOR_ACTOR_HEADER]: 'cli',
         'User-Agent': `kookr-reopen/node-${process.versions.node}`,
-        ...(args.note !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(sentNote !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...authHeaders(env),
       },
-      ...(args.note !== undefined ? { body: JSON.stringify({ note: args.note }) } : {}),
+      ...(sentNote !== undefined ? { body: JSON.stringify({ note: sentNote }) } : {}),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     status = res.status;
@@ -290,7 +309,9 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
     // A note the server refuses (e.g. over its length limit) is a usage error:
     // retrying the same call cannot succeed.
     if (serverCode === 'invalid_reopen_note') {
-      return fail(EXIT_USER_ERROR, 'INVALID_NOTE', message, { taskId, status, serverCode });
+      // A server older than --clear-note refuses `{ "note": null }` this way.
+      const hint = sentNote === null ? ' (the server may predate --clear-note support)' : '';
+      return fail(EXIT_USER_ERROR, 'INVALID_NOTE', `${message}${hint}`, { taskId, status, serverCode });
     }
     return fail(EXIT_SERVER_ERROR, 'SERVER_ERROR', message, { taskId, status, ...(serverCode ? { serverCode } : {}) });
   }
@@ -299,7 +320,8 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
     return fail(EXIT_SERVER_ERROR, 'SERVER_ERROR', 'unexpected /api/tasks/:id/reopen response (expected { ok, task, resume }).', { taskId, status });
   }
 
-  const warnings = reopenWarnings(body, args.note);
+  const warnings = reopenWarnings(body, sentNote);
+  const noteCleared = sentNote === null && !body.task.reopenNote;
   if (args.json) {
     out.log(JSON.stringify({
       ok: true,
@@ -310,11 +332,12 @@ export async function runReopenCli(argv: string[], io: ReopenCliIo = {}): Promis
         status: body.task.status,
         resume: body.resume,
         ...(body.task.reopenNote ? { note: body.task.reopenNote } : {}),
+        ...(noteCleared ? { noteCleared: true } : {}),
         warnings,
       },
     }));
   } else {
-    out.log(formatReopenResult(body, warnings));
+    out.log(formatReopenResult(body, warnings, noteCleared));
   }
   return EXIT_OK;
 }

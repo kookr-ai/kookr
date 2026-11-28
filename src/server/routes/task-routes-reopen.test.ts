@@ -10,6 +10,7 @@ import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { SHARED_TASK_ID_PREFIX } from '../../shared/contracts/contact-share.js';
 import type { TaskRouteDeps } from './shared.js';
+import { withReopenNote } from '../resume-context.js';
 
 // The route awaits promotion of the reopened task; stand in for it so a test can
 // make the relaunch fail without a real adapter.
@@ -308,6 +309,89 @@ describe('POST /api/tasks/:id/reopen (issue #3671)', () => {
 
       expect(res.status).toBe(409);
       expect(taskStore.getTask(task.id)?.reopenNote).toBe('earlier note');
+    });
+  });
+
+  describe('clearing the note with { "note": null } (issue #4265)', () => {
+    const reopenWithBody = (app: Hono, id: string, body: string) =>
+      app.request(`/api/tasks/${id}/reopen`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    const CLEAR = JSON.stringify({ note: null });
+
+    test('removes the stored note and returns the task without one', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+      expect((await reopenWithBody(app, id, JSON.stringify({ note: 'Do not merge.' }))).status).toBe(200);
+      taskStore.cancelTask(id);
+
+      const res = await reopenWithBody(app, id, CLEAR);
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { task: Record<string, unknown> };
+      expect(body.task).not.toHaveProperty('reopenNote');
+      expect(taskStore.getTask(id)?.reopenNote).toBeUndefined();
+      expect(taskStore.getTask(id)?.status).toBe('pending');
+      // A later reopen without a note does not bring it back.
+      taskStore.cancelTask(id);
+      expect((await reopen(app, id)).status).toBe(200);
+      expect(taskStore.getTask(id)?.reopenNote).toBeUndefined();
+    });
+
+    test('accepts null on a task that has no note', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+
+      expect((await reopenWithBody(app, id, CLEAR)).status).toBe(200);
+      expect(taskStore.getTask(id)?.reopenNote).toBeUndefined();
+    });
+
+    test('drops the pending resume-once note request but keeps the resume itself', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore, { claudeSessionId: 'sess-prior' });
+      const { app } = mkApp(taskStore);
+      // The relaunch never ran (promotion is stubbed), so the note request is still pending.
+      expect((await reopenWithBody(app, id, JSON.stringify({ note: 'Do not merge.' }))).status).toBe(200);
+      taskStore.cancelTask(id);
+
+      expect((await reopenWithBody(app, id, CLEAR)).status).toBe(200);
+
+      expect(taskStore.wantsResumeOnNextLaunch(id)).toBe(true);
+      expect(taskStore.takeReopenNoteOnNextResume(id)).toBe(false);
+    });
+
+    test('a refused reopen leaves the note and its resume-once request in place', async () => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Still running', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+      taskStore.setReopenNote(task.id, 'earlier note');
+      taskStore.requestReopenNoteOnNextResume(task.id);
+      const { app } = mkApp(taskStore);
+
+      const res = await reopenWithBody(app, task.id, CLEAR);
+
+      expect(res.status).toBe(409);
+      expect(taskStore.getTask(task.id)?.reopenNote).toBe('earlier note');
+      expect(taskStore.takeReopenNoteOnNextResume(task.id)).toBe(true);
+    });
+
+    test('the fresh relaunch after clearing composes the original prompt alone', async () => {
+      const taskStore = new TaskStore();
+      const id = terminatedTask(taskStore);
+      const { app } = mkApp(taskStore);
+      // Compose the prompt the way the launch path does (agent-lifecycle:
+      // withReopenNote(task.reopenNote, prompt)), from the store as promotion sees it.
+      const launchPrompts: string[] = [];
+      promotePendingTasks.mockImplementation(async () => {
+        const pending = taskStore.getTask(id)!;
+        launchPrompts.push(withReopenNote(pending.reopenNote, pending.prompt));
+      });
+
+      expect((await reopenWithBody(app, id, JSON.stringify({ note: 'Do not merge.' }))).status).toBe(200);
+      taskStore.cancelTask(id);
+      expect((await reopenWithBody(app, id, CLEAR)).status).toBe(200);
+
+      expect(launchPrompts).toEqual(['Do not merge.\n\nImplement the thing', 'Implement the thing']);
     });
   });
 

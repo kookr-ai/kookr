@@ -141,9 +141,96 @@ describe('runReopenCli --note and the not_resumable warning (issue #4227)', () =
     expect(JSON.parse(io.logs[0]!)).toMatchObject({ ok: false, code: 'INVALID_NOTE', details: { serverCode: 'invalid_reopen_note', status: 400 } });
   });
 
-  it('documents --note in the help text', () => {
-    expect(REOPEN_HELP_TEXT).toContain('kookr reopen <taskId> [--note "<text>"] [--json]');
+  it('documents --note and --clear-note in the help text', () => {
+    expect(REOPEN_HELP_TEXT).toContain('kookr reopen <taskId> [--note "<text>" | --clear-note] [--json]');
     expect(REOPEN_HELP_TEXT).toMatch(/--note <text>/);
+    expect(REOPEN_HELP_TEXT).toMatch(/--clear-note {4}Remove the note/);
+  });
+});
+
+describe('kookr reopen --clear-note (issue #4265)', () => {
+  const NOT_RESUMABLE = { mode: 'not_resumable', reason: 'agent type codex-cli does not support resume' };
+  const RESUME = { mode: 'resume', conversationId: 's' };
+  const body = (resume: unknown, reopenNote?: string) => ({
+    ok: true,
+    task: { id: 't-1', status: 'pending', ...(reopenNote !== undefined ? { reopenNote } : {}) },
+    resume,
+  });
+
+  it('parses --clear-note in any position', () => {
+    expect(parseReopenArgs(['t-1', '--clear-note'])).toEqual({ taskId: 't-1', clearNote: true, json: false, help: false });
+    expect(parseReopenArgs(['--clear-note', '--json', 't-1'])).toEqual({ taskId: 't-1', clearNote: true, json: true, help: false });
+  });
+
+  it('refuses --note together with --clear-note, in either order', () => {
+    expect(parseReopenArgs(['t-1', '--note', 'x', '--clear-note']).error).toBe('--note and --clear-note cannot be used together');
+    expect(parseReopenArgs(['t-1', '--clear-note', '--note=x']).error).toBe('--note and --clear-note cannot be used together');
+  });
+
+  it('exits 2 without calling the server when both are given', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(body(RESUME)));
+    expect(await runReopenCli(['t-1', '--note', 'x', '--clear-note'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(2);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('sends { "note": null } as a JSON body and reports the note cleared', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(body(RESUME)));
+
+    expect(await runReopenCli(['t-1', '--clear-note'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(0);
+
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.body).toBe('{"note":null}');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    const text = io.logs.join('\n');
+    expect(text).toContain('Note: the reopen note was cleared; the relaunch carries none.');
+    expect(text).not.toContain('Warning:');
+  });
+
+  it('--json reports noteCleared and no note', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(body(RESUME)));
+    await runReopenCli(['t-1', '--json', '--clear-note'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    const env = JSON.parse(io.logs[0]!);
+    expect(env.details).toMatchObject({ noteCleared: true, warnings: [] });
+    expect(env.details.note).toBeUndefined();
+  });
+
+  it('a reopen without --clear-note does not report a cleared note', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(body(RESUME)));
+    await runReopenCli(['t-1', '--json'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    expect(JSON.parse(io.logs[0]!).details.noteCleared).toBeUndefined();
+  });
+
+  it('still warns that a not_resumable task replays its original prompt unchanged', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(body(NOT_RESUMABLE)));
+    await runReopenCli(['t-1', '--json', '--clear-note'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    const env = JSON.parse(io.logs[0]!);
+    expect(env.details.noteCleared).toBe(true);
+    expect(env.details.warnings).toEqual([expect.stringMatching(/restarts from its original prompt unchanged/)]);
+  });
+
+  it('warns when the server still reports a note after --clear-note', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () => jsonResponse(body(RESUME, 'Do not merge.')));
+    await runReopenCli(['t-1', '--json', '--clear-note'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never });
+    const env = JSON.parse(io.logs[0]!);
+    expect(env.details.noteCleared).toBeUndefined();
+    expect(env.details.warnings).toEqual([expect.stringMatching(/did not clear the stored note/)]);
+  });
+
+  it('a server that refuses null (older than --clear-note) is a user error with a hint', async () => {
+    const io = captureConsole();
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ error: 'note must be a non-empty string', code: 'invalid_reopen_note' }, 400),
+    );
+    expect(await runReopenCli(['t-1', '--json', '--clear-note'], { env: BASE_ENV, ...io, fetchImpl: fetchImpl as never })).toBe(2);
+    const env = JSON.parse(io.logs[0]!);
+    expect(env).toMatchObject({ ok: false, code: 'INVALID_NOTE' });
+    expect(env.message).toMatch(/may predate --clear-note/);
   });
 });
 

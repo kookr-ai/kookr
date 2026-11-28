@@ -1332,7 +1332,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // Optional JSON body `{ "note": "<text>" }` (issue #4227): stored as the
   // task's `reopenNote`, which the relaunch puts in front of the original prompt
   // (fresh start) or of the first message of the resumed conversation. An empty
-  // body means no note, as for the CLI before `--note` and other callers.
+  // body means no note, as for the CLI before `--note` and other callers, and
+  // keeps any stored note; `{ "note": null }` (issue #4265) clears it.
   app.post('/api/tasks/:id/reopen', async (c) => {
     if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
       return supervisorUnauthorizedResponse(c);
@@ -2311,10 +2312,11 @@ export const REOPEN_NOTE_MAX_CHARS = 8000;
 
 /**
  * Read the optional `{ "note": "<text>" }` body of `POST /api/tasks/:id/reopen`.
- * An empty body, or one without `note`, means no note; anything else that is not
- * a non-blank string of at most {@link REOPEN_NOTE_MAX_CHARS} characters is refused.
+ * An empty body, or one without `note`, means no note; `{ "note": null }` asks to
+ * clear the stored note (issue #4265); anything else that is not a non-blank
+ * string of at most {@link REOPEN_NOTE_MAX_CHARS} characters is refused.
  */
-export function parseReopenNote(raw: string): { ok: true; note?: string } | { ok: false; error: string } {
+export function parseReopenNote(raw: string): { ok: true; note?: string | null } | { ok: false; error: string } {
   if (raw.trim() === '') return { ok: true };
   let body: unknown;
   try {
@@ -2327,8 +2329,9 @@ export function parseReopenNote(raw: string): { ok: true; note?: string } | { ok
   }
   const note = (body as { note?: unknown }).note;
   if (note === undefined) return { ok: true };
+  if (note === null) return { ok: true, note: null };
   if (typeof note !== 'string' || note.trim() === '') {
-    return { ok: false, error: 'note must be a non-empty string' };
+    return { ok: false, error: 'note must be a non-empty string, or null to clear the stored note' };
   }
   const trimmed = note.trim();
   if (trimmed.length > REOPEN_NOTE_MAX_CHARS) {
