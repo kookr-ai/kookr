@@ -13,6 +13,11 @@ import { DeltaSequenceTracker } from '../delta-sequence.js';
 import { measureSync } from '../debug-timeline.js';
 import { acknowledgeDictationLaunch, resumeDictationCorpusRetries } from '../store/dictation-corpus.js';
 import { handleOperatorAskResult, handleOperatorAsks } from '../store/operator-asks.js';
+import {
+  failPendingClaudeAccountSwitches,
+  handleClaudeAccountSwitchResult,
+  refreshLoadedClaudeAccounts,
+} from '../store/claude-accounts.js';
 import { handleLucyPermissionCards } from '../store/lucy-permission.js';
 import { handleLucySays } from '../store/lucy-says.js';
 import { handleLucyLaunch } from '../store/lucy-launch.js';
@@ -205,6 +210,10 @@ export function useWebSocket() {
       onEstablished: () => {
         resumeDictationCorpusRetries();
         useKookrStore.getState().setConnected(true);
+        // A reconnect usually follows a server restart: reload the Claude
+        // accounts, which may have changed (`kookr account add`) or failed to
+        // load while the server was down.
+        if (hasConnectedRef.current) void refreshLoadedClaudeAccounts();
         // Track reconnect if we were disconnected
         if (disconnectedAtRef.current !== null) {
           track({ type: 'websocket_reconnect', disconnectDurationMs: Date.now() - disconnectedAtRef.current });
@@ -222,6 +231,8 @@ export function useWebSocket() {
       },
       onLost: () => {
         useKookrStore.getState().setConnected(false);
+        // Replies to account switches sent on the lost socket cannot arrive.
+        failPendingClaudeAccountSwitches();
         // Hermes lane: drop the last frame so a frozen "working" lane never
         // outlives the connection. A flag-on server re-sends within ~2s of
         // reconnect; a flag-off server sends nothing, so the lane stays hidden.
@@ -417,6 +428,9 @@ export function useWebSocket() {
               break;
             case 'operatorAskResult':
               handleOperatorAskResult(msg.askId, msg.ok, msg.reason);
+              break;
+            case 'claudeAccountSwitchResult':
+              handleClaudeAccountSwitchResult(msg as Extract<ServerMessage, { type: 'claudeAccountSwitchResult' }>);
               break;
             case 'diagnosticReport':
               store.handleDiagnosticReport(msg.report);

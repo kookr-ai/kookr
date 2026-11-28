@@ -534,6 +534,18 @@ const operatorAskResultMessage = z.object({
   reason: z.string().optional(),
 });
 
+const claudeAccountSwitchResultMessage = z.object({
+  type: z.literal('claudeAccountSwitchResult'),
+  requestId: z.string(),
+  taskId: z.string(),
+  ok: z.boolean(),
+  outcome: z.enum(['unchanged', 'pinned', 'relaunched', 'queued']).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  error: z.string().optional(),
+  code: z.string().optional(),
+});
+
 const ServerMessageSchemaImpl = z.union([
   dictationLaunchResultMessage,
   snapshotMessage,
@@ -575,6 +587,7 @@ const ServerMessageSchemaImpl = z.union([
   operatorAsksMessage,
   operatorAskResultMessage,
   lucyPermissionCardsMessage,
+  claudeAccountSwitchResultMessage,
 ]);
 
 export const ServerMessageSchema = ServerMessageSchemaImpl;

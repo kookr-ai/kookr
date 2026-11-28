@@ -277,6 +277,7 @@ const serverMessageCases = [
     announce: 'a1b2c3d4e5f6',
   }),
   serverMessageCase({ type: 'operatorAskResult', askId: 'a1b2c3d4e5f6', ok: false, reason: 'already_answered' }),
+  serverMessageCase({ type: 'claudeAccountSwitchResult', requestId: 'r1', taskId: 'task-1', ok: true, outcome: 'queued', from: 'host', to: 'work' }),
   serverMessageCase({ type: 'lucyPermissionCards', cards: [], announce: { noticeId: 'perm-0123456789abcdef0123', promptIds: ['p1'], text: 'A task is waiting for your permission to use Bash. The command is on my card.' } }),
   // Delta envelope (#1754, Stage 1) — ships dark, but part of the wire contract.
   serverMessageCase({

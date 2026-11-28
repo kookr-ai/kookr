@@ -7,7 +7,8 @@ import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js
 import type { ScheduleService } from '../schedule-service.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
 import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
-import type { LifecycleDeps } from '../agent-lifecycle.js';
+import type { LifecycleDeps, TryPromotePending } from '../agent-lifecycle.js';
+import type { ClaudeAccountRegistry } from '../../core/claude-accounts.js';
 import {
   cleanupSessionResources as cleanupSessionResourcesImpl,
 } from '../agent-lifecycle.js';
@@ -63,8 +64,13 @@ export interface LifecycleHandlerDeps {
    * may be wired lazily at server startup.
    */
   getLifecycleDeps: () => LifecycleDeps;
-  /** Promote pending tasks if concurrency slots have opened. */
-  tryPromotePending: () => Promise<void>;
+  /**
+   * Promote pending tasks if concurrency slots have opened. `firstTaskId` is
+   * tried first: an account switch uses it to take back the slot it freed.
+   */
+  tryPromotePending: TryPromotePending;
+  /** Named Claude account registry, read when a task is moved to another account. */
+  loadClaudeAccounts?: () => ClaudeAccountRegistry;
   /** Shared reap-warning coordinator for the `keepTaskAlive` veto (RFC rfc-reap-grace-warning.md). */
   reapWarningCoordinator?: ReapWarningCoordinator;
   /** FAA ack-path reap coordinator for the `keepTaskAlive` veto (issue #2170). */
@@ -106,6 +112,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'requestTaskReflect'
     | 'requestTaskSnapshotReflect'
     | 'worktree:inspectCleanup'
+    | 'switchClaudeAccount'
 }>;
 
 interface DictationLaunchOutcome {
@@ -165,6 +172,7 @@ export class LifecycleHandler {
       readInteractionLogSnapshot: deps.readInteractionLogSnapshot,
       getLifecycleDeps: deps.getLifecycleDeps,
       tryPromotePending: deps.tryPromotePending,
+      ...(deps.loadClaudeAccounts ? { loadClaudeAccounts: deps.loadClaudeAccounts } : {}),
     });
   }
 
@@ -215,6 +223,11 @@ export class LifecycleHandler {
     // a `worktreeCleanupVerdicts` message that never comes.
     const isReadOnlyQuery = msg.type === 'worktree:inspectCleanup';
     if (!isReadOnlyQuery && 'taskId' in msg && typeof msg.taskId === 'string' && isSharedTaskId(msg.taskId)) {
+      // The account badge waits for its reply; an alert alone would leave it busy.
+      if (msg.type === 'switchClaudeAccount') {
+        this.replySwitch(msg, { ok: false, code: 'shared_task', error: 'Shared tasks are remote-owned' });
+        return { duplicate: false };
+      }
       this.deps.send({
         type: 'alert',
         agentId: '',
@@ -423,6 +436,10 @@ export class LifecycleHandler {
         return { duplicate: false };
       }
 
+      case 'switchClaudeAccount':
+        await this.handleSwitchClaudeAccount(msg);
+        return { duplicate: false };
+
       case 'ackTerminatedTask': {
         // User acknowledges a terminated task as "done" — transitions to 'completed'.
         // Only valid from 'terminated' (VALID_TRANSITIONS enforces this).
@@ -445,6 +462,48 @@ export class LifecycleHandler {
         return { duplicate: false };
       }
     }
+  }
+
+  /**
+   * Move a task to another named Claude account (the dashboard's account
+   * badge and usage-limit banner). The same command, audit row and side
+   * effects as `POST /api/tasks/:id/claude-account`, which needs the
+   * supervisor token; this path is reachable from owner connections only (the
+   * viewer gate in ws-connection-handler turns viewers away). Always answers
+   * the sender, so the badge never waits on a reply that does not come.
+   */
+  private async handleSwitchClaudeAccount(msg: Extract<ClientMessage, { type: 'switchClaudeAccount' }>): Promise<void> {
+    const account = msg.account.trim();
+    if (!account) {
+      this.replySwitch(msg, { ok: false, code: 'invalid_claude_account', error: 'account must be a non-empty string' });
+      return;
+    }
+    try {
+      const result = await this.commands.switchClaudeAccount(msg.taskId, account, {
+        actor: this.deps.deletionAuditActor?.(),
+      });
+      if (result.outcome === 'not_found') {
+        this.replySwitch(msg, { ok: false, code: 'not_found', error: 'Task not found' });
+        return;
+      }
+      if (result.outcome === 'invalid') {
+        // A failed relaunch changed the task (it is queued or cancelled now).
+        if (result.code === 'relaunch_failed') this.deps.broadcastSnapshot?.();
+        this.replySwitch(msg, { ok: false, code: result.code, error: result.error });
+        return;
+      }
+      this.deps.broadcastSnapshot?.();
+      this.replySwitch(msg, { ok: true, outcome: result.outcome, from: result.from, to: result.to });
+    } catch (err) {
+      this.replySwitch(msg, { ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  private replySwitch(
+    msg: Extract<ClientMessage, { type: 'switchClaudeAccount' }>,
+    reply: Omit<Extract<ServerMessage, { type: 'claudeAccountSwitchResult' }>, 'type' | 'requestId' | 'taskId'>,
+  ): void {
+    this.deps.send({ type: 'claudeAccountSwitchResult', requestId: msg.requestId, taskId: msg.taskId, ...reply });
   }
 
   /**

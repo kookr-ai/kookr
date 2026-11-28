@@ -1,4 +1,6 @@
 import { vi } from 'vitest';
+import type { ClientMessage } from '../../shared/contracts/messages.js';
+import { handleClaudeAccountSwitchResult } from './claude-accounts.js';
 import type {
   ClaudeAccountQuota,
   ClaudeAccountsResponse,
@@ -16,8 +18,6 @@ export interface FakeAccountsServer {
   testQuotas: Record<string, ClaudeAccountQuota>;
   /** When set, `POST /api/claude-accounts` refuses with this body. */
   addError?: { error: string; code: string };
-  /** When set, `POST /api/tasks/:id/claude-account` refuses with this body (409). */
-  switchError?: { error: string; code: string };
   calls: Array<{ method: string; url: string; body: unknown }>;
 }
 
@@ -85,12 +85,42 @@ export function installFakeAccountsServer(
       if (server.defaultName === name) server.defaultName = 'host';
       return json(200, snapshot());
     }
-    const sw = /^\/api\/tasks\/([^/]+)\/claude-account$/.exec(url);
-    if (sw && method === 'POST') {
-      if (server.switchError) return json(409, server.switchError);
-      return json(200, { ok: true, outcome: 'restarted', from: 'host', to: body?.account, task: {} });
-    }
     return json(404, { error: `unrouted ${method} ${url}` });
   }));
   return server;
+}
+
+/** Test-only fake of the dashboard socket for `switchClaudeAccount`. */
+export interface FakeSwitchSocket {
+  send: (msg: ClientMessage) => boolean;
+  /** Every `switchClaudeAccount` sent, without its request id. */
+  switches: Array<{ taskId: string; account: string }>;
+  /** When set, the server refuses the switch with this error. */
+  refuse?: { error: string; code: string };
+  /** When false, `send` reports the socket is down and nothing is sent. */
+  connected: boolean;
+}
+
+/** A `send` that answers each `switchClaudeAccount` the way the server does, on the next tick. */
+export function fakeSwitchSocket(): FakeSwitchSocket {
+  const socket: FakeSwitchSocket = {
+    switches: [],
+    connected: true,
+    send: (msg) => {
+      if (!socket.connected) return false;
+      if (msg.type !== 'switchClaudeAccount') return true;
+      socket.switches.push({ taskId: msg.taskId, account: msg.account });
+      const refuse = socket.refuse;
+      queueMicrotask(() => handleClaudeAccountSwitchResult({
+        type: 'claudeAccountSwitchResult',
+        requestId: msg.requestId,
+        taskId: msg.taskId,
+        ...(refuse
+          ? { ok: false, error: refuse.error, code: refuse.code }
+          : { ok: true, outcome: 'relaunched', from: 'host', to: msg.account }),
+      }));
+      return true;
+    },
+  };
+  return socket;
 }

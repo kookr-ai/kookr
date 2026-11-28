@@ -631,6 +631,25 @@ export type ServerMessage =
       ok: boolean;
       /** `unavailable`: asks are not configured on this server. `failed`: recording the answer threw; it may be tried again. */
       reason?: AnswerRejection | 'unavailable' | 'failed';
+    }
+  | {
+      /**
+       * Reply to the sender of a `switchClaudeAccount`, correlated by
+       * `requestId`. On success, `outcome` says what happened: `relaunched`
+       * (restarted on `to`, resuming its conversation), `queued` (stopped and
+       * waiting for a slot), `pinned` (not running; `to` applies at its next
+       * launch) or `unchanged` (already on `to`). On failure, `error` is the
+       * text to show and `code` is the same code the HTTP route answers.
+       */
+      type: 'claudeAccountSwitchResult';
+      requestId: string;
+      taskId: string;
+      ok: boolean;
+      outcome?: 'unchanged' | 'pinned' | 'relaunched' | 'queued';
+      from?: string;
+      to?: string;
+      error?: string;
+      code?: string;
     };
 
 export type ClientMessage =
@@ -780,7 +799,15 @@ export type ClientMessage =
    * The operator answers a `kookr ask` question in Lucy's panel: exactly one of
    * a button (`optionIndex`) or typed text. Owner connections only.
    */
-  | { type: 'answerAsk'; askId: string; optionIndex?: number; text?: string };
+  | { type: 'answerAsk'; askId: string; optionIndex?: number; text?: string }
+  /**
+   * Move a claude-code task to another named Claude account, from the task's
+   * account badge or the usage-limit banner. Same command as
+   * `POST /api/tasks/:id/claude-account`, which `kookr account switch` uses;
+   * that route needs the supervisor token, while this one needs an owner
+   * connection. Replied to with `claudeAccountSwitchResult`.
+   */
+  | { type: 'switchClaudeAccount'; requestId: string; taskId: string; account: string };
 
 export const SERVER_MESSAGE_TYPES = [
   'snapshot',
@@ -823,6 +850,7 @@ export const SERVER_MESSAGE_TYPES = [
   'operatorAsks',
   'operatorAskResult',
   'lucyPermissionCards',
+  'claudeAccountSwitchResult',
 ] as const satisfies readonly ServerMessage['type'][];
 
 /** Upper bound on task IDs accepted by one batch-abort request (issue #1325). */
@@ -880,6 +908,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'workspace:bulkRemoveProbablySafe',
   'worktree:inspectCleanup',
   'answerAsk',
+  'switchClaudeAccount',
 ] as const satisfies readonly ClientMessage['type'][];
 
 type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;
