@@ -8,6 +8,9 @@ import { parsePlaybook } from './playbook-parser.js';
  * (docs/rfc/rfc-opencode-scoped-fix-pipeline.md). The playbook is a prompt, so
  * the load-bearing safety rules are pinned here: an edit that drops one fails CI.
  */
+const byNameOf = (p: ReturnType<typeof parsePlaybook>) =>
+  Object.fromEntries((p.parameters ?? []).map((param) => [param.name, param]));
+
 describe('opencode-scoped-fix-pipeline playbook', () => {
   const file = 'opencode-scoped-fix-pipeline.md';
   const content = readFileSync(join(import.meta.dirname, '..', '..', '.kookr', 'playbooks', file), 'utf-8');
@@ -19,6 +22,14 @@ describe('opencode-scoped-fix-pipeline playbook', () => {
     expect(byName.issueNumber?.required).toBe(true);
     expect(byName.mergeEnabled?.default).toBe('false');
     expect(byName.usdCap?.default).toBe('3');
+  });
+
+  // #3582 item 2: the orchestrator is the dominant cost, so the playbook pins a
+  // mid-tier model (RFC section 3: mid tier, not small) instead of the operator default.
+  test('pins a mid-tier orchestrator model and leaves effort to the launch', () => {
+    expect(pb.model).toBe('claude-sonnet-5-5');
+    expect(pb.effort).toBeUndefined();
+    expect(byNameOf(pb).usdCap?.description).toMatch(/child tasks plus this orchestrator's own cost/);
   });
 
   test.each([
@@ -96,11 +107,34 @@ describe('opencode-scoped-fix-pipeline playbook', () => {
     ['removal step removes the review folder too', /then remove the review checkout and the `<wt>-review` folder\./],
     ['helper-folder rule names the review-input exception', /stage 2 puts `review-input\.md` in the per-issue review folder instead/],
     ['no prod actions', /Do not run `prod:update`, restart the server or flip `KOOKR_OPENCODE_ENABLED`/],
+    // #3582 item 3: the orchestrator's own cost and the gate review are counted.
+    ['own cost read from the task API, own usage only', /api\/tasks\/\$KOOKR_TASK_ID.*Use `tokenUsage`, never `aggregateTokenUsage`/],
+    ['usdSpent includes the orchestrators', /`usdSpent` = the sum of `children\[\]\.usd` \+ the sum of `orchestrators\[\]\.usd`/],
+    ['own cost refreshed before every cap check', /Refresh your own cost \(\*\*Own cost\*\*\) and recompute `usdSpent`\. Refuse to spawn when `usdSpent >= \{\{usdCap\}\}`/],
+    ['a resumed run keeps the killed run counted', /A resumed run is a new task: append your `\$KOOKR_TASK_ID` to `orchestrators` and keep the earlier entries/],
+    ['unreadable cost is unknown, never 0, and totals become lower bounds', /record it as `unknown`, never as 0, and mark every total built from it as a lower bound/],
+    ['gate cost measured around the gate', /save it as `gate\.startUsd`.*`gate\.usd` = that minus `gate\.startUsd`/],
+    ['gate reviewer keeps its strength floor under a mid-tier orchestrator', /explicit strong model \(`model: "opus"`\), never inheriting this orchestrator's mid-tier model/],
+    ['gate from an outside lane is unknown, not 0', /record `gate\.usd` as `unknown \(codex lane\)`/],
+    ['accounting has orchestrator and gate rows', /one row per entry in `orchestrators`.*one `gate review` row with `gate\.usd`/],
+    ['gate not added twice to the total', /Total USD = children \+ orchestrators.*so the gate is not added twice/],
+    ['cost per merged PR is reported', /Cost per merged PR: \$<total>/],
+    ['failure summary cost includes the orchestrator', /total USD with the orchestrator included/],
+    // #3582 item 2: a closing instruction so the orchestrator stops spending.
+    ['finish order: accounting, release claim, lesson, signal, stop', /post the Accounting comment.*release the claim.*emit the lesson decision.*`kookr signal completion-ready.*`, and stop\./],
+    ['finish covers every exit', /On every exit \(a preflight refusal, a pause stop, the \*\*Failure exit\*\*, `ready-for-merge`, or merged\)/],
+    ['no extra work after the real work', /do not investigate unrelated PR comments or issues, do not draft or polish a report, and do not send anything to a review subagent/],
   ])('pins: %s', (_label, re) => {
     expect(pb.body).toMatch(re);
   });
 
   test('checklist lets a LOW-only head reach the gate when a cap stops the next round', () => {
     expect(content).toMatch(/after round 2, or when the USD or wall cap stops the next round, only a head with LOW findings or none may go on to the gate/);
+  });
+
+  test('checklist names the cost accounting and the closing steps', () => {
+    expect(content).toMatch(/usdSpent counts the children AND the orchestrator's own cost/);
+    expect(content).toMatch(/Gate review cost recorded as its own row/);
+    expect(content).toMatch(/post accounting, release claim, signal completion-ready, stop/);
   });
 });
