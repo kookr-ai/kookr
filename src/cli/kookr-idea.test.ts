@@ -278,6 +278,20 @@ describe('runIdeaCli (fake nb)', () => {
     expect(readFileSync(join(home, '.kookr', 'ideas', '.votes.tsv'), 'utf8')).toMatch(/\ttask-2\tdead@acme-repo\tabc123\t\+1\tidentical idea added again\n$/);
   });
 
+  it('passes a failed vote for an identical idea through, and logs no sighting', async () => {
+    const io = capture();
+    const home = scratch();
+    const { runNb, nonShow } = fakeNb({ 'dead@acme-repo': [{ id: 'abc123', score: 1, text: GOOD }] }, [
+      { status: 7, stdout: 'nb: partial', stderr: 'nb: locked' },
+    ]);
+    const code = await runIdeaCli(['add', '--category', 'dead', GOOD], { ...io, env: { ...env, NB_SESSION: 'task-4' }, runNb, homeDir: home });
+    expect(code).toBe(7);
+    expect(nonShow()).toEqual([['vote', 'dead@acme-repo', 'abc123', '+1']]);
+    expect(io.lines).toEqual(['nb: partial']);
+    expect(io.errors).toEqual(['nb: locked']);
+    expect(existsSync(join(home, '.kookr', 'ideas', '.votes.tsv'))).toBe(false);
+  });
+
   it('votes on the original shelf when the identical idea is filed under another category, even with --new', async () => {
     const io = capture();
     const home = scratch();
