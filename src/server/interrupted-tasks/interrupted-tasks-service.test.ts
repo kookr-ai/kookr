@@ -291,6 +291,72 @@ describe('InterruptedTasksService', () => {
     expect(second.reopened).toEqual([]);
   });
 
+  test('a task with the same prompt started meanwhile is not given a twin by the decision (#4294)', async () => {
+    const h = harness({ liveDuplicateOf: (taskId) => (taskId === RESUMABLE.taskId ? { taskId: 't-schedule-tick' } : undefined) });
+    await h.service.start();
+    await h.service.park([RESUMABLE, FRESH], 'restart');
+    const decided = await h.service.answerFromAsk('ask-1', 'resume_all');
+    expect(h.reopened).toEqual([FRESH.taskId]);
+    expect(decided?.decision?.outcomes[0]).toEqual({
+      taskId: RESUMABLE.taskId,
+      outcome: 'skipped',
+      detail: 'a task with the same prompt is already running or queued (t-schedule-tick)',
+    });
+  });
+
+  test('a crash part-way through a decision: the next start finishes it with the recorded choice (#4294)', async () => {
+    const THIRD: InterruptedTaskEntry = { taskId: 't-third', name: 'Third task', mode: 'resume' };
+    const first = harness({
+      reopenTask: async (taskId) => {
+        first.reopened.push(taskId);
+        // The process dies while the second task relaunches: this reopen never returns.
+        if (taskId === FRESH.taskId) return new Promise(() => undefined);
+        return { ok: true, mode: 'resume' };
+      },
+    });
+    first.tasks.set(THIRD.taskId, { status: 'terminated', sessions: 1 });
+    await first.service.start();
+    await first.service.park([RESUMABLE, FRESH, THIRD], 'restart');
+    void first.service.answerFromAsk('ask-1', 'resume_all');
+    await vi.waitFor(() => expect(first.reopened).toEqual([RESUMABLE.taskId, FRESH.taskId]));
+    first.service.stop();
+
+    // After the restart: the first task runs, the second was reopened (queued) when the process died.
+    const second = harness({}, { filePath: first.filePath });
+    second.tasks = new Map([
+      [RESUMABLE.taskId, { status: 'pending', sessions: 1 }],
+      [FRESH.taskId, { status: 'pending', sessions: 1 }],
+      [THIRD.taskId, { status: 'terminated', sessions: 1 }],
+    ]);
+    await second.service.start();
+    // Only the task the crash stranded is relaunched, under `resume_all`, not the deadline's `resume`.
+    expect(second.reopened).toEqual([THIRD.taskId]);
+    expect(second.decided).toHaveLength(1);
+    expect(second.decided[0]?.decision).toMatchObject({ choice: 'resume_all', by: 'operator' });
+    expect(second.decided[0]?.decision?.outcomes).toEqual([
+      { taskId: RESUMABLE.taskId, outcome: 'resumed' },
+      { taskId: FRESH.taskId, outcome: 'skipped', detail: 'task changed since it was parked (relaunched, acknowledged or cancelled)' },
+      { taskId: THIRD.taskId, outcome: 'resumed' },
+    ]);
+    // Answered on the question: finishing it does not close that question again.
+    expect(second.closed).toEqual([]);
+    const onDisk = JSON.parse(await readFile(second.filePath, 'utf-8')) as { batches: InterruptedBatch[] };
+    expect(onDisk.batches[0]?.decision?.applying).toBeUndefined();
+    expect(second.service.pending()).toBeUndefined();
+  });
+
+  test('a decided batch with no in-progress mark is not applied again on start (#4294)', async () => {
+    const decided: InterruptedBatch = {
+      id: 'b-old', source: 'restart', createdAt: 0, deadlineAt: 1, state: 'decided', tasks: [RESUMABLE, FRESH],
+      decision: { choice: 'resume_all', by: 'operator', at: 1, outcomes: [] },
+    };
+    await writeFile(join(dir, 'interrupted-tasks.json'), JSON.stringify({ batches: [decided] }));
+    const h = harness();
+    await h.service.start();
+    expect(h.reopened).toEqual([]);
+    expect(h.decided).toEqual([]);
+  });
+
   test('a refused or throwing reopen is reported as failed and does not stop the others', async () => {
     const h = harness({
       reopenTask: async (taskId) => {

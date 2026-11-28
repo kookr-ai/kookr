@@ -88,6 +88,17 @@ export interface CrashRecoveryResult {
 /** The `skipped` reason of a task parked for the operator's resume decision (issue #4215). */
 export const PARKED_FOR_OPERATOR_REASON = 'awaiting the operator\'s resume decision';
 
+/**
+ * Prefix of the `skipped` reason of a task that would have been parked but is no longer
+ * `terminated` (the operator acknowledged or cancelled it, or it ended cleanly; issue #4294).
+ * The task keeps the receipt and disposition its own transition gave it.
+ */
+export const NOT_INTERRUPTED_REASON_PREFIX = 'no longer interrupted';
+
+function notInterruptedReason(status: string | undefined): string {
+  return `${NOT_INTERRUPTED_REASON_PREFIX} (task is ${status ?? 'gone'}); left as it is`;
+}
+
 export interface CrashRecoveryOptions {
   /** Shared provider circuit used to gate automatic recovery launches. */
   launchDependencyAdmission?: LaunchDependencyAdmission;
@@ -266,24 +277,22 @@ export async function recoverCrashedSessions(
 
     // Guard: crash-loop detection. The cumulative cap bounds slow, repeatable
     // crashes that fall outside the rapid window and would otherwise relaunch
-    // forever.
-    if ((session.relaunchCount ?? 0) >= CRASH_LOOP_MAX_RELAUNCHES) {
+    // forever. A session started after a park (issue #4215) continues the
+    // parked session's chain (issue #4294).
+    const chain = relaunchChainOf(task, session);
+    if (chain.relaunchCount >= CRASH_LOOP_MAX_RELAUNCHES) {
       result.skipped.push({
         taskId: task.id,
         sessionId: tmuxName,
-        reason: `crash-loop cap reached (${session.relaunchCount} relaunches, cap is ${CRASH_LOOP_MAX_RELAUNCHES})`,
+        reason: `crash-loop cap reached (${chain.relaunchCount} relaunches, cap is ${CRASH_LOOP_MAX_RELAUNCHES})`,
       });
       continue;
     }
 
     // If this session was recently relaunched (within 60s), skip it. The
     // window still permits recovery after occasional crashes below the cap.
-    if (
-      session.relaunchCount != null &&
-      session.relaunchCount > 0 &&
-      session.lastRelaunchedAt != null
-    ) {
-      const elapsed = Date.now() - session.lastRelaunchedAt;
+    if (chain.relaunchCount > 0 && chain.lastRelaunchedAt != null) {
+      const elapsed = Date.now() - chain.lastRelaunchedAt;
       if (elapsed < CRASH_LOOP_WINDOW_MS) {
         result.skipped.push({
           taskId: task.id,
@@ -310,19 +319,37 @@ export async function recoverCrashedSessions(
     // A running Ralph loop is not parked: Ralph's startup reconcile, which runs right after this, closes
     // the loop of a task left stopped with no live session, so it is relaunched at once as before.
     if (options.parkForOperator && isTerminalStatus(task.status) && task.ralphLoop?.status !== 'running') {
-      // The same-pass bookkeeping the relaunch path does: a second dead session of this task, or
-      // another task with the same prompt, is then skipped as a duplicate instead of parked again.
+      // Only a task reconcile left `terminated` was interrupted. One the operator acknowledged or
+      // cancelled since (issue #4294), or that ended cleanly, is left as it is: parking it would ask
+      // about a deliberate stop, and the relaunch path below would restart it without asking.
+      const current = taskStore.getTask(task.id);
+      if (current?.status !== 'terminated') {
+        result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: notInterruptedReason(current?.status) });
+        continue;
+      }
+      // The baseline a decision compares against, taken before any await: the operator may
+      // acknowledge or cancel the task from here on, and a decision must then leave it alone.
+      const parkedAs = { status: current.status, sessions: current.sessions.length };
+      const report = await describeReopenResume(task, { activeRalphLoop: false });
+      const afterReport = taskStore.getTask(task.id);
+      if (afterReport?.status !== parkedAs.status || afterReport.sessions.length !== parkedAs.sessions) {
+        result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: notInterruptedReason(afterReport?.status) });
+        continue;
+      }
+      // The same-pass bookkeeping the relaunch path does, once the task is really parked: a second
+      // dead session of this task, or another task with the same prompt, is then skipped as a
+      // duplicate instead of parked again. A task skipped above must not shadow a twin this way.
       relaunchedTaskIds.add(task.id);
       relaunchedPromptHashes.add(promptHash);
-      const report = await describeReopenResume(task, { activeRalphLoop: false });
+      // Durable mark for the crash-loop cap: the session a resume decision starts continues this
+      // session's relaunch chain (see relaunchChainOf).
+      taskStore.updateSession(task.id, tmuxName, { parkedForOperator: true });
       (result.parked ??= []).push({
         taskId: task.id,
         name: task.name ?? task.id,
         mode: report.mode === 'resume' ? 'resume' : 'fresh',
         ...(report.mode !== 'resume' ? { reason: report.reason } : {}),
-        // The baseline a decision compares against, taken now: the operator may acknowledge or
-        // cancel the task in the window before the batch is parked, once asks are up.
-        parkedAs: { status: task.status, sessions: task.sessions.length },
+        parkedAs,
       });
       result.skipped.push({ taskId: task.id, sessionId: tmuxName, reason: PARKED_FOR_OPERATOR_REASON });
       continue;
@@ -603,7 +630,7 @@ export async function recoverCrashedSessions(
         // it (e.g., Codex always launches fresh today), so the flag is only set
         // when our intent was resume.
         const updates: Partial<SessionInfo> = {
-          relaunchCount: (session.relaunchCount ?? 0) + 1,
+          relaunchCount: chain.relaunchCount + 1,
           lastRelaunchedAt: Date.now(),
         };
         const adapterSupportsResume = task.agentType === 'claude-code';
@@ -913,6 +940,50 @@ function buildRecoveryLaunchOptions(
 
 function promptDedupKey(agentType: string, prompt: string, intent: Task['launchIntent']): string {
   return `${agentType}:${hashPrompt(prompt)}:${launchIntentFingerprint(intent) ?? 'legacy'}`;
+}
+
+/**
+ * The relaunch chain a dead session belongs to, for the crash-loop guards. A session crash recovery
+ * relaunched carries its own count. One started after a park (by the operator's resume decision, or
+ * a later Reopen) carries none: it continues the chain of the nearest earlier parked session, as
+ * one more relaunch made when it was created (issue #4294).
+ */
+function relaunchChainOf(task: Task, session: SessionInfo): { relaunchCount: number; lastRelaunchedAt?: number } {
+  if (session.relaunchCount != null) {
+    return { relaunchCount: session.relaunchCount, lastRelaunchedAt: session.lastRelaunchedAt };
+  }
+  const index = task.sessions.indexOf(session);
+  for (let i = index - 1; i >= 0; i--) {
+    const earlier = task.sessions[i]!;
+    if (!earlier.parkedForOperator) continue;
+    const createdAt = new Date(session.createdAt).getTime();
+    return {
+      relaunchCount: relaunchChainOf(task, earlier).relaunchCount + 1,
+      ...(Number.isFinite(createdAt) ? { lastRelaunchedAt: createdAt } : {}),
+    };
+  }
+  return { relaunchCount: 0 };
+}
+
+/**
+ * A running or queued task whose prompt is the same as `taskId`'s, by the identity crash recovery
+ * dedupes on. Checked before an interrupted-tasks decision relaunches a parked task (issue #4294):
+ * a task with the same prompt started meanwhile (a schedule tick, say) would otherwise run alongside it.
+ */
+export function findLivePromptDuplicate(taskStore: TaskStore, taskId: string): Task | undefined {
+  const parked = taskStore.getTask(taskId);
+  if (!parked) return undefined;
+  const key = promptIdentityKey(parked);
+  return taskStore.viewTasks().find((other) =>
+    other.id !== taskId && !isTerminalStatus(other.status) && promptIdentityKey(other) === key);
+}
+
+/** The prompt identity a relaunch candidate is deduped on (the raw prompt, not the guarded one). */
+function promptIdentityKey(task: Task): string {
+  const intent = validatePersistedLaunchIntent(task);
+  return intent.ok
+    ? promptDedupKey(task.agentType, intent.intent.prompt ?? task.userPrompt ?? task.prompt, intent.intent)
+    : promptDedupKey(task.agentType, task.userPrompt ?? task.prompt, task.launchIntent);
 }
 
 function findTaskAndSession(

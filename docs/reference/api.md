@@ -858,7 +858,10 @@ survives a restart.
   - `leave` relaunches nothing.
 
   Returns `{ "batch" }` with one outcome per task, or `404` when no pending
-  batch has that id.
+  batch has that id. A task is `skipped` when it changed since it was parked, no
+  longer exists, or a running or queued task has the same prompt. While the outcomes are
+  being applied the decision carries `applying`; a restart that interrupts it
+  finishes the remaining tasks with the same choice (issue #4294).
 
 With no answer by the deadline (`KOOKR_INTERRUPTED_TASKS_TIMEOUT_MIN`, default
 10), the batch is decided as `resume`, never `resume_all`. A restart from the

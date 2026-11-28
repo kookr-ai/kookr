@@ -71,6 +71,12 @@ export interface InterruptedBatch {
     by: 'operator' | 'timeout';
     at: number;
     outcomes: InterruptedTaskOutcome[];
+    /**
+     * Present while the decision is still being applied, cleared once every task has its outcome.
+     * A process that dies part-way leaves it set, and the next `start()` finishes applying the same
+     * choice to the tasks without an outcome (issue #4294). `fromAsk`: decided by answering the question.
+     */
+    applying?: { fromAsk: boolean };
   };
 }
 
@@ -115,6 +121,11 @@ export interface InterruptedTasksServiceDeps {
    * restart it from the prompt, which only an explicit `resume_all` may do. Absent: not re-checked.
    */
   canResume?: (taskId: string) => Promise<boolean>;
+  /**
+   * A running or queued task with the same prompt, else undefined. Checked before a decision
+   * relaunches a task: one started meanwhile (a schedule tick, say) must not get a twin (issue #4294).
+   */
+  liveDuplicateOf?: (taskId: string) => { taskId: string } | undefined;
   ask?: InterruptedTasksAskPort;
   /** Told about every decided batch. */
   onDecided?: (batch: InterruptedBatch) => void;
@@ -158,6 +169,11 @@ export class InterruptedTasksService {
   start(): Promise<void> {
     return this.serialize(async () => {
       await this.ensureLoaded();
+      // A decision an earlier process died while applying: finish it with the choice it recorded.
+      for (const unfinished of this.file.batches.filter((b) => b.decision?.applying)) {
+        this.log(`[interrupted-tasks] finishing the decision on batch ${unfinished.id} that a restart interrupted`);
+        await this.applyDecision(unfinished);
+      }
       const batch = this.pending();
       if (!batch) return undefined;
       const answered = batch.askId !== undefined ? this.deps.ask?.answerOf?.(batch.askId) : undefined;
@@ -256,32 +272,48 @@ export class InterruptedTasksService {
       const batch = this.file.batches.find((b) => b.id === batchId);
       if (!batch || batch.state !== 'pending') return undefined;
       batch.state = 'decided';
-      batch.decision = { choice, by, at: this.now(), outcomes: [] };
-      // Durable before any relaunch: a crash mid-way must not decide (and relaunch) twice.
+      batch.decision = { choice, by, at: this.now(), outcomes: [], applying: { fromAsk: opts.fromAsk === true } };
+      // Durable before any relaunch: a crash mid-way must not decide (and relaunch) twice. The
+      // `applying` mark lets the next start() finish the tasks a crash left without an outcome.
       await this.persist();
-      for (const entry of batch.tasks) {
-        batch.decision.outcomes.push(await this.apply(entry, choice));
-      }
-      this.pruneDecided();
-      await this.persist();
-      // Decided any way but by answering the question (the deadline, the CLI): close the question,
-      // so Telegram, the dashboard and Lucy stop asking something already settled.
-      if (batch.askId && !opts.fromAsk) {
-        await (by === 'timeout'
-          ? this.closeAsk(batch.askId, `No answer in time: ${summarizeOutcomes(batch)}.`, expiryOutcomeOf(batch))
-          : this.closeAsk(batch.askId, `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`));
-      }
-      this.log(`[interrupted-tasks] batch ${batch.id} decided (${choice}, by ${by}): ${summarizeOutcomes(batch)}`);
-      try {
-        this.deps.onDecided?.(structuredClone(batch));
-      } catch (err) {
-        this.log(`[interrupted-tasks] onDecided listener failed: ${errorText(err)}`);
-      }
-      return structuredClone(batch);
+      return this.applyDecision(batch);
     }).then((batch) => {
       this.armOrExpire();
       return batch;
     });
+  }
+
+  /**
+   * Apply a recorded decision to every task without an outcome yet, persisting each outcome as it
+   * lands, then close the question and tell the listener. Runs inside `serialize`.
+   */
+  private async applyDecision(batch: InterruptedBatch): Promise<InterruptedBatch> {
+    const decision = batch.decision!;
+    const fromAsk = decision.applying?.fromAsk === true;
+    const done = new Set(decision.outcomes.map((o) => o.taskId));
+    for (const entry of batch.tasks) {
+      if (done.has(entry.taskId)) continue;
+      decision.outcomes.push(await this.apply(entry, decision.choice));
+      await this.persist();
+    }
+    delete decision.applying;
+    const { choice, by } = decision;
+    this.pruneDecided();
+    await this.persist();
+    // Decided any way but by answering the question (the deadline, the CLI): close the question,
+    // so Telegram, the dashboard and Lucy stop asking something already settled.
+    if (batch.askId && !fromAsk) {
+      await (by === 'timeout'
+        ? this.closeAsk(batch.askId, `No answer in time: ${summarizeOutcomes(batch)}.`, expiryOutcomeOf(batch))
+        : this.closeAsk(batch.askId, `Decided from the terminal (${choice}): ${summarizeOutcomes(batch)}.`));
+    }
+    this.log(`[interrupted-tasks] batch ${batch.id} decided (${choice}, by ${by}): ${summarizeOutcomes(batch)}`);
+    try {
+      this.deps.onDecided?.(structuredClone(batch));
+    } catch (err) {
+      this.log(`[interrupted-tasks] onDecided listener failed: ${errorText(err)}`);
+    }
+    return structuredClone(batch);
   }
 
   private async apply(entry: InterruptedTaskEntry, choice: InterruptedBatchChoice): Promise<InterruptedTaskOutcome> {
@@ -297,6 +329,10 @@ export class InterruptedTasksService {
     }
     if (choice === 'resume' && this.deps.canResume && !(await this.deps.canResume(taskId).catch(() => false))) {
       return { taskId, outcome: 'left_stopped', detail: 'its conversation can no longer be resumed' };
+    }
+    const duplicate = this.deps.liveDuplicateOf?.(taskId);
+    if (duplicate) {
+      return { taskId, outcome: 'skipped', detail: `a task with the same prompt is already running or queued (${duplicate.taskId})` };
     }
     try {
       const result = await this.deps.reopenTask(taskId);

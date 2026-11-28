@@ -42,7 +42,14 @@ vi.mock('./crash-recovery.js', async (importOriginal) => {
 
 // Imported AFTER the mock is registered (vi.mock is hoisted above imports by
 // vitest, but keep the import here for readability of the dependency order).
-const { promotePendingStartupTasks, recoverLaunchAbandonedMasters, runStartupRecoveryPhase } = await import('./startup-recovery.js');
+const {
+  promotePendingStartupTasks,
+  recordInterruptedDecisionDispositions,
+  recoverLaunchAbandonedMasters,
+  runStartupRecoveryPhase,
+} = await import('./startup-recovery.js');
+const { NOT_INTERRUPTED_REASON_PREFIX, PARKED_FOR_OPERATOR_REASON } = await import('./crash-recovery.js');
+type InterruptedBatch = import('./interrupted-tasks/interrupted-tasks-service.js').InterruptedBatch;
 
 function reconciliationResult(overrides: Partial<ReconciliationResult> = {}): ReconciliationResult {
   return {
@@ -1464,5 +1471,133 @@ describe('recoverLaunchAbandonedMasters — restart window (issue #2762)', () =>
       preservedSessionIds: [],
       failures: [],
     });
+  });
+});
+
+describe('interrupted tasks: parked dispositions (issue #4294)', () => {
+  function restartTerminated(deps: ReturnType<typeof fakeDeps>, prompt: string) {
+    const task = deps.taskStore.createTask({ prompt, cwd: '/repo' });
+    deps.taskStore.startTask(task.id);
+    deps.taskStore.terminateTask(task.id, { reason: 'server-restart' });
+    return deps.taskStore.getTask(task.id)!;
+  }
+
+  test('a parked task is recorded as awaiting a human, not as covered by another task', async () => {
+    const deps = fakeDeps();
+    const parked = restartTerminated(deps, 'parked task');
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult({
+      skipped: [{ taskId: parked.id, sessionId: 's', reason: PARKED_FOR_OPERATOR_REASON }],
+      parked: [{ taskId: parked.id, name: 'parked task', mode: 'resume', parkedAs: { status: 'terminated', sessions: 0 } }],
+    }));
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ markedCompleted: ['s'], tasksTerminated: [parked.id] }),
+      dispositionLedgerPath: ledgerPath,
+    });
+    expect(deps.taskStore.getTask(parked.id)?.terminalReceipt).toMatchObject({
+      workDisposition: 'unknown',
+      recoveryCorrelationId: String(deps.restartEpoch),
+    });
+    const entries = await readDispositionEntries(ledgerPath);
+    expect(entries).toEqual([expect.objectContaining({ taskId: parked.id, disposition: 'needs-human' })]);
+    expect(entries[0]!.detail).not.toContain('obsolete');
+  });
+
+  test('a task cancelled before recovery reached it keeps the receipt its cancellation wrote', async () => {
+    const deps = fakeDeps();
+    const task = restartTerminated(deps, 'cancelled task');
+    deps.taskStore.cancelTask(task.id);
+    const before = deps.taskStore.getTask(task.id)!.terminalReceipt;
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult({
+      skipped: [{ taskId: task.id, sessionId: 's', reason: `${NOT_INTERRUPTED_REASON_PREFIX} (task is cancelled); left as it is` }],
+    }));
+    await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ markedCompleted: ['s'], tasksTerminated: [task.id] }),
+      dispositionLedgerPath: ledgerPath,
+    });
+    expect(deps.taskStore.getTask(task.id)!.terminalReceipt).toEqual(before);
+    expect(await readDispositionEntries(ledgerPath)).toEqual([]);
+  });
+
+  function decidedBatch(
+    choice: 'resume' | 'resume_all' | 'leave',
+    tasks: InterruptedBatch['tasks'],
+    outcomes: NonNullable<InterruptedBatch['decision']>['outcomes'],
+    source: InterruptedBatch['source'] = 'restart',
+  ): InterruptedBatch {
+    return { id: 'b1', source, createdAt: 0, deadlineAt: 1, state: 'decided', tasks, decision: { choice, by: 'operator', at: 1, outcomes } };
+  }
+
+  test('"leave" turns a parked task into abandoned work, with a ledger entry saying the operator chose it', async () => {
+    const deps = fakeDeps();
+    const task = restartTerminated(deps, 'left task');
+    deps.taskStore.recordRecoveryDisposition(task.id, { workDisposition: 'unknown', recoveryCorrelationId: 'epoch-1' });
+    const parkedAs = { status: 'terminated', sessions: task.sessions.length };
+    await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('leave',
+      [{ taskId: task.id, name: 'left task', mode: 'resume', parkedAs }],
+      [{ taskId: task.id, outcome: 'left_stopped', detail: 'operator chose to leave it stopped' }],
+    ), ledgerPath);
+    expect(deps.taskStore.getTask(task.id)!.terminalReceipt).toMatchObject({ workDisposition: 'abandoned', recoveryCorrelationId: 'epoch-1' });
+    expect(await readDispositionEntries(ledgerPath)).toEqual([expect.objectContaining({
+      taskId: task.id, disposition: 'obsolete', incidentId: 'epoch-1', source: 'interrupted-tasks',
+      detail: 'obsolete-because: the operator chose to leave it stopped',
+    })]);
+  });
+
+  test('a resumed task is relaunched work; one left stopped by "resume" needs a human', async () => {
+    const deps = fakeDeps();
+    const resumed = restartTerminated(deps, 'resumed task');
+    const fresh = restartTerminated(deps, 'fresh task');
+    const parkedAs = { status: 'terminated', sessions: 0 };
+    // What the decision's Reopen did: the resumed task is queued again.
+    deps.taskStore.reopenTask(resumed.id);
+    deps.taskStore.pendTask(resumed.id);
+    await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('resume',
+      [{ taskId: resumed.id, name: 'r', mode: 'resume', parkedAs }, { taskId: fresh.id, name: 'f', mode: 'fresh', parkedAs }],
+      [
+        { taskId: resumed.id, outcome: 'resumed' },
+        { taskId: fresh.id, outcome: 'left_stopped', detail: 'no conversation to resume (none)' },
+      ],
+    ), ledgerPath);
+    expect(deps.taskStore.getTask(resumed.id)!.terminalReceipt?.workDisposition).toBe('relaunched');
+    expect(deps.taskStore.getTask(fresh.id)!.terminalReceipt?.workDisposition).toBe('abandoned');
+    const entries = await readDispositionEntries(ledgerPath);
+    expect(entries.map((e) => [e.taskId, e.disposition])).toEqual([[resumed.id, 'respawned'], [fresh.id, 'needs-human']]);
+  });
+
+  test('a resumed task that has stopped again by the time the decision finishes keeps its new receipt', async () => {
+    const deps = fakeDeps();
+    const task = restartTerminated(deps, 'resumed then crashed');
+    // The next boot's recovery recorded this restart's receipt before the decision was finished.
+    deps.taskStore.recordRecoveryDisposition(task.id, { workDisposition: 'abandoned', recoveryCorrelationId: 'epoch-2' });
+    await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('resume',
+      [{ taskId: task.id, name: 't', mode: 'resume', parkedAs: { status: 'terminated', sessions: 0 } }],
+      [{ taskId: task.id, outcome: 'resumed' }],
+    ), ledgerPath);
+    expect(deps.taskStore.getTask(task.id)!.terminalReceipt).toMatchObject({ workDisposition: 'abandoned', recoveryCorrelationId: 'epoch-2' });
+    expect(await readDispositionEntries(ledgerPath)).toEqual([]);
+  });
+
+  test('a task changed since it was parked, a skipped task, and an operator-raised batch are left alone', async () => {
+    const deps = fakeDeps();
+    const changed = restartTerminated(deps, 'changed task');
+    const skipped = restartTerminated(deps, 'skipped task');
+    const parkedAs = { status: 'terminated', sessions: 0 };
+    deps.taskStore.cancelTask(changed.id);
+    const changedReceipt = deps.taskStore.getTask(changed.id)!.terminalReceipt;
+    const skippedReceipt = deps.taskStore.getTask(skipped.id)!.terminalReceipt;
+    await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('leave',
+      [{ taskId: changed.id, name: 'c', mode: 'resume', parkedAs }, { taskId: skipped.id, name: 's', mode: 'resume', parkedAs }],
+      [{ taskId: changed.id, outcome: 'left_stopped' }, { taskId: skipped.id, outcome: 'skipped', detail: 'task no longer exists' }],
+    ), ledgerPath);
+    await recordInterruptedDecisionDispositions(deps.taskStore, decidedBatch('leave',
+      [{ taskId: skipped.id, name: 's', mode: 'resume', parkedAs }],
+      [{ taskId: skipped.id, outcome: 'left_stopped' }],
+      'operator',
+    ), ledgerPath);
+    expect(deps.taskStore.getTask(changed.id)!.terminalReceipt).toEqual(changedReceipt);
+    expect(deps.taskStore.getTask(skipped.id)!.terminalReceipt).toEqual(skippedReceipt);
+    expect(await readDispositionEntries(ledgerPath)).toEqual([]);
   });
 });

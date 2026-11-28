@@ -139,6 +139,14 @@ export interface SessionInfo {
    * send nothing on resume, and on sessions launched before this field existed.
    */
   promptDelivery?: PromptDeliveryHealth;
+  /**
+   * Set on a dead session whose task crash recovery left stopped for the operator's resume
+   * decision instead of relaunching it (issue #4215). The session the decision (or a later Reopen)
+   * starts carries no `relaunchCount` of its own, so crash recovery continues this session's relaunch
+   * chain through it: without that, a host that crashes, parks and resumes over and over is never
+   * capped (issue #4294).
+   */
+  parkedForOperator?: boolean;
   /** How many times this session chain has been relaunched (0 = original). */
   relaunchCount?: number;
   /** Timestamp (ms since epoch) when this session chain was last relaunched. */
