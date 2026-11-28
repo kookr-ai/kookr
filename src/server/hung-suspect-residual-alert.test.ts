@@ -7,6 +7,7 @@ import { operationalAlertToSignal } from '../observability/signal-delivery/opera
 import { writeOperatorSignal, readSignal, listSignalFiles } from '../observability/signal-delivery/operator-signal.js';
 import {
   HungSuspectResidualAlerter,
+  isHeldOutOfHungResidual,
   buildHungResidualAlert,
   buildHungResidualRecoveryAlert,
   formatSkipContextForPage,
@@ -21,6 +22,7 @@ import {
   DEFAULT_HUNG_RESIDUAL_STALE_MS,
   DEFAULT_HUNG_RESIDUAL_COOLDOWN_MS,
 } from './hung-suspect-residual-alert.js';
+import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 
 describe('buildHungResidualAlert / clear (issue #1993)', () => {
   it('builds a fired operational alert with key hung:residual', () => {
@@ -401,5 +403,94 @@ describe('open_pr_failsafe dominance threshold (issue #2232)', () => {
     expect(breakdown.dominantCount).toBe(2);
     expect(breakdown.sampleTaskIds).toEqual(['u1', 'u2']);
     expect(formatSkipContextForPage(breakdown)).toContain('skipped_under_ttl (2/3 last pass)');
+  });
+});
+
+describe('kept-alive and only-warned tasks are held out of hung:residual (issue #4291)', () => {
+  const GRACE_MS = 120_000;
+  const T0 = 1_800_000_000_000;
+
+  /** Count residual the way lifecycle-timers does, then page. */
+  function residualOf(ids: string[], coordinator: ReapWarningCoordinator, nowMs: number, failed = new Set<string>()) {
+    return ids.filter((id) => !isHeldOutOfHungResidual({
+      nowMs,
+      ttlWarning: coordinator.getWarning(id),
+      ttlReapFailed: failed.has(id),
+    })).length;
+  }
+
+  function keepAlive(coordinator: ReapWarningCoordinator, id: string, nowMs: number) {
+    const result = coordinator.agentVeto(id, {
+      now: nowMs,
+      extensionMs: 60 * 60_000,
+      ceilingAt: nowMs + 12 * 3_600_000,
+      actor: 'task:parent',
+      actorName: 'parent',
+      reason: 'waiting on a long build',
+    });
+    expect(result.accepted).toBe(true);
+  }
+
+  function runForStaleWindow(ids: string[], opts: { keepAlive: boolean }) {
+    let nowMs = T0;
+    const broadcast = vi.fn();
+    const alerter = new HungSuspectResidualAlerter({ broadcast, getCountBound: () => 3, getStaleMs: () => 30 * 60_000, now: () => nowMs });
+    const coordinator = new ReapWarningCoordinator();
+    for (const id of ids) {
+      coordinator.advance({ taskId: id, agentId: id, silentForMs: 30 * 60_000, now: nowMs, graceMs: GRACE_MS, present: false });
+      if (opts.keepAlive) keepAlive(coordinator, id, nowMs);
+    }
+    // Past the grace window but inside the keep-alive: un-kept warnings have
+    // become reap candidates (the reap itself is not simulated here).
+    const counts: number[] = [];
+    for (let minute = 3; minute <= 40; minute += 1) {
+      nowMs = T0 + minute * 60_000;
+      const residualCount = residualOf(ids, coordinator, nowMs);
+      counts.push(residualCount);
+      alerter.evaluate({ residualCount });
+    }
+    return { broadcast, counts };
+  }
+
+  it('a kept-alive hung-suspect task produces no residual page', () => {
+    const { broadcast, counts } = runForStaleWindow(['a', 'b', 'c', 'd'], { keepAlive: true });
+    expect(counts.every((n) => n === 0)).toBe(true);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('the same tasks without a keep-alive still page once their warning deadline passes', () => {
+    const { broadcast, counts } = runForStaleWindow(['a', 'b', 'c', 'd'], { keepAlive: false });
+    expect(counts.every((n) => n === 4)).toBe(true);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const alert = broadcast.mock.calls[0][0] as Extract<ServerMessage, { type: 'alert' }>;
+    expect(alert.operationalAlert?.key).toBe(HUNG_RESIDUAL_ALERT_KEY);
+    expect(alert.operationalAlert?.state).toBe('fired');
+  });
+
+  it('an only-warned task (grace not yet elapsed) does not count; it counts again after the deadline', () => {
+    const coordinator = new ReapWarningCoordinator();
+    coordinator.advance({ taskId: 'w', agentId: 'w', silentForMs: 1, now: T0, graceMs: GRACE_MS, present: false });
+    expect(residualOf(['w'], coordinator, T0 + GRACE_MS - 1)).toBe(0);
+    expect(residualOf(['w'], coordinator, T0 + GRACE_MS)).toBe(1);
+  });
+
+  it('a task with no warning at all still counts', () => {
+    expect(residualOf(['x'], new ReapWarningCoordinator(), T0)).toBe(1);
+  });
+
+  it('a re-warned task whose last reap threw still counts, unless it was kept alive', () => {
+    const coordinator = new ReapWarningCoordinator();
+    coordinator.advance({ taskId: 'f', agentId: 'f', silentForMs: 1, now: T0, graceMs: GRACE_MS, present: false });
+    const failed = new Set(['f']);
+    expect(residualOf(['f'], coordinator, T0 + 1, failed)).toBe(1);
+    keepAlive(coordinator, 'f', T0 + 1);
+    expect(residualOf(['f'], coordinator, T0 + 2, failed)).toBe(0);
+  });
+
+  it('a 3h hung-task reaper warning holds the task out only when it was kept alive', () => {
+    const live = { deadlineAt: T0 + 60_000, keptAliveCount: 0 };
+    expect(isHeldOutOfHungResidual({ nowMs: T0, hungTaskWarning: live })).toBe(false);
+    expect(isHeldOutOfHungResidual({ nowMs: T0, hungTaskWarning: { ...live, keptAliveCount: 1 } })).toBe(true);
+    expect(isHeldOutOfHungResidual({ nowMs: T0 + 60_000, hungTaskWarning: { ...live, keptAliveCount: 1 } })).toBe(false);
   });
 });

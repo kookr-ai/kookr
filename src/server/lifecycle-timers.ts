@@ -90,6 +90,7 @@ import {
   type FinishedAwaitingAckAckReaperMetrics,
 } from './finished-awaiting-ack-ack-reaper.js';
 import {
+  hasFailedHungSuspectTtlReap,
   reclaimAgedHungSuspectTasks,
   type HungSuspectTtlReclaimMetrics,
   type ReclaimHungSuspectTasksResult,
@@ -98,7 +99,7 @@ import {
   maybeReapFirstHookMiss,
   type FirstHookMissMetrics,
 } from './first-hook-deadline-sweep.js';
-import type { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
+import { isHeldOutOfHungResidual, type HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import {
   collectPermissionPromptWaits,
   type PermissionPromptWaitAlerter,
@@ -2288,14 +2289,24 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         // pendingSignal, so FAA tasks would otherwise inflate residual and
         // false-page while byClass.hungSuspect stays 0. Skip ids just
         // reclaimed this tick — hungSuspectSignalsCache may still say true
-        // for them (filled during reclaim before terminate/purge).
+        // for them (filled during reclaim before terminate/purge). Skip tasks
+        // only warned or deliberately kept alive (issue #4291): a reaper has
+        // already scheduled them, so they are not slots reclaim cannot free.
         const reclaimedIds = new Set(hungSuspectTtlResult.reclaimedTaskIds);
+        const ttlCoordinator = deps.hungSuspectTtlReapWarningCoordinator;
+        const residualNowMs = Date.now();
         let residualHungSuspect = 0;
         // Live-only: hungSuspect residual is inProgress-only capacity math.
         for (const task of taskStore.viewLiveTasks()) {
           if (task.status !== 'inProgress') continue;
           if (task.pendingSignal?.kind === 'completion_ready') continue;
           if (reclaimedIds.has(task.id)) continue;
+          if (isHeldOutOfHungResidual({
+            nowMs: residualNowMs,
+            ttlWarning: ttlCoordinator?.getWarning(task.id),
+            ttlReapFailed: ttlCoordinator ? hasFailedHungSuspectTtlReap(ttlCoordinator, task.id) : false,
+            hungTaskWarning: deps.reapWarningCoordinator?.getWarning(task.id),
+          })) continue;
           if (hungSuspectSignals(task).hungSuspect) residualHungSuspect += 1;
         }
         try {

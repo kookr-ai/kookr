@@ -72,6 +72,46 @@ export interface HungSuspectResidualAlerterDeps {
   now?: () => number;
 }
 
+/** The parts of a reap warning the residual count reads (issue #4291). */
+export interface ResidualReapWarningView {
+  /** Close deadline (ms since epoch); a keep-alive pushes it later. */
+  deadlineAt: number;
+  /** Dashboard vetoes plus `POST /api/tasks/:id/keep-alive` extensions this cycle. */
+  keptAliveCount: number;
+}
+
+/**
+ * Whether a hungSuspect task is held out of the `hung:residual` count
+ * (issue #4291). The page is for slots the reclaim cannot free; a task that a
+ * reaper has already scheduled to close, or that someone deliberately kept
+ * alive, is not such a slot.
+ *
+ * - **Warned** means the hungSuspect TTL reclaim has a live warning for the
+ *   task: the selector picked it past the TTL and its close deadline
+ *   (`deadlineAt`, grace / presence hold / veto / keep-alive) has not passed
+ *   yet. It is not yet a reap candidate. Exception: when the last reap attempt
+ *   threw (`ttlReapFailed`) the warning is only a retry countdown, so the task
+ *   still counts unless it was also kept alive — otherwise a terminate that
+ *   keeps throwing would flicker out of the count and never page (#3251).
+ * - **Kept alive** means a warning, from either the TTL reclaim or the 3h
+ *   hung-task reaper, that carries at least one keep-alive and whose deadline
+ *   has not passed.
+ *
+ * Once the deadline passes the task counts again. Pure.
+ */
+export function isHeldOutOfHungResidual(input: {
+  nowMs: number;
+  ttlWarning?: ResidualReapWarningView;
+  ttlReapFailed?: boolean;
+  hungTaskWarning?: ResidualReapWarningView;
+}): boolean {
+  const { nowMs, ttlWarning, hungTaskWarning } = input;
+  if (ttlWarning && ttlWarning.deadlineAt > nowMs) {
+    if (ttlWarning.keptAliveCount > 0 || !input.ttlReapFailed) return true;
+  }
+  return Boolean(hungTaskWarning && hungTaskWarning.keptAliveCount > 0 && hungTaskWarning.deadlineAt > nowMs);
+}
+
 /** One last-pass reclaim candidate (mirrors hungSuspectTtlReclaim.lastOutcomes). */
 export interface HungResidualOutcomeSample {
   taskId: string;
