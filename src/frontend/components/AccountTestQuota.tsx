@@ -1,7 +1,7 @@
 import React from 'react';
 import type { ClaudeAccountTestResponse } from '../../shared/contracts/claude-accounts.js';
 import { nearLimitWindows, testQuotaStatus } from '../store/claude-accounts.js';
-import { QuotaRows } from './UsageSummary.js';
+import { QuotaRows } from './QuotaRows.js';
 
 /**
  * A tested account's 5-hour/7-day usage (issue #4251): the host's quota bars,

@@ -10,7 +10,7 @@ import {
   useClaudeAccounts,
 } from '../store/claude-accounts.js';
 import type { ClaudeAccountView } from '../../shared/contracts/claude-accounts.js';
-import { QuotaRows } from './UsageSummary.js';
+import { QuotaRows } from './QuotaRows.js';
 import { AccountTestQuota } from './AccountTestQuota.js';
 
 /**
