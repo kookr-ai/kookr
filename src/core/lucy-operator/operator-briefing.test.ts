@@ -3,6 +3,7 @@ import type { OperatorAskView } from '../../shared/contracts/asks.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import type { OperatorAttentionKind } from './attention.js';
 import {
+  MAX_NAMED_TASKS,
   MAX_OPERATOR_BRIEFING_CHIPS,
   MAX_OPERATOR_BRIEFING_WORDS,
   RECENTLY_ENDED_MS,
@@ -66,6 +67,56 @@ describe('buildOperatorBriefing: what needs the operator comes first', () => {
     ['budget_exceeded', 'Cache warmup went over its budget. Nothing else is running.'],
   ] as const)('says in plain words what is wrong with a task in trouble: %s', (kind, text) => {
     expect(buildOperatorBriefing({ tasks: [task('t5', 'Cache warmup', kind)] }, NOW).text).toBe(text);
+  });
+
+  it('names two tasks in trouble in the grouped sentence', () => {
+    const briefing = buildOperatorBriefing({
+      tasks: [task('t1', 'Cache warmup', 'stale_agent'), task('t2', 'Fix login', 'merge_conflict'), task('w1', 'A'), task('w2', 'B')],
+    }, NOW);
+    expect(briefing.text).toBe('Two tasks have stalled or hit a problem: Cache warmup and Fix login. Two more are working.');
+  });
+
+  it('names three tasks in trouble', () => {
+    const briefing = buildOperatorBriefing({
+      tasks: [task('t1', 'Cache warmup', 'stale_agent'), task('t2', 'Fix login', 'api_error'), task('t3', 'Search index', 'hook_disconnected')],
+    }, NOW);
+    expect(briefing.text).toBe('Three tasks have stalled or hit a problem: Cache warmup, Fix login and Search index. Nothing else is running.');
+  });
+
+  it('names at most three tasks in trouble and counts the rest', () => {
+    expect(MAX_NAMED_TASKS).toBe(3);
+    const names = ['Cache warmup', 'Fix login', 'Search index', 'Docs link audit', 'Billing migration'];
+    const briefing = buildOperatorBriefing({ tasks: names.map((name, i) => task(`t${i}`, name, 'stale_agent')) }, NOW);
+    expect(briefing.text).toBe('Five tasks have stalled or hit a problem: Cache warmup, Fix login, Search index and two more. Nothing else is running.');
+    expect(briefing.text).not.toContain('Docs link audit');
+  });
+
+  it('counts the tasks in trouble whose titles cannot be said, and names the others', () => {
+    const tasks = [task('t1', undefined, 'stale_agent'), task('t2', 'Fix login', 'stale_agent'), task('t3', 'fix /srv/app/index.ts', 'stale_agent')];
+    expect(buildOperatorBriefing({ tasks }, NOW).text).toBe('Three tasks have stalled or hit a problem: Fix login and two more. Nothing else is running.');
+    const unnamed = [task('t1', undefined, 'stale_agent'), task('t2', 'fix /srv/app/index.ts', 'repeated_error')];
+    expect(buildOperatorBriefing({ tasks: unnamed }, NOW).text).toBe('Two tasks have stalled or hit a problem. Nothing else is running.');
+  });
+
+  it('names the tasks in trouble after an earlier group as others', () => {
+    const briefing = buildOperatorBriefing({
+      tasks: [task('t0', 'Deploy fix', 'permission_blocked'), task('t1', 'Cache warmup', 'stale_agent'), task('t2', 'Fix login', 'stale_agent')],
+    }, NOW);
+    expect(briefing.text).toBe('Deploy fix is waiting for a permission. Two others have stalled or hit a problem: Cache warmup and Fix login. Nothing else is running.');
+  });
+
+  it('only counts the tasks in trouble when their names would not fit in the briefing', () => {
+    const long = ['Move the billing tables to Postgres', 'Rewrite the nightly report job today', 'Audit every link in the docs'];
+    const briefing = buildOperatorBriefing({
+      tasks: [
+        task('p1', 'Warm the cache after each deploy', 'permission_blocked'), task('i1', 'Trim the search index on Sundays', 'needs_input'),
+        ...long.map((name, i) => task(`t${i}`, name, 'stale_agent')), task('r1', 'Docs link audit', 'wants_review'),
+      ],
+    }, NOW);
+    expect(words(briefing.text)).toBeLessThanOrEqual(MAX_OPERATOR_BRIEFING_WORDS);
+    expect(briefing.text).toContain('Three others have stalled or hit a problem.');
+    expect(briefing.text).not.toContain('Move the billing');
+    expect(briefing.text).toContain('Docs link audit says it is finished and wants your review.');
   });
 
   it('counts a task with a question once, even when a finding is also raised on it', () => {
