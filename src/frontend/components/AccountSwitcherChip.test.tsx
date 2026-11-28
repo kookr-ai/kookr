@@ -116,6 +116,24 @@ describe('footer account switcher', () => {
     expect(q('[data-testid="account-popover"]')!.textContent).toContain('An account\'s own bars appear after you test it.');
   });
 
+  test('popover: testing host draws no second set of bars next to the live host quota', async () => {
+    server = installFakeAccountsServer(['pro']);
+    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+    server.testQuotas = {
+      host: {
+        fiveHour: { utilization: 56, resetsAt, status: 'allowed' },
+        sevenDay: { utilization: 22, resetsAt, status: 'allowed' },
+      },
+    };
+    await mount();
+    await click(q('[data-testid="account-chip"]'));
+    const row = () => q('[data-testid="account-popover-row-host"]')!;
+    await click(Array.from(row().querySelectorAll('button'))[0]);
+    expect(server.calls.some((c) => c.method === 'POST' && c.url === '/api/claude-accounts/host/test')).toBe(true);
+    expect(row().querySelector('[data-testid="usage-quota-5h"]')).toBeNull();
+    expect(row().querySelector('[data-testid="usage-quota-7d"]')).toBeNull();
+  });
+
   test('Escape closes the popover and returns focus to the chip', async () => {
     server = installFakeAccountsServer(['pro']);
     await mount();
