@@ -347,8 +347,21 @@ describe('SettingsDialog tabs', () => {
   });
 
   test('offers only the Kokoro voices the speech service lists', async () => {
-    await remountWithSpeechHealth({ status: 'ok', kokoro_voices: ['af_heart'] });
+    await remountWithSpeechHealth({ status: 'ok', kokoro_voices: ['af_heart', 3, { id: 'af_sky' }] });
     expect(voiceOptions()).toEqual(['Install default', 'Heart', 'Matilda']);
+  });
+
+  test('hides the Kokoro voices when the speech health request fails', async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/health/tts') throw new TypeError('network down');
+      return { ok: true, status: 200, json: async () => DEFAULT_SETTINGS };
+    }));
+    root = renderDialog(container);
+    await flush();
+    expect(voiceOptions()).toEqual(['Install default', 'Matilda']);
   });
 
   test('keeps a saved Kokoro voice visible, marked, when the speech service cannot speak it', async () => {

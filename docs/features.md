@@ -520,6 +520,10 @@ says out loud, and a one-line strip above it holds what is waiting on you.
 - **Choose the voice.** Settings → General → **Voice** (server setting `speakVoice`, next to
   `speakVerbosity`) picks Heart, Sky, Sarah or Matilda, or **Install default** to follow `TTS_VOICE`.
   It applies to the next spoken clip with no restart. Heart, Sky and Sarah need a GPU to respond quickly.
+  They are listed only when the speech service in use says it can speak them (the bundled service
+  lists them on its health check); with another speech server set by `KOOKR_TTS_URL`, or an older
+  bundled container, only Matilda is offered. A Kokoro voice saved earlier stays selected, marked as
+  one this speech service cannot speak.
 - **What it does not do.** With one exception it never speaks on its own: it accompanies clips you
   asked for and answers you while hands-free is on (below). The exception is a question a task asks
   you, which she reads out once when it arrives (next section). Its mouth follows the loudness of the clip, not the

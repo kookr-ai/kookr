@@ -715,6 +715,7 @@ describe('summarizeTaskForSpeech', () => {
       ['a command after a prepositional "to" and a noun that is also a verb', 'The agent will switch to release and merge it.'],
       ['a repeated verb after a condition', 'The agent did not commit and commit the files.'],
       ['a repeated verb after a plan', 'The agent will commit and commit the files.'],
+      ['a repeated verb across a comma after a plan', 'The agent will merge, merge it and push.'],
       ['commands after "will not"', 'The agent will not rebase, merge it and push.'],
       ['a request addressed to "yourself"', 'The branch is ready to merge yourself.'],
       ['a command reported with "is now to"', 'The plan is now to merge it.'],
