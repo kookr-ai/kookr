@@ -51,25 +51,6 @@ export interface SetDefaultClaudeAccountRequest {
  */
 export type ClaudeAccountTestOutcome = 'ok' | 'usage_limited' | 'auth_failed' | 'error';
 
-/**
- * One usage window as the probe's `rate_limit_event` reported it, in the units
- * of the host's `QuotaWindow` so the same bars can render it.
- */
-export interface ClaudeAccountQuotaWindow {
-  /** Percent of the window used, 0-100. */
-  utilization: number;
-  /** ISO time the window resets. */
-  resetsAt: string;
-  /** Claude Code's status for the window: `allowed`, `allowed_warning` (close to the limit) or `rejected`. */
-  status?: string;
-}
-
-/** The account's plan usage at test time. A window Claude Code did not report is absent. */
-export interface ClaudeAccountQuota {
-  fiveHour?: ClaudeAccountQuotaWindow;
-  sevenDay?: ClaudeAccountQuotaWindow;
-}
-
 /** `POST /api/claude-accounts/:name/test`. */
 export interface ClaudeAccountTestResponse {
   name: string;
@@ -78,8 +59,6 @@ export interface ClaudeAccountTestResponse {
   message: string;
   /** ISO time the test finished. */
   testedAt: string;
-  /** Usage measured by this test; absent when Claude Code reported none. */
-  quota?: ClaudeAccountQuota;
 }
 
 /** Error body of a refused accounts request. */

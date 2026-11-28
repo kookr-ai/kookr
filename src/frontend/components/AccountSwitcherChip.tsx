@@ -7,7 +7,6 @@ import {
   testAccount,
   useClaudeAccounts,
 } from '../store/claude-accounts.js';
-import { AccountTestQuota } from './AccountTestQuota.js';
 
 /**
  * Footer chip naming the account new tasks launch on, with a popover to change
@@ -83,12 +82,7 @@ export function AccountSwitcherChip({ onOpenAccountSettings }: { onOpenAccountSe
                     onChange={() => { void run(() => setDefaultAccount(account.name)); }}
                   />
                   <span className="account-popover-name" title={account.label}>{account.name}</span>
-                  <span
-                    className={`claude-account-status claude-account-status--${status.tone}`}
-                    data-testid={`account-popover-status-${account.name}`}
-                  >
-                    {status.label}
-                  </span>
+                  <span className={`claude-account-status claude-account-status--${status.tone}`}>{status.label}</span>
                   <button
                     type="button"
                     className="settings-button"
@@ -97,13 +91,12 @@ export function AccountSwitcherChip({ onOpenAccountSettings }: { onOpenAccountSe
                   >
                     {testing[account.name] ? 'Testing…' : outOfQuota ? 'Test now' : 'Test'}
                   </button>
-                  {account.name !== 'host' && <AccountTestQuota test={tests[account.name]} />}
                 </div>
               );
             })}
           </div>
           {error && <div className="settings-error" role="alert">{error}</div>}
-          <div className="settings-desc">Sidebar bars show the host login. An account&apos;s own bars appear after you test it.</div>
+          <div className="settings-desc">Quota bars show the host login only.</div>
           {onOpenAccountSettings && (
             <button
               type="button"

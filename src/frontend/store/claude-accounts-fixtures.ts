@@ -1,6 +1,5 @@
 import { vi } from 'vitest';
 import type {
-  ClaudeAccountQuota,
   ClaudeAccountsResponse,
   ClaudeAccountTestOutcome,
   ClaudeAccountView,
@@ -12,8 +11,6 @@ export interface FakeAccountsServer {
   defaultName: string;
   /** Outcome returned by `POST /:name/test`, by account name (default `ok`). */
   testOutcomes: Record<string, ClaudeAccountTestOutcome>;
-  /** Usage returned by `POST /:name/test`, by account name (default none). Such a test is dated now. */
-  testQuotas: Record<string, ClaudeAccountQuota>;
   /** When set, `POST /api/claude-accounts` refuses with this body. */
   addError?: { error: string; code: string };
   /** When set, `POST /api/tasks/:id/claude-account` refuses with this body (409). */
@@ -38,7 +35,6 @@ export function installFakeAccountsServer(
     accounts: [],
     defaultName,
     testOutcomes: {},
-    testQuotas: {},
     calls: [],
   };
   server.accounts = ['host', ...registered].map((name) => makeAccount(name));
@@ -69,14 +65,7 @@ export function installFakeAccountsServer(
     if (test && method === 'POST') {
       const name = decodeURIComponent(test[1]);
       const outcome = server.testOutcomes[name] ?? 'ok';
-      const quota = server.testQuotas[name];
-      return json(200, {
-        name,
-        outcome,
-        message: `${name} says ${outcome}`,
-        testedAt: quota ? new Date().toISOString() : '2026-01-01T00:00:00.000Z',
-        ...(quota ? { quota } : {}),
-      });
+      return json(200, { name, outcome, message: `${name} says ${outcome}`, testedAt: '2026-01-01T00:00:00.000Z' });
     }
     const del = /^\/api\/claude-accounts\/([^/]+)$/.exec(url);
     if (del && method === 'DELETE') {

@@ -39,11 +39,6 @@ and finds it inside the full `setup-token` output. `kookr account list` never
 prints a token, only its last four characters. Running `add` again with an
 existing name replaces its token.
 
-`kookr account test` also prints the account's plan usage at that moment on
-the same line, for example `Claude account "work" works. (5h 56%, 7d 99% near
-limit)`. "near limit" is Claude Code's own warning that the window is close to
-its limit. With `--json` the windows are in `details.quota`.
-
 The registry is `~/.kookr/claude-accounts.json`, readable by your user only
 (mode `0600`). It is shared by every Kookr instance of that user (prod on 4800
 and dev on 4801), like `~/.claude` is. `KOOKR_CLAUDE_ACCOUNTS_FILE` moves it.
@@ -93,14 +88,12 @@ The server side is `POST /api/tasks/:id/claude-account`; see the
 
 ## Usage limits and the quota gate
 
-Kookr's plan-quota admission gate (and the quota bars in the sidebar) reads
+Kookr's plan-quota admission gate (and the quota shown in the dashboard) reads
 the usage of the host login only. A launch on another account is therefore not
 refused or rotated to another agent because the host account is exhausted.
-Kookr does not follow the usage of other accounts over time: it sees an
-account's usage only when that account is tested (below), and the gate never
-reads it. Claude Code reports a usage limit on the account a task runs on in the
-usual way, and the task shows as provider-paused. Switching it to another
-account is the way out.
+Kookr does not read the usage of other accounts; Claude Code reports a usage
+limit on the account a task runs on in the usual way, and the task shows as
+provider-paused. Switching it to another account is the way out.
 
 When new tasks default to another account, the soft-quota orchestration pause
 no longer reads the host's usage either: `GET /api/orchestration/status`
@@ -114,7 +107,7 @@ wrong moment, but never past the usual hard limit (2 hours by default).
 Everything above also works without a terminal:
 
 - **Settings -> Accounts** lists the accounts (never a token), marks the default, and lets you add an account, replace its token, give it a label (for example its email address), choose the default and remove it. Paste the whole output of `claude setup-token`; Kookr finds the token inside it. A token is write-only: once saved it is never shown again, only its last four characters.
-- **Test** on an account sends one tiny request and reports one of four results: **works**, **out of quota** (the account signed in but its plan limit is reached; the line shows when it resets), **sign-in failed** (the token was refused: expired, revoked or mistyped), or **test failed** for anything else (the `claude` CLI missing, a timeout), with its first line. An account that is out of quota keeps its Test button, so you can check whether its quota is back. A test also reads the account's 5-hour and 7-day usage from Claude Code's answer and shows it with the same bars as the host login, under the account in Settings and in the footer popover, with the time it was measured. The bars grey out after five minutes; test again for current usage. A window Claude Code marks as close to its limit turns the account's status into **Near limit**. Kookr keeps this reading in the page only, so a reload clears it.
+- **Test** on an account sends one tiny request and reports one of four results: **works**, **out of quota** (the account signed in but its plan limit is reached; the line shows when it resets), **sign-in failed** (the token was refused: expired, revoked or mistyped), or **test failed** for anything else (the `claude` CLI missing, a timeout), with its first line. An account that is out of quota keeps its Test button, so you can check whether its quota is back.
 - The **sidebar footer** shows the account new tasks will run on and lets you change it, once a second account exists. Tasks already started keep their account.
 - A claude-code task shows an **account badge** once a second account exists. Its menu moves the task to another account, as `kookr account switch` does: a running task restarts in place and continues its conversation. A task stopped by a usage limit shows a banner offering to continue on an account not known to be out of quota.
 - The **Launch** form has a **Claude account** picker for claude-code tasks; leaving it on *Default* uses the default at launch time.

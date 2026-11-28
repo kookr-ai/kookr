@@ -94,28 +94,6 @@ describe('footer account switcher', () => {
     expect(q('[data-testid="account-popover"]')).toBeNull();
   });
 
-  test('popover: a tested account shows its own bars and the near-limit status', async () => {
-    server = installFakeAccountsServer(['pro']);
-    const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
-    server.testQuotas = {
-      pro: {
-        fiveHour: { utilization: 56, resetsAt, status: 'allowed_warning' },
-        sevenDay: { utilization: 22, resetsAt, status: 'allowed' },
-      },
-    };
-    await mount();
-    await click(q('[data-testid="account-chip"]'));
-    const row = () => q('[data-testid="account-popover-row-pro"]')!;
-    expect(row().querySelector('[data-testid="usage-quota-5h"]')).toBeNull();
-    await click(Array.from(row().querySelectorAll('button'))[0]);
-    expect(row().querySelector('[data-testid="usage-quota-5h"]')!.textContent).toContain('56%');
-    expect(row().querySelector('[data-testid="usage-quota-7d"]')!.textContent).toContain('22%');
-    expect(q('[data-testid="account-popover-status-pro"]')!.textContent).toBe('Near limit');
-    expect(row().textContent).toContain('5-hour quota is close to its limit.');
-    expect(row().textContent).toMatch(/Measured by the test at/);
-    expect(q('[data-testid="account-popover"]')!.textContent).toContain('An account\'s own bars appear after you test it.');
-  });
-
   test('Escape closes the popover and returns focus to the chip', async () => {
     server = installFakeAccountsServer(['pro']);
     await mount();
