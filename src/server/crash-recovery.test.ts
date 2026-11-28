@@ -7,11 +7,30 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
-import { PARKED_FOR_OPERATOR_REASON, recoverCrashedSessions } from './crash-recovery.js';
+import {
+  findLivePromptDuplicate,
+  NOT_INTERRUPTED_REASON_PREFIX,
+  PARKED_FOR_OPERATOR_REASON,
+  recoverCrashedSessions,
+} from './crash-recovery.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildStartupRecoveryHealthSummary } from './routes/diagnostics-routes.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
+
+// Lets a test act on the task while crash recovery awaits its resume report (issue #4294).
+const resumeHooks = vi.hoisted(() => ({ afterDescribe: undefined as undefined | ((taskId: string) => void) }));
+vi.mock('./resume-context.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./resume-context.js')>();
+  return {
+    ...actual,
+    describeReopenResume: async (...args: Parameters<typeof actual.describeReopenResume>) => {
+      const report = await actual.describeReopenResume(...args);
+      resumeHooks.afterDescribe?.(args[0].id);
+      return report;
+    },
+  };
+});
 
 describe('Crash Recovery', () => {
   let taskStore: TaskStore;
@@ -23,6 +42,7 @@ describe('Crash Recovery', () => {
   let settingsDir: string;
 
   beforeEach(async () => {
+    resumeHooks.afterDescribe = undefined;
     taskStore = new TaskStore();
     terminal = new FakeTerminalBackend();
     tempDir = await mkdtemp(join(tmpdir(), 'crash-recovery-'));
@@ -1909,6 +1929,117 @@ describe('Crash Recovery', () => {
     // Parking would leave it stopped, and Ralph's startup reconcile closes the loop of a stopped task.
     expect(result.parked ?? []).toEqual([]);
     expect(result.skipped.map((s) => s.reason)).not.toContain(PARKED_FOR_OPERATOR_REASON);
+  });
+
+  // === Issue #4294: interrupted-tasks follow-ups ===
+
+  /** What the operator's resume decision does to a parked task: reopen it, and a new session starts. */
+  function resumeParkedTask(taskId: string, createdAt: Date): string {
+    taskStore.reopenTask(taskId);
+    const tmuxSession = `kookr-resumed-${taskId.slice(0, 8)}-${taskStore.getTask(taskId)!.sessions.length}`;
+    taskStore.addSession(taskId, { tmuxSession, agentType: 'claude-code', cwd: taskStore.getTask(taskId)!.cwd, createdAt, lastStatus: 'running' });
+    return tmuxSession;
+  }
+
+  test('parkForOperator: a host that crashes, parks and resumes over and over reaches the crash-loop cap (#4294)', async () => {
+    const task = await setupCrashedTask('Crash loop under ask', join(tempDir, 'park-loop'));
+    const tenMinutesAgo = () => new Date(Date.now() - 10 * 60_000);
+    const parkedCycles: number[] = [];
+    let capped: string | undefined;
+    for (let cycle = 1; cycle <= 8 && !capped; cycle++) {
+      const reconcileResult = await reconcile(taskStore, terminal);
+      const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+      capped = result.skipped.find((s) => s.reason.startsWith('crash-loop cap reached'))?.reason;
+      if (capped) break;
+      expect(result.parked?.map((p) => p.taskId)).toEqual([task.id]);
+      parkedCycles.push(cycle);
+      // The decision resumes it well outside the rapid window; the host then crashes again.
+      resumeParkedTask(task.id, tenMinutesAgo());
+    }
+    // Five crashes are parked and resumed (relaunches 1 to 5); the sixth is capped, as in `auto`.
+    expect(parkedCycles).toEqual([1, 2, 3, 4, 5]);
+    expect(capped).toBe('crash-loop cap reached (5 relaunches, cap is 5)');
+  });
+
+  test('parkForOperator: a resumed task that crashes within the rapid window is not parked again (#4294)', async () => {
+    const task = await setupCrashedTask('Rapid crash under ask', join(tempDir, 'park-rapid'));
+    let reconcileResult = await reconcile(taskStore, terminal);
+    await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    resumeParkedTask(task.id, new Date(Date.now() - 5_000));
+    reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked ?? []).toEqual([]);
+    expect(result.skipped.map((s) => s.reason)).toEqual([expect.stringMatching(/^rapid crash-loop \(relaunched 5s ago/)]);
+  });
+
+  test('a session resumed after a park continues the relaunch count when recovery relaunches it (#4294)', async () => {
+    const task = await setupCrashedTask('Park then auto', join(tempDir, 'park-then-auto'));
+    let reconcileResult = await reconcile(taskStore, terminal);
+    await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    const resumed = resumeParkedTask(task.id, new Date(Date.now() - 10 * 60_000));
+    reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+    expect(result.relaunched.map((r) => r.oldSessionId)).toEqual([resumed]);
+    const newSession = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === result.relaunched[0]!.newSessionId)!;
+    // Park → resume was relaunch 1, this one is relaunch 2.
+    expect(newSession.relaunchCount).toBe(2);
+  });
+
+  test('a session the operator reopens, with no park before it, starts a fresh relaunch count (#4294)', async () => {
+    const task = await setupCrashedTask('Plain reopen', join(tempDir, 'plain-reopen'), { relaunchCount: 4, lastRelaunchedAt: Date.now() - 3_600_000 });
+    taskStore.updateSession(task.id, task.sessions[0]!.tmuxSession, { lastStatus: 'completed' });
+    taskStore.terminateTask(task.id);
+    const reopened = resumeParkedTask(task.id, new Date(Date.now() - 5_000));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked?.map((p) => p.taskId)).toEqual([task.id]);
+    expect(taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === reopened)!.parkedForOperator).toBe(true);
+  });
+
+  test('parkForOperator: a task cancelled after reconcile, before recovery reaches it, is neither parked nor relaunched (#4294)', async () => {
+    const task = await setupCrashedTask('Cancelled meanwhile', join(tempDir, 'park-cancelled'));
+    const launchSpy = vi.spyOn(adapter, 'launch');
+    const reconcileResult = await reconcile(taskStore, terminal);
+    taskStore.cancelTask(task.id);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked ?? []).toEqual([]);
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([expect.objectContaining({ taskId: task.id, reason: expect.stringContaining(NOT_INTERRUPTED_REASON_PREFIX) })]);
+    expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
+  });
+
+  test('parkForOperator: a task acknowledged after reconcile is not relaunched behind the operator\'s back (#4294)', async () => {
+    const task = await setupCrashedTask('Acknowledged meanwhile', join(tempDir, 'park-acknowledged'));
+    const launchSpy = vi.spyOn(adapter, 'launch');
+    const reconcileResult = await reconcile(taskStore, terminal);
+    taskStore.completeTask(task.id);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked ?? []).toEqual([]);
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(taskStore.getTask(task.id)!.status).toBe('completed');
+  });
+
+  test('parkForOperator: a task cancelled while its resume report is read is not parked (#4294)', async () => {
+    const task = await setupCrashedTask('Cancelled mid-report', join(tempDir, 'park-mid-report'));
+    const reconcileResult = await reconcile(taskStore, terminal);
+    resumeHooks.afterDescribe = (taskId) => { taskStore.cancelTask(taskId); };
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult, { parkForOperator: true });
+    expect(result.parked ?? []).toEqual([]);
+    expect(result.skipped).toEqual([expect.objectContaining({ taskId: task.id, reason: expect.stringContaining('task is cancelled') })]);
+    expect(taskStore.getTask(task.id)!.sessions[0]!.parkedForOperator).toBeUndefined();
+  });
+
+  test('findLivePromptDuplicate: finds a queued or running task with the same prompt, not a terminal one or itself (#4294)', async () => {
+    const parked = await setupCrashedTask('Nightly sweep', join(tempDir, 'dup-parked'));
+    await reconcile(taskStore, terminal);
+    expect(findLivePromptDuplicate(taskStore, parked.id)).toBeUndefined();
+    const other = taskStore.createTask('Different prompt', join(tempDir, 'dup-other'));
+    expect(findLivePromptDuplicate(taskStore, parked.id)).toBeUndefined();
+    const tick = taskStore.createTask('Nightly sweep', join(tempDir, 'dup-parked'));
+    expect(findLivePromptDuplicate(taskStore, parked.id)?.id).toBe(tick.id);
+    taskStore.cancelTask(tick.id);
+    expect(findLivePromptDuplicate(taskStore, parked.id)).toBeUndefined();
+    expect(other.id).not.toBe(parked.id);
   });
 
   test('fresh fallback: no claudeSessionId persisted (agent crashed before SessionStart)', async () => {

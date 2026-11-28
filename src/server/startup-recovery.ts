@@ -22,9 +22,13 @@ import {
 import { promotePendingTasks, registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import {
   isCrashLoopSkipReason,
+  NOT_INTERRUPTED_REASON_PREFIX,
+  PARKED_FOR_OPERATOR_REASON,
   recoverCrashedSessions,
   type CrashRecoveryResult,
 } from './crash-recovery.js';
+import type { InterruptedBatch } from './interrupted-tasks/interrupted-tasks-service.js';
+import type { TerminalWorkDisposition } from '../shared/contracts/task.js';
 import {
   runPostRestartRecovery,
   type PostRestartRecoverySummary,
@@ -642,7 +646,11 @@ function correlateRecoveryReceipts(
     // Skip it — same as the disposition-ledger writer — so we do not clobber
     // the `relaunched` disposition with `superseded`.
     if (!classification) continue;
-    const workDisposition = classification.kind === 'needs-human' ? 'abandoned' : 'superseded';
+    // A parked task is neither covered by another task nor abandoned: the operator's decision, or
+    // the deadline, settles it (recordInterruptedDecisionDispositions). Until then it is not known.
+    const workDisposition = skip.reason === PARKED_FOR_OPERATOR_REASON
+      ? 'unknown'
+      : classification.kind === 'needs-human' ? 'abandoned' : 'superseded';
     taskStore.recordRecoveryDisposition(skip.taskId, {
       workDisposition,
       recoveryCorrelationId,
@@ -732,6 +740,13 @@ async function writeCrashRecoveryDispositions(
  */
 function classifyCrashRecoverySkip(reason: string): { kind: DispositionKind; detail: string } | null {
   if (reason === 'task already relaunched in this recovery pass') return null;
+  // The operator acknowledged or cancelled the task before recovery reached it: that transition
+  // recorded its own receipt, which a recovery disposition must not overwrite (issue #4294).
+  if (reason.startsWith(NOT_INTERRUPTED_REASON_PREFIX)) return null;
+  // Parked for the operator (issue #4215): a human decides whether it resumes (issue #4294).
+  if (reason === PARKED_FOR_OPERATOR_REASON) {
+    return { kind: 'needs-human', detail: `needs-human: ${reason}; resumed at the deadline unless the operator decides first` };
+  }
   if (isCrashLoopSkipReason(reason)) {
     return {
       kind: 'needs-human',
@@ -745,6 +760,64 @@ function classifyCrashRecoverySkip(reason: string): { kind: DispositionKind; det
     };
   }
   return { kind: 'obsolete', detail: `obsolete-because: ${reason}` };
+}
+
+/**
+ * Record what an interrupted-tasks decision did to the tasks a restart parked (issue #4294). At
+ * park time their receipt says `unknown` and the ledger `needs-human`; once decided, a resumed or
+ * restarted task is `relaunched` / `respawned`, and one left stopped is `abandoned`, with a ledger
+ * entry saying why. A left-stopped task is stamped only while it is still exactly as parked: one
+ * the operator reopened or cancelled meanwhile keeps what that transition recorded. Skipped tasks
+ * (changed, gone, duplicated) are left alone for the same reason. Batches the operator raised with
+ * `kookr interrupted ask` were not parked by recovery and are not recorded here.
+ */
+export async function recordInterruptedDecisionDispositions(
+  taskStore: TaskStore,
+  batch: InterruptedBatch,
+  dispositionLedgerPath: string | undefined,
+): Promise<void> {
+  if (batch.source !== 'restart' || !batch.decision) return;
+  const { choice } = batch.decision;
+  for (const outcome of batch.decision.outcomes) {
+    const task = taskStore.getTask(outcome.taskId);
+    const entry = batch.tasks.find((t) => t.taskId === outcome.taskId);
+    if (!task || !entry) continue;
+    let workDisposition: TerminalWorkDisposition;
+    let disposition: DispositionKind;
+    let detail: string;
+    if (outcome.outcome === 'resumed' || outcome.outcome === 'restarted') {
+      workDisposition = 'relaunched';
+      disposition = 'respawned';
+      detail = `respawned-as: ${outcome.outcome === 'resumed' ? 'resumed conversation' : 'fresh launch'} after the interrupted-tasks decision (${choice})`;
+    } else if (outcome.outcome === 'left_stopped' || outcome.outcome === 'failed') {
+      const unchanged = entry.parkedAs === undefined
+        || (task.status === entry.parkedAs.status && task.sessions.length === entry.parkedAs.sessions);
+      if (!unchanged) continue;
+      workDisposition = 'abandoned';
+      disposition = outcome.outcome === 'left_stopped' && choice === 'leave' ? 'obsolete' : 'needs-human';
+      detail = disposition === 'obsolete'
+        ? 'obsolete-because: the operator chose to leave it stopped'
+        : `needs-human: not resumed after the interrupted-tasks decision (${choice}): ${outcome.detail ?? outcome.outcome}`;
+    } else {
+      continue;
+    }
+    const recoveryCorrelationId = task.terminalReceipt?.recoveryCorrelationId;
+    taskStore.recordRecoveryDisposition(task.id, { workDisposition });
+    if (!dispositionLedgerPath) continue;
+    try {
+      await appendDispositionEntry(dispositionLedgerPath, {
+        schemaVersion: 'disposition-ledger.v1',
+        taskId: task.id,
+        disposition,
+        detail,
+        incidentId: recoveryCorrelationId ?? `interrupted-batch:${batch.id}`,
+        source: 'interrupted-tasks',
+        at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error(`[disposition-ledger] failed to record the interrupted-tasks decision for task ${task.id}:`, err);
+    }
+  }
 }
 
 export async function promotePendingStartupTasks({

@@ -137,10 +137,12 @@ import { getDetectionStats, hydrateDetectionStats } from '../core/detection-stat
 import { DetectionStatsStore } from './detection-stats-store.js';
 import {
   promotePendingStartupTasks,
+  recordInterruptedDecisionDispositions,
   recoverLaunchAbandonedMasters,
   runStartupRecoveryPhase,
   type StartupRecoverySummary,
 } from './startup-recovery.js';
+import { findLivePromptDuplicate } from './crash-recovery.js';
 import { StartupReadiness } from './startup-readiness.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import {
@@ -1418,6 +1420,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     canResume: async (taskId) => {
       const task = taskStore.getTask(taskId);
       return task !== undefined && (await describeReopenResume(task, { activeRalphLoop: false })).mode === 'resume';
+    },
+    // Issue #4294: no twin of a task with the same prompt started meanwhile, and the receipts and
+    // disposition ledger say what the decision did to each parked task.
+    liveDuplicateOf: (taskId) => {
+      const duplicate = findLivePromptDuplicate(taskStore, taskId);
+      return duplicate ? { taskId: duplicate.id } : undefined;
+    },
+    onDecided: (batch) => {
+      void recordInterruptedDecisionDispositions(taskStore, batch, join(kookrDir, 'disposition.jsonl'));
     },
     ...(askService ? { ask: createInterruptedTasksAskPort(askService) } : {}),
   });
